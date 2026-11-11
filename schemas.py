@@ -58,6 +58,7 @@ GTM_DEAL = {
             "note": {"type": "string", "description": "add: an opening note for the activity log."},
             "kind": {"type": "string", "enum": ["note", "call", "email", "meeting", "task"], "description": "log: what happened."},
             "text": {"type": "string", "description": "log: what was said or done, in a sentence or three."},
+            "ref": {"type": "string", "description": "log: an id for the thing being logged (an email, message or call id). The same ref is logged only once."},
             "outcome": {"type": "string", "enum": ["won", "lost"], "description": "close: the outcome."},
             "reason": {"type": "string", "description": "close/move to lost: why."},
             "days": {"type": "integer", "description": "snooze: how many days (0 clears)."},

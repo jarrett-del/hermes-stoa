@@ -337,6 +337,38 @@ class DeskTests(unittest.TestCase):
         self.assertEqual((ada["grp"], ada["stage"], ada["value"]), ("Staff Backend", "interview", 30000))
 
 
+class ActivitySweepTests(unittest.TestCase):
+    """What a sweep of email, calls and Slack leans on: the same thing is logged once, and a stage is proposed, not changed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name)
+        fixture.load(self.desk)
+
+    def test_the_same_email_is_logged_once_however_often_the_sweep_runs(self):
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        before = len(self.desk.store.activities(dana, limit=50))
+        first = self.desk.deal({"action": "log", "deal": dana, "kind": "email", "text": "Dana sent her availability for next week.", "ref": "gmail:18c2f0"})
+        again = self.desk.deal({"action": "log", "deal": dana, "kind": "email", "text": "Dana sent her availability for next week.", "ref": "gmail:18c2f0"})
+        other = self.desk.deal({"action": "log", "deal": dana, "kind": "email", "text": "Dana confirmed Tuesday.", "ref": "gmail:18c2f9"})
+        self.assertEqual((first["ok"], first.get("already"), again.get("already"), other.get("already")), (True, None, True, None))
+        self.assertEqual(len(self.desk.store.activities(dana, limit=50)), before + 2)
+        plain = [self.desk.deal({"action": "log", "deal": dana, "text": "Left a voicemail."}) for _ in range(2)]      # no ref: logged as told
+        self.assertEqual([entry.get("already") for entry in plain], [None, None])
+        self.assertEqual(len(self.desk.store.activities(dana, limit=50)), before + 4)
+
+    def test_a_stage_change_the_sweep_spots_waits_for_the_person(self):
+        dana = self.desk.store.find("Dana Whitfield")
+        proposed = self.desk.intake.run({"action": "propose", "source": "Activity sweep", "rows": [
+            {"record": dana["id"], "stage": "Submitted", "note": "Northwind asked for her profile on Tuesday."}]})
+        self.assertEqual((proposed["counts"]["update"], proposed["counts"]["new"]), (1, 0))
+        self.assertEqual(self.desk.store.get(dana["id"])["stage"], dana["stage"])                     # nothing moved yet
+        applied = self.desk.intake.apply({"id": proposed["id"]}, "app")
+        self.assertEqual((applied["ok"], applied["updated"]), (True, 1))
+        self.assertEqual(self.desk.store.get(dana["id"])["stage"], "submitted")
+
+
 class EnrichTests(unittest.TestCase):
     PERSON = {"status": 200, "likelihood": 9, "data": {
         "full_name": "dana whitfield", "job_title": "senior backend engineer", "job_company_name": "kestrel labs",
@@ -1202,8 +1234,8 @@ class RegisterTests(unittest.TestCase):
     def test_everything_the_manifest_promises_is_registered(self):
         self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_intake", "gtm_market",
                                                   "gtm_notes", "gtm_pipeline", "gtm_playbook"])
-        self.assertEqual(sorted(self.ctx.blueprints), ["friday-review", "market-watch", "morning-brief", "notes-sweep",
-                                                       "sheet-mirror", "sheet-pull"])
+        self.assertEqual(sorted(self.ctx.blueprints), ["activity-sweep", "friday-review", "market-watch", "morning-brief",
+                                                       "notes-sweep", "sheet-mirror", "sheet-pull"])
         self.assertEqual(sorted(self.ctx.skills), ["desk", "market-map", "playbook-authoring"])
         self.assertIn("gtm", self.ctx.commands)
         self.assertEqual(stoa.LIVE_DESKS[-1].home, Path(self.tmp.name))
@@ -1260,6 +1292,22 @@ class DashboardApiTests(unittest.TestCase):
         self.desk = make_desk(self.tmp.name)
         self.api.desk = lambda: self.desk
         fixture.load(self.desk)
+
+    def test_the_page_can_add_edit_move_and_log_without_a_model(self):
+        added = self.api.add_deal({"name": "Nadia Rahim", "company": "Larkspur", "group": "Staff Backend · Northwind", "value": 41000,
+                                   "next_step": "Intro call", "next_due": "2030-01-07"})
+        nadia = added["deal"]["id"]
+        self.assertEqual((added["ok"], added["deal"]["stage"]), (True, "sourced"))
+        self.assertTrue(self.api.add_deal({"name": "Nadia Rahim", "group": "Staff Backend · Northwind"})["exists"])    # no second copy
+        self.assertEqual(self.api.act(nadia, {"verb": "update", "next_step": "Send the brief", "owner": "Maya", "value": 45000}), {"ok": True})
+        self.assertEqual(self.api.act(nadia, {"verb": "move", "stage": "screened"}), {"ok": True})
+        self.assertEqual(self.api.act(nadia, {"verb": "log", "kind": "call", "text": "Spoke for ten minutes; keen."}), {"ok": True})
+        record = self.desk.store.get(nadia)
+        self.assertEqual((record["stage"], record["next_step"], record["owner"], record["value"]), ("screened", "Send the brief", "Maya", 45000))
+        self.assertIn("Spoke for ten minutes", [a["text"] for a in self.desk.store.activities(nadia)][0])
+        self.assertEqual({a["actor"] for a in self.desk.store.activities(nadia, limit=20)}, {"dashboard"})    # typed by a person, not the agent
+        with self.assertRaises(self.api.HTTPException):
+            self.api.act(nadia, {"verb": "move", "stage": "no-such-stage"})
 
     def test_a_click_in_the_app_saves_and_returns_the_line_to_send_into_chat(self):
         dana = self.desk.store.find("Dana Whitfield")["id"]

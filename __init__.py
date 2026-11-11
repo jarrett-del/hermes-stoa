@@ -193,6 +193,20 @@ def register(ctx) -> None:
         tags=["gtm", "notes"],
     )
     ctx.register_automation_blueprint(
+        "activity-sweep",
+        title="Log email, call and Slack activity",
+        description="A few times a day: find new email, calls and messages with people on the desk, log them, and ask before any stage changes.",
+        category="work",
+        schedule_template="0 {hours} * * 1-5",
+        prompt_template=("Load the skill stoa:desk and follow its Activity sweep section, looking back {days} days. Log what "
+                         "you find on the right records. Do not change stages yourself: propose them with gtm_intake so "
+                         "the person can approve. If you logged nothing and have nothing to propose, reply with exactly "
+                         "[SILENT]; otherwise say what you logged in one line and that the proposals are waiting."),
+        slots=[{"name": "hours", "type": "text", "label": "Which hours? (cron hour list)", "default": "9,12,15,18"},
+               {"name": "days", "type": "text", "label": "How many days back?", "default": "2"}, deliver],
+        tags=["gtm", "email", "activity"],
+    )
+    ctx.register_automation_blueprint(
         "market-watch",
         title="Market watch",
         description="Once a week: look for companies that newly fit one of your market maps and add the best few.",

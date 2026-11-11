@@ -175,7 +175,7 @@ def deal(deal_id: str) -> dict:
 @router.post("/deal")
 def add_deal(body: dict = Body(...)) -> dict:
     d = desk()
-    result = d.deal(dict(body or {}, action="add"))
+    result = d.deal(dict(body or {}, action="add"), actor="dashboard")
     if not result.get("ok"):
         raise HTTPException(400, result.get("error") or "could not add the record")
     d.announce()
@@ -185,7 +185,7 @@ def add_deal(body: dict = Body(...)) -> dict:
 @router.post("/deal/{deal_id}/act")
 def act(deal_id: str, body: dict = Body(...)) -> dict:
     """advance | draft | lost | reopen | snooze3 | snooze7 | enrich go through the same path as a
-    Slack button; log and update go through the same path as the agent's tool."""
+    Slack button; log, update and move go through the same path as the agent's tool."""
     d = desk()
     verb = str((body or {}).get("verb") or "")
     if d.store.get(deal_id) is None:
@@ -199,10 +199,10 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
         d.announce()
         return {"ok": True, "notice": result.get("notice") or "", "parked": bool(result.get("followup")),
                 "ask": _ask(d, deal_id, verb) if result.get("followup") else ""}
-    if verb in ("log", "update"):
-        allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name")
+    if verb in ("log", "update", "move"):
+        allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage")
         args = {k: body[k] for k in allowed if k in body}
-        result = d.deal(dict(args, action=verb, deal=deal_id))
+        result = d.deal(dict(args, action=verb, deal=deal_id), actor="dashboard")
         if not result.get("ok"):
             raise HTTPException(400, result.get("error") or "could not save")
         d.announce()

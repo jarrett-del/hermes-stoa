@@ -465,6 +465,14 @@ class Store:
             conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
         return {"deal_id": deal_id, "at": stamp, "kind": kind, "actor": actor, "text": text, "ref": ref}
 
+    def logged(self, deal_id: str, ref: str) -> bool:
+        """Whether something from outside (an email, a message, a call) is already on this record's log."""
+        if not ref:
+            return False
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM activities WHERE deal_id = ? AND ref = ? LIMIT 1",
+                                (deal_id, ref)).fetchone() is not None
+
     def activities(self, deal_id: str = "", limit: int = 10, since: str = "") -> list:
         where, params = [], []
         if deal_id:

@@ -83,6 +83,15 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   its buttons, not a description of it. *"Show me the market map"* draws the map the same way.
 - **A page of its own.** **Stoa** in the sidebar opens the funnel with its conversion rates, the
   pipeline board with the same filters, the market map with its reading, and the activity log.
+- **Talk to the page.** The box at the top of the page takes the same sentences the chat does:
+  *"Add Nadia Rahim from Larkspur to the Northwind search"*, *"what needs me today?"*. The reply
+  appears under the box and the board redraws. The page keeps its own conversation for this,
+  called **Stoa desk**, listed in the sidebar like any other.
+- **Or do it by hand.** **+ New** adds a record from a short form. **Edit** on any record changes
+  its next step, stage, value, owner and the rest, and adds a line to its log. No model involved.
+
+![Adding a candidate by hand on the page](docs/desktop-new.jpg)
+
 - **Lists you send in.** Drop a file into the chat. The review appears in the conversation and in
   the pane: a tick box per row, what each one would add or change, and one **Apply** button.
 
@@ -167,7 +176,7 @@ change are one database transaction, so it holds across Slack, the web tab and t
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
 | **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
 | **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
-| **6 automations** | Morning brief, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
+| **7 automations** | Morning brief, email-call-and-Slack activity sweep, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
 | **3 playbooks** | `b2b-sales`, `recruiting`, `agency`, plus any you or the agent write |
 
@@ -302,6 +311,23 @@ Stoa writes drafts and never sends. When the Google Workspace skill (or any Gmai
 connected to Hermes, the agent saves what it drafts as a Gmail draft addressed to the record's
 email, ready for you to read and send. Without it, drafts arrive in the chat.
 
+### Email, calls and Slack, logged for you
+
+Switch on the *Log email, call and Slack activity* automation and, a few times a day, the agent
+looks through whatever you have connected to Hermes (Gmail, a calendar or call recorder, Slack)
+for anything that happened with the people on the desk.
+
+- **It logs what it finds** on the right record, as a one or two sentence summary. Each email,
+  message or call is logged once, however often the sweep runs.
+- **It asks before moving anything.** When an email says the interview is booked or the contract
+  is signed, the stage change and the new next step arrive as a review with a tick box per
+  record, in Slack or in the app. Nothing moves until you apply it.
+- **It proposes newcomers the same way.** Someone who writes in and is not on the desk yet is a
+  row in that review, not a record.
+
+Stoa has no mail or chat code of its own and holds no Google or Slack credentials for this: the
+agent reads with its own tools, so it sees exactly what your Hermes can already see.
+
 ### Google Sheets
 
 Connect Google to Hermes (its Google Workspace skill covers Gmail, Drive, Sheets and Docs) and
@@ -407,7 +433,7 @@ What the plugin does that you would want to know before installing it:
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.5
+## Limits in 0.7
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -422,13 +448,16 @@ What the plugin does that you would want to know before installing it:
   in it come back when you approve them. Deleting a row in the Sheet does not remove the record.
 - After updating the plugin, restart the gateway so the Slack buttons bind to the new code.
 - A team shares one desk. There are owners on records, but no per-person permissions.
+- The activity sweep is only as good as the tools your Hermes has connected and the model reading
+  the mail. It summarises; check the record's log against the email when it matters.
+- The talk box on the page runs a turn of your agent's model, the same as typing in a chat.
 
 ## Development
 
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 117 tests, no network
+python3 -m unittest discover -s tests     # 120 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

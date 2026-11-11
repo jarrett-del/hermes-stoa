@@ -272,6 +272,11 @@ class Intake:
             entry = {"n": number, "name": row["name"], "company": _text(row.get("company")), "group": _text(row.get("grp")),
                      "stage": row["stage"], "row": row, "warnings": warnings, "changes": [], "why": "", "deal": ""}
             plan.append(entry)
+            if not row["name"] and row.get("record"):
+                known = self.store.get(str(row["record"]))
+                if known:                                   # a row that names a record by its id needs no name as well
+                    row["name"] = known["name"]
+                    entry.update(name=known["name"], company=known["company"], group=known["grp"])
             if not row["name"]:
                 entry.update(kind="problem", why="no name or company on this row")
                 continue

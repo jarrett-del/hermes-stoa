@@ -108,6 +108,30 @@ probably belongs to. For each one:
 4. If it is about someone not on the desk who should be, ask before adding them.
 5. If it is not about the pipeline at all, `skip` it.
 
+## Activity sweep (email, calls, Slack)
+
+Stoa has no mail or chat code of its own. You do this with whatever the person has connected to
+Hermes: Gmail, a calendar or call recorder, Slack search. If none of those tools is available to
+you, say so in one line and stop.
+
+1. `gtm_export(action="table")` gives the open records with their emails. Those people and
+   companies are the only ones you look for.
+2. With your own tools, find what happened with them in the window you were given: email sent or
+   received, calls and meetings that took place, messages in Slack. Leave out newsletters,
+   automated mail and anything that is not about the work.
+3. For each thing you find, `gtm_deal(action="log", deal="<id>", kind="email" | "call" |
+   "meeting" | "note", text="<who said what, in one or two sentences, with the date>",
+   ref="<the message, thread or event id>")`. Always pass `ref`: it is what makes running the
+   sweep twice harmless. Summarise; never paste a whole email, and never log something you
+   could not read.
+4. When something means a record should move ("interview booked", "they signed", "not
+   interested") or needs a new next step, **do not change it**. Collect those as rows and call
+   `gtm_intake(action="propose", source="Activity sweep", rows=[{"record": "<id>", "stage":
+   "<stage>", "next_step": "...", "next_due": "...", "note": "<the evidence, one line>"}])`.
+   The person gets the review with tick boxes and applies what they agree with.
+5. Someone writes in who is not on the desk and looks like they should be: put them in the same
+   proposal as a new row. Do not add them yourself.
+
 ## Briefs
 
 For a morning brief, lead with what is due today, then what has gone quiet with one suggested

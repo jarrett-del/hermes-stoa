@@ -301,10 +301,11 @@ class Desk:
                 "lost_label": playbook.lost["label"], "from_map": from_map, "total": reached[0] if reached else 0}
 
     # -- gtm_deal -------------------------------------------------------------------------------
-    def deal(self, args: dict) -> dict:
+    def deal(self, args: dict, actor: str = "") -> dict:
+        """``actor`` names who is doing this when it is not the agent's own tool call (a form on the page)."""
         action = str(args.get("action") or "get").lower()
         playbook = self.playbook()
-        actor = self.actor()
+        actor = actor or self.actor()
         args, error = _due(args)
         if error and action in ("add", "update", "log"):
             return error
@@ -358,7 +359,10 @@ class Desk:
             if not text:
                 return {"ok": False, "error": "log needs text"}
             kind = str(args.get("kind") or "note").lower()
-            self.store.log(deal["id"], kind if kind in LOG_KINDS else "note", text[:4000], actor=actor)
+            ref = str(args.get("ref") or "").strip()[:200]
+            if ref and self.store.logged(deal["id"], ref):      # the same email or message, met again by a later sweep
+                return {"ok": True, "action": "log", "already": True, "deal": self.view(deal, playbook, activities=3)}
+            self.store.log(deal["id"], kind if kind in LOG_KINDS else "note", text[:4000], actor=actor, ref=ref)
             follow = {k: args.get(k) for k in ("next_step", "next_due") if args.get(k) is not None}
             if follow:
                 self.store.update(deal["id"], actor=actor, **follow)

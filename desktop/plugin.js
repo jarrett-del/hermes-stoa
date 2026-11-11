@@ -6,9 +6,10 @@
  * review of a list someone sent in.
  *
  * Everything here talks to the plugin's own backend (/api/plugins/stoa, the same routes the web
- * dashboard tab uses) through ctx.rest. A button saves at once, with no model involved; when the
- * click calls for writing, one line is sent into the open chat (host.composer.submit, the same as
- * typing it) and the agent writes the draft there.
+ * dashboard tab uses) through ctx.rest. A button or a form saves at once, with no model involved;
+ * when a click calls for writing, one line is sent into the open chat (host.composer.submit, the
+ * same as typing it) and the agent writes the draft there. The page, which has no chat beside it,
+ * keeps a conversation of its own for its talk box (see "talking to the desk" below).
  */
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
 import { createElement as h, useState } from 'react'
@@ -116,6 +117,71 @@ async function track(target, sessionId) {
   } catch (error) {
     host.notifyError(error, 'Stoa could not add that company')
   }
+}
+
+// -- talking to the desk from its own page -------------------------------------------------------
+// The page has no conversation beside it, so it keeps one of its own: an ordinary session named
+// "Stoa desk", made and resumed through the gateway the way the app makes any session, and listed
+// in the sidebar like any other. What is typed on the page is submitted to it, and the reply is
+// read off the gateway's event stream (see register) and shown in place.
+const TALK_IDLE = { busy: false, you: '', reply: '', note: '', error: '' }
+const $talk = atom({ ...TALK_IDLE })
+const talkSession = { runtime: '', stored: '', primed: false, turn: 0 }
+const setTalk = patch => $talk.set({ ...$talk.get(), ...patch })
+const PRIME = 'This conversation is the talk box on the Stoa desk page. Act on the Stoa desk with the gtm tools, and answer in a few '
+  + 'short lines: the page already shows the pipeline.\n\n'
+
+async function talkOpen() {
+  if (talkSession.runtime) return talkSession.runtime
+  const stored = talkSession.stored || ((storage && storage.get('talk', {})) || {}).stored || ''
+  if (stored) {
+    try {
+      const resumed = await host.request('session.resume', { session_id: stored, omit_messages: true })
+      if (resumed && resumed.session_id) {
+        Object.assign(talkSession, { runtime: resumed.session_id, stored, primed: true })
+        return talkSession.runtime
+      }
+    } catch { /* that conversation is gone: start another */ }
+  }
+  const made = await host.request('session.create', { title: 'Stoa desk' })
+  const runtime = (made && made.session_id) || ''
+  if (!runtime) throw new Error('Hermes did not open a conversation')
+  Object.assign(talkSession, { runtime, stored: made.stored_session_id || runtime, primed: false })
+  if (storage) storage.set('talk', { stored: talkSession.stored })
+  return runtime
+}
+
+async function say(text) {
+  const line = String(text || '').trim()
+  if (!line || $talk.get().busy) return
+  const turn = ++talkSession.turn
+  setTalk({ busy: true, you: line, reply: '', note: 'Sending…', error: '' })
+  const submit = async () => {
+    const id = await talkOpen()
+    await host.request('prompt.submit', { session_id: id, text: talkSession.primed ? line : PRIME + line })
+    talkSession.primed = true
+  }
+  try {
+    try {
+      await submit()
+    } catch (first) {
+      if (!talkSession.runtime) throw first
+      talkSession.runtime = '' // the gateway let the idle session go: resume it (or start another) and send once more
+      await submit()
+    }
+    if (talkSession.turn === turn && $talk.get().busy && !$talk.get().reply) setTalk({ note: 'Hermes is working on it…' })
+    setTimeout(() => {
+      if (talkSession.turn === turn && $talk.get().busy) {
+        setTalk({ busy: false, note: 'Still working. Open the conversation to follow it; the desk updates when it is done.' })
+      }
+    }, 180000)
+  } catch (error) {
+    setTalk({ busy: false, note: '', error: 'Hermes could not take that: ' + String((error && error.message) || error) })
+  }
+}
+
+function openTalk() {
+  if (talkSession.stored) Promise.resolve(host.openSession(talkSession.stored)).catch(() => {})
 }
 
 // -- look: the app's own variables only, so every theme carries it -------------------------------
@@ -237,6 +303,26 @@ const CSS = `
 .stoa-rest { margin-top: 10px; font-size: 12px; color: var(--ui-text-tertiary); }
 .stoa-rest summary { cursor: pointer; }
 .stoa-rest p { margin: 4px 0 0 14px; }
+.stoa-talk { margin: 20px 0 0; max-width: 860px; }
+.stoa-talkbar { display: flex; gap: 8px; align-items: center; padding: 5px 5px 5px 14px; border: 1px solid var(--ui-stroke-primary); border-radius: 10px; background: var(--ui-bg-card); transition: border-color .15s ease, box-shadow .15s ease; }
+.stoa-talkbar:focus-within { border-color: var(--stoa-accent-line); box-shadow: 0 0 0 1px var(--stoa-accent-line); }
+.stoa-talkbar input { flex: 1; min-width: 0; height: 32px; border: 0; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 14px; }
+.stoa .stoa-talkbar input, .stoa .stoa-talkbar input:focus-visible { outline: none; }
+.stoa-talkbar input::placeholder { color: var(--ui-text-quaternary); }
+.stoa-talkbar .stoa-btn { flex: none; height: 32px; padding: 0 16px; font-size: 13px; }
+.stoa-said { margin-top: 8px; padding: 12px 14px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
+.stoa-you { color: var(--ui-text-secondary); overflow-wrap: anywhere; }
+.stoa-reply { margin-top: 8px; max-height: 280px; overflow-y: auto; overflow-wrap: anywhere; }
+.stoa-reply p { margin: 0 0 8px; }
+.stoa-reply p:last-child { margin-bottom: 0; }
+.stoa-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin: 0 0 14px; }
+.stoa-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-top: 12px; }
+.stoa-form label { display: block; min-width: 0; }
+.stoa-form label[data-wide="1"] { grid-column: 1 / -1; }
+.stoa-field { display: block; width: 100%; height: 28px; margin-top: 3px; padding: 0 8px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }
+.stoa-field:focus { border-color: var(--ui-stroke-primary); }
+.stoa-field::placeholder { color: var(--ui-text-quaternary); }
+.stoa-edit { margin-top: 12px; padding-top: 2px; border-top: 1px solid var(--ui-stroke-tertiary); }
 `
 
 const Style = () => h('style', null, CSS)
@@ -255,11 +341,111 @@ function Unavailable({ error, loading }) {
     !loading && error ? h('p', { className: 'stoa-sub' }, String(error.message || error)) : null)
 }
 
+// -- a form: one labelled input per fact ----------------------------------------------------------
+function Field({ label, wide, children, ...props }) {
+  return h('label', { 'data-wide': wide ? '1' : '0' }, h('small', { className: 'stoa-eyebrow' }, label),
+    children || h('input', { className: 'stoa-field', ...props }))
+}
+
+const uniq = values => [...new Set(values.filter(Boolean))].sort()
+
+/** Change a record by hand: its next step, its stage, its facts, and a line for the log. */
+function Edit({ deal, state, done }) {
+  const pb = state.playbook, terms = pb.terms
+  const start = { next_step: deal.next_step || '', next_due: deal.next_due || '', value: deal.value ? String(deal.value) : '', owner: deal.owner || '',
+    company: deal.company || '', group: deal.group || '', email: deal.email || '' }
+  const [v, setV] = useState(start)
+  const [note, setNote] = useState('')
+  const [kind, setKind] = useState('note')
+  const [busy, setBusy] = useState(false)
+  const set = key => event => setV({ ...v, [key]: event.target.value })
+  const send = body => { setBusy(true); return act(deal.id, body).then(result => { setBusy(false); return result }) }
+  const save = () => {
+    const body = { verb: 'update' }
+    for (const key of Object.keys(v)) {
+      const now = String(v[key]).trim()
+      if (now !== start[key]) body[key] = key === 'value' ? Number(now) || 0 : now
+    }
+    if (Object.keys(body).length === 1) return done()
+    send(body).then(result => { if (result) done() })
+  }
+  const log = () => { if (note.trim()) send({ verb: 'log', kind, text: note.trim() }).then(result => { if (result) setNote('') }) }
+  const open = deal.status === 'open'
+  return h('div', { className: 'stoa-edit' },
+    h('div', { className: 'stoa-form' },
+      h(Field, { label: 'Next step', wide: true, value: v.next_step, onChange: set('next_step') }),
+      h(Field, { label: 'Due', type: 'date', value: v.next_due, onChange: set('next_due') }),
+      open ? h(Field, { label: 'Stage' }, h('select', { className: 'stoa-field', value: deal.stage, disabled: busy,
+        onChange: event => send({ verb: 'move', stage: event.target.value }) },
+        pb.stages.map(stage => h('option', { key: stage.id, value: stage.id }, stage.label)))) : h('span'),
+      h(Field, { label: cap(terms.value), type: 'number', min: 0, value: v.value, onChange: set('value') }),
+      h(Field, { label: cap(terms.owner), value: v.owner, onChange: set('owner') }),
+      h(Field, { label: cap(terms.company), value: v.company, onChange: set('company') }),
+      h(Field, { label: cap(terms.group), value: v.group, onChange: set('group') }),
+      h(Field, { label: 'Email', wide: true, type: 'email', value: v.email, onChange: set('email') })),
+    h('div', { className: 'stoa-btns' },
+      h(Btn, { kind: 'primary', disabled: busy, onClick: save }, 'Save'),
+      h(Btn, { kind: 'quiet', disabled: busy, onClick: done }, 'Cancel')),
+    h('div', { className: 'stoa-form' },
+      h(Field, { label: 'Log what happened', wide: true, value: note, placeholder: 'Called her; she wants to see the comp range', onChange: event => setNote(event.target.value),
+        onKeyDown: event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) log() } })),
+    h('div', { className: 'stoa-btns', style: { marginTop: 8 } },
+      h('select', { className: 'stoa-select', value: kind, 'aria-label': 'What it was', onChange: event => setKind(event.target.value) },
+        ['note', 'call', 'email', 'meeting'].map(name => h('option', { key: name, value: name }, cap(name)))),
+      h(Btn, { disabled: busy || !note.trim(), onClick: log }, 'Add to log')))
+}
+
+/** Put someone or something new on the desk by hand. */
+function NewRecord({ state, close, opened }) {
+  const pb = state.playbook, terms = pb.terms
+  const [v, setV] = useState({ name: '', company: '', group: '', stage: pb.stages[0] ? pb.stages[0].id : '', value: '', owner: '', email: '', next_step: '', next_due: '' })
+  const [busy, setBusy] = useState(false)
+  const set = key => event => setV({ ...v, [key]: event.target.value })
+  const save = () => {
+    const body = {}
+    for (const key of Object.keys(v)) {
+      const now = String(v[key]).trim()
+      if (now) body[key] = key === 'value' ? Number(now) || 0 : now
+    }
+    if (!body.name || busy) return
+    setBusy(true)
+    rest('/deal', { method: 'POST', body })
+      .then(result => {
+        refresh()
+        host.notify({ kind: result && result.exists ? 'info' : 'success', message: result && result.exists ? body.name + ' is already on the desk.' : body.name + ' is on the desk.' })
+        opened(result && result.deal ? result.deal.id : '')
+      })
+      .catch(error => host.notifyError(error, 'Stoa could not add that'))
+      .then(() => setBusy(false))
+  }
+  return h('div', { className: 'stoa-box' },
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' } },
+      h('div', { className: 'stoa-name', style: { fontSize: 14 } }, 'New ' + terms.deal),
+      h(Btn, { kind: 'quiet', onClick: close, 'aria-label': 'Close' }, '×')),
+    h('div', { className: 'stoa-form' },
+      h(Field, { label: 'Name', wide: true, autoFocus: true, value: v.name, onChange: set('name') }),
+      h(Field, { label: cap(terms.company), value: v.company, onChange: set('company') }),
+      h(Field, { label: cap(terms.group), list: 'stoa-new-groups', value: v.group, onChange: set('group') }),
+      h(Field, { label: 'Stage' }, h('select', { className: 'stoa-field', value: v.stage, onChange: set('stage') },
+        pb.stages.map(stage => h('option', { key: stage.id, value: stage.id }, stage.label)))),
+      h(Field, { label: cap(terms.value), type: 'number', min: 0, value: v.value, onChange: set('value') }),
+      h(Field, { label: cap(terms.owner), list: 'stoa-new-owners', value: v.owner, onChange: set('owner') }),
+      h(Field, { label: 'Email', type: 'email', value: v.email, onChange: set('email') }),
+      h(Field, { label: 'Next step', wide: true, value: v.next_step, onChange: set('next_step') }),
+      h(Field, { label: 'Due', type: 'date', value: v.next_due, onChange: set('next_due') })),
+    h('datalist', { id: 'stoa-new-groups' }, uniq(state.deals.map(deal => deal.group)).map(name => h('option', { key: name, value: name }))),
+    h('datalist', { id: 'stoa-new-owners' }, uniq(state.deals.map(deal => deal.owner)).map(name => h('option', { key: name, value: name }))),
+    h('div', { className: 'stoa-btns' },
+      h(Btn, { kind: 'primary', disabled: busy || !v.name.trim(), onClick: save }, 'Add to the desk'),
+      h(Btn, { kind: 'quiet', disabled: busy, onClick: close }, 'Cancel')))
+}
+
 // -- one record: what it is, what is next, and the buttons ---------------------------------------
 function Record({ id, state, sessionId, close }) {
   const pb = state.playbook
   const query = useQuery({ queryKey: ['stoa', 'deal', id], queryFn: () => rest('/deal/' + encodeURIComponent(id)), staleTime: 1500 })
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
   const deal = query.data
   if (query.error) return h('div', { className: 'stoa-box stoa-sub' }, 'That record is no longer on the desk.')
   if (!deal) return h('div', { className: 'stoa-box stoa-sub' }, 'Loading…')
@@ -293,7 +479,9 @@ function Record({ id, state, sessionId, close }) {
         onChange: event => { if (event.target.value !== '') run({ verb: 'lost', extra: event.target.value }) } },
         [h('option', { key: 'none', value: '' }, pb.lost.label + '…')].concat(pb.lost.reasons.map((reason, index) =>
           h('option', { key: index, value: String(index) }, reason)))) : null,
-      !open ? h(Btn, { kind: 'primary', disabled: busy, onClick: () => run({ verb: 'reopen' }) }, 'Reopen') : null),
+      !open ? h(Btn, { kind: 'primary', disabled: busy, onClick: () => run({ verb: 'reopen' }) }, 'Reopen') : null,
+      h(Btn, { kind: 'quiet', onClick: () => setEditing(!editing) }, editing ? 'Close editing' : 'Edit')),
+    editing ? h(Edit, { key: deal.stage, deal, state, done: () => setEditing(false) }) : null,
     facts.length ? h('div', { className: 'stoa-facts' }, facts.map(pair =>
       h('div', { key: pair[0] }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, String(pair[1]))))) : null,
     (deal.activity || []).length ? h('div', { className: 'stoa-log' }, deal.activity.slice(0, 3).map((entry, index) =>
@@ -476,6 +664,40 @@ function Pane() {
       h(Btn, { kind: 'quiet', onClick: () => toChat("What's on my plate today on the Stoa desk?") }, "What's on my plate?")))
 }
 
+// -- the talk box on the page ---------------------------------------------------------------------
+/** A reply, set plainly: paragraphs, bullets and bold. Lines that only draw a card in a chat are left out. */
+function Words({ text }) {
+  const clean = String(text || '').replace(/^[ \t]*::stoa-[a-z]+\{[^}\n]*\}[ \t]*$/gm, '').trim()
+  const bold = line => line.split(/(\*\*[^*]+\*\*)/g).map((part, index) => (/^\*\*[^*]+\*\*$/.test(part) ? h('b', { key: index }, part.slice(2, -2)) : part))
+  return h('div', { className: 'stoa-reply' }, clean.split(/\n{2,}/).map((block, index) => h('p', { key: index },
+    block.split('\n').map((line, at) => h('span', { key: at, style: { display: 'block' } }, bold(line.replace(/^\s*[-*]\s+/, '•  ').replace(/^#+\s+/, '')))))))
+}
+
+function Talk() {
+  const talk = useValue($talk)
+  const [text, setText] = useState('')
+  const send = () => {
+    if (!text.trim() || talk.busy) return
+    say(text)
+    setText('')
+  }
+  return h('div', { className: 'stoa-talk' },
+    h('div', { className: 'stoa-talkbar' },
+      h('input', { value: text, placeholder: 'Tell Stoa what happened, or ask it anything…', 'aria-label': 'Talk to the desk', disabled: talk.busy,
+        onChange: event => setText(event.target.value),
+        onKeyDown: event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) send() } }),
+      h(Btn, { kind: 'primary', disabled: talk.busy || !text.trim(), onClick: send }, talk.busy ? 'Working…' : 'Send')),
+    talk.you || talk.error ? h('div', { className: 'stoa-said' },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' } },
+        h('div', { className: 'stoa-you' }, talk.you),
+        h('div', { style: { display: 'flex', gap: 4, flex: 'none' } },
+          h(Btn, { kind: 'quiet', onClick: openTalk }, 'Open the conversation'),
+          talk.busy ? null : h(Btn, { kind: 'quiet', 'aria-label': 'Dismiss', onClick: () => $talk.set({ ...TALK_IDLE }) }, '×'))),
+      talk.reply ? h(Words, { text: talk.reply }) : null,
+      talk.note ? h('div', { className: 'stoa-sub', style: { marginTop: 6 } }, talk.note) : null,
+      talk.error ? h('div', { style: { marginTop: 6, color: 'var(--ui-red)' } }, talk.error) : null) : null)
+}
+
 // -- the full page -------------------------------------------------------------------------------
 function Board({ state, openId, setOpenId }) {
   const pb = state.playbook
@@ -561,6 +783,7 @@ function Page() {
   const query = useDesk()
   const [tab, setTab] = useState('pipeline')
   const [openId, setOpenId] = useState('')
+  const [adding, setAdding] = useState(false)
   const [marketId, setMarketId] = useState('')
   if (!query.data) return h('div', { className: 'stoa stoa-page' }, h(Unavailable, { error: query.error, loading: query.isLoading }))
   const state = query.data, pb = state.playbook, totals = state.totals
@@ -572,20 +795,23 @@ function Page() {
     h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open')),
     h('div', { className: 'stoa-rule' }),
     h('div', { className: 'stoa-stats' }, stats.map(pair => h('div', { key: pair[0] }, h('span', { className: 'stoa-eyebrow' }, pair[0]), h('b', null, String(pair[1]))))),
+    h(Talk),
     (state.intakes || []).length ? h('div', { style: { marginTop: 18, maxWidth: 720 } },
       h('div', { className: 'stoa-eyebrow', style: { marginBottom: 6 } }, 'Waiting for your review'),
       state.intakes.map(item => h('div', { key: item.id, style: { marginBottom: 10 } }, h(Review, { id: item.id })))) : null,
     h('div', null, h('div', { className: 'stoa-tabs', role: 'tablist' }, [['pipeline', 'Pipeline', totals.open], ['market', 'Market map', totals.mapped], ['activity', 'Activity', 0]].map(item =>
       h('button', { type: 'button', key: item[0], role: 'tab', 'aria-selected': tab === item[0], className: 'stoa-tab', 'data-on': tab === item[0] ? '1' : '0',
         onClick: () => setTab(item[0]) }, item[1], item[2] ? h('small', null, String(item[2])) : null)))),
-    tab === 'pipeline' ? (state.deals.length
-      ? h('div', null,
-        h(Funnel, { state }),
-        h('div', { style: { margin: '0 0 14px', maxWidth: 760 } }, h(Filters, { state })),
-        h('div', { className: 'stoa-split', 'data-side': openId ? '1' : '0' },
-          h(Board, { state, openId, setOpenId }),
-          openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId('') }) : null))
-      : h('p', { className: 'stoa-sub' }, 'Nothing on the desk yet. Tell Hermes about a ' + pb.terms.deal + ', or ask it to map a market.')) : null,
+    tab === 'pipeline' ? h('div', null,
+      state.deals.length ? h(Funnel, { state }) : null,
+      h('div', { className: 'stoa-bar' },
+        h('div', { style: { flex: '1 1 420px', maxWidth: 760 } }, state.deals.length ? h(Filters, { state }) : null),
+        h(Btn, { onClick: () => { setOpenId(''); setAdding(true) } }, '+  New ' + pb.terms.deal)),
+      h('div', { className: 'stoa-split', 'data-side': adding || openId ? '1' : '0' },
+        state.deals.length ? h(Board, { state, openId, setOpenId: id => { setAdding(false); setOpenId(id) } })
+          : h('p', { className: 'stoa-sub' }, 'Nothing on the desk yet. Add a ' + pb.terms.deal + ' here, tell Stoa about one above, send it a list, or ask it to map a market.'),
+        adding ? h(NewRecord, { state, close: () => setAdding(false), opened: id => { setAdding(false); setOpenId(id) } })
+          : openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId('') }) : null)) : null,
     tab === 'market' ? (market
       ? h('div', null,
         state.markets.length > 1 ? h('div', { className: 'stoa-tabs', style: { marginTop: 0 } }, state.markets.map(item =>
@@ -637,6 +863,30 @@ export default {
     ctx.setInterval(hello, 30000)
     // The agent, a Slack click or another window changed the desk: redraw now, not at the next poll.
     ctx.onEvent('plugin.stoa.changed', refresh)
+    // The talk box on the page: hear its own conversation, and nobody else's.
+    const mine = event => Boolean(talkSession.runtime) && String((event && (event.session_id || event.sessionId)) || '') === talkSession.runtime
+    ctx.onEvent('message.delta', event => {
+      const text = event && event.payload && event.payload.text
+      if (mine(event) && typeof text === 'string') setTalk({ reply: $talk.get().reply + text, note: '' })
+    })
+    ctx.onEvent('tool.start', event => {
+      if (!mine(event) || !$talk.get().busy) return
+      const reply = $talk.get().reply
+      setTalk({ note: 'Working on the desk…', reply: reply && !reply.endsWith('\n') ? reply + '\n\n' : reply })
+    })
+    ctx.onEvent('message.complete', event => {
+      if (!mine(event)) return
+      const payload = (event && event.payload) || {}
+      const final = [payload.text, payload.rendered].find(value => typeof value === 'string' && value.trim()) || $talk.get().reply
+      const failed = typeof payload.error === 'string' ? payload.error : ''
+      setTalk({ busy: false, note: '', reply: final || (failed ? '' : 'Done.'), error: failed })
+      refresh()
+    })
+    ctx.onEvent('error', event => {
+      if (!mine(event) || !$talk.get().busy) return
+      const payload = (event && event.payload) || {}
+      setTalk({ busy: false, note: '', error: String(payload.message || payload.error || 'Hermes could not answer that.') })
+    })
     ctx.registerMany([
       { id: 'pane', area: 'panes', title: 'Stoa', data: { placement: 'right', width: '340px' }, render: () => h(Pane) },
       { id: 'page', area: 'routes', data: { path: '/stoa' }, render: () => h(Page) },
