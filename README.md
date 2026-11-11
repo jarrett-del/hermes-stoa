@@ -40,14 +40,15 @@ taps a button in Slack you watch the card move.
 
 ![The pipeline board](docs/dashboard-pipeline.jpg)
 
-- **The funnel, live:** companies mapped → leads added → in play → won, with what is due and
-  what has gone quiet underneath.
+- **The number that matters, live:** what is in play, beside mapped → leads → in play → won,
+  with what is due and what has gone quiet underneath.
 - **Pipeline board:** a column per playbook stage. Open a card to see its log, set the next
   step, log a call, advance it, close it with a reason, or snooze it.
 - **Market map:** every segment as a cluster, each company sized by fit and filled in once it
   is in the pipeline. Open one for the evidence and source, then **Add to pipeline**.
 - **Activity:** everything that happened, from Slack clicks, the agent and the web alike.
-- **Light and dark**, with a switch, whatever dashboard theme you run.
+- **Paper and ink.** Neutral in light and dark, with one thin line of colour. A switch picks
+  the mode, whatever dashboard theme you run.
 
 ![The market map](docs/dashboard-market-map.jpg)
 
@@ -57,7 +58,7 @@ cannot start an agent turn, so when a click calls for a draft the task waits on 
 
 | | |
 |---|---|
-| ![A record](docs/dashboard-record.jpg) | ![Dark mode](docs/dashboard-dark.jpg) |
+| ![A record](docs/dashboard-record.jpg) | ![Light mode](docs/dashboard-light.jpg) |
 
 ## What it looks like in chat
 

@@ -63,22 +63,20 @@
   function Hero(props) {
     var s = props.state, t = s.totals, terms = s.playbook.terms, cur = s.playbook.currency;
     var steps = [
-      { n: t.mapped, label: "Mapped", sub: s.markets.length === 1 ? "in 1 market" : "in " + s.markets.length + " markets" },
-      { n: t.tracked, label: "Leads", sub: "added from maps" },
-      { n: t.open, label: "In play", sub: money(t.open_value, cur) || ("open " + terms.deals) },
-      { n: t.won, label: cap(s.playbook.won.label), sub: money(t.won_value, cur) || "so far" }
+      { n: t.mapped, label: "Mapped", sub: s.markets.length === 1 ? "1 market" : s.markets.length + " markets" },
+      { n: t.tracked, label: "Leads", sub: "from the map" },
+      { n: t.open, label: "In play", sub: money(t.open_value, cur) || terms.deals },
+      { n: t.won, label: cap(s.playbook.won.label), sub: money(t.won_value, cur) || "" }
     ];
     return h("section", { className: "stoa-hero" },
       h("div", null,
-        h("div", { className: "stoa-eyebrow" }, "Stoa", h("span", null, "·"), s.playbook.title,
+        h("div", { className: "stoa-eyebrow" }, "Stoa", h("span", null, "//"), s.playbook.title,
           h("span", { className: "stoa-live", "data-off": props.live ? "0" : "1" }, h("b"), props.live ? "Live" : "Paused"),
-          h("button", { className: "stoa-mode", onClick: props.flip, title: "Switch between light and dark" }, props.mode === "dark" ? "☾ Dark" : "☀ Light")),
-        h("h1", { className: "stoa-title" }, h("span", null, "Map the market."), h("span", null, "Find the leads."), h("em", null, "Run the pipeline.")),
+          h("button", { className: "stoa-mode", onClick: props.flip, title: "Switch between light and dark" }, props.mode === "dark" ? "Light" : "Dark")),
+        h("h1", { className: "stoa-title" }, h("span", null, money(t.open_value, cur) || String(t.open)), h("em", null, "in play")),
         h("p", { className: "stoa-sub" },
-          h("b", null, t.open + " " + (t.open === 1 ? terms.deal : terms.deals)), " in play",
-          t.open_value ? [" worth ", h("b", { key: "v" }, money(t.open_value, cur))] : null, ". ",
-          t.due ? h("b", null, t.due + " due") : "Nothing due", t.stale ? [", ", h("b", { key: "s" }, t.stale + " gone quiet")] : null,
-          ". " + t.moves_week + " stage " + (t.moves_week === 1 ? "move" : "moves") + " this week.")),
+          h("span", null, h("b", null, t.open), " open"), h("span", null, h("b", null, t.due), " due"),
+          h("span", null, h("b", null, t.stale), " quiet"), h("span", null, h("b", null, t.moves_week), " moved this week"))),
       h("div", { className: "stoa-funnel" }, steps.map(function (step, i) {
         return h("div", { className: "stoa-step", key: i, "data-on": step.n ? "1" : "0" },
           h("div", { className: "stoa-node" }, i + 1),
@@ -101,18 +99,18 @@
           return h("button", { className: "stoa-row", key: d.id, onClick: function () { open(d.id); } },
             h("i", { className: "stoa-dot", "data-tone": d.next_due < today() ? "bad" : "warn" }), h("strong", null, d.name),
             h("span", null, d.next_step), h("em", null, d.next_due < today() ? "overdue" : "today"));
-        }, "Nothing is due. Enjoy it.")),
+        }, "Nothing due.")),
       h("div", { className: "stoa-panel" }, h("div", { className: "stoa-h" }, "Gone quiet", h("b", null, quiet.length)),
         list(quiet, function (d) {
           return h("button", { className: "stoa-row", key: d.id, onClick: function () { open(d.id); } },
             h("i", { className: "stoa-dot", "data-tone": "warn" }), h("strong", null, d.name),
             h("span", null, d.stage_label), h("em", null, ago(d.last_touch || d.updated_at).replace(" ago", "")));
-        }, "Every open " + s.playbook.terms.deal + " has been touched recently.")),
+        }, "All active.")),
       h("div", { className: "stoa-panel" }, h("div", { className: "stoa-h" }, "Latest moves", h("b", null, s.totals.moves_week)),
         list(recent, function (a) {
           return h("button", { className: "stoa-row", key: a.id, onClick: function () { open(a.deal); } },
             h("i", { className: "stoa-dot", "data-tone": "grad" }), h("strong", null, a.name), h("span", null, a.text), h("em", null, ago(a.at)));
-        }, "No stage moves yet this week.")));
+        }, "No moves yet.")));
   }
 
   // -- pipeline board ---------------------------------------------------------------------------
@@ -138,8 +136,8 @@
     var max = Math.max.apply(null, s.playbook.stages.map(function (st) { return open.filter(function (d) { return d.stage === st.id; }).length; }).concat([1]));
     var closed = s.deals.filter(function (d) { return d.status !== "open" && match(d); }).sort(function (a, b) { return a.stage_at < b.stage_at ? 1 : -1; });
     if (!s.deals.length) {
-      return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "The desk is empty"),
-        h("p", null, "Tell Hermes about a " + s.playbook.terms.deal + ", add one with the New button, or load sample data with ", h("code", null, "hermes stoa demo"), "."));
+      return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "Empty desk"),
+        h("p", null, "Tell Hermes about a " + s.playbook.terms.deal + ", or try ", h("code", null, "hermes stoa demo"), "."));
     }
     return h("div", null,
       h("div", { className: "stoa-board" }, s.playbook.stages.map(function (stage) {
@@ -199,15 +197,15 @@
   function MarketView(props) {
     var s = props.state, q = props.query.toLowerCase();
     if (!s.markets.length) {
-      return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "No market mapped yet"),
-        h("p", null, "Ask Hermes: “We sell X to Y. Map the market for us.” It will segment the market, research companies with evidence, and the map will appear here."));
+      return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "No map yet"),
+        h("p", null, "Ask Hermes: “We sell X to Y. Map the market.”"));
     }
     var market = s.markets.filter(function (m) { return m.id === props.marketId; })[0] || s.markets[0];
     return h("div", null,
       h("div", { className: "stoa-panel stoa-mapwrap" },
         h("div", { className: "stoa-maphead" },
           h("div", null, h("h3", null, market.name), market.brief ? h("p", null, market.brief) : null),
-          h("div", { className: "stoa-chips" }, h(Chip, null, market.counts.mapped + " mapped"), h(Chip, { tone: "grad" }, market.counts.tracked + " in pipeline"),
+          h("div", { className: "stoa-chips", style: { marginTop: 4 } }, h(Chip, null, market.counts.mapped + " mapped"), h(Chip, { tone: "grad" }, market.counts.tracked + " in pipeline"),
             market.counts.dismissed ? h(Chip, null, market.counts.dismissed + " dismissed") : null)),
         h(Sky, { market: market, open: props.openTarget, selected: props.selected })),
       h("div", { className: "stoa-tiles" }, market.segments.map(function (seg) {
@@ -229,7 +227,7 @@
   // -- activity ---------------------------------------------------------------------------------
   function Feed(props) {
     var rows = props.state.activity;
-    if (!rows.length) return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "Nothing has happened yet"), h("p", null, "Stage moves, calls, notes and clicks from Slack show up here as they happen."));
+    if (!rows.length) return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "Quiet so far"), h("p", null, "Moves, calls and clicks land here."));
     return h("div", { className: "stoa-panel stoa-feed" }, rows.map(function (a) {
       return h("div", { className: "stoa-event", key: a.id },
         h("time", null, ago(a.at)), h("i", { className: "stoa-dot", "data-tone": tone(a.kind) }),
@@ -268,7 +266,7 @@
       setBusy(true);
       post("/deal/" + encodeURIComponent(props.id) + "/act", body).then(function (r) {
         if (r && r.notice) props.say(r.notice);
-        else if (r && r.parked) props.say("Saved. Hermes will write the draft the next time it opens this record.");
+        else if (r && r.parked) props.say("Saved. Draft waiting for Hermes.");
         if (done) done();
         return props.refresh().then(load);
       }).catch(function (e) { props.say(String(e && e.message || e)); }).then(function () { setBusy(false); });
@@ -287,7 +285,7 @@
         h("div", { className: "stoa-meterlabel" }, h("span", null, deal.stage_label + (deal.lost_reason ? " · " + deal.lost_reason : "")),
           h("span", null, open && deal.position >= 0 ? (deal.position + 1) + " of " + pb.stages.length : "in stage " + ago(deal.stage_at).replace(" ago", "")))),
       h("div", { className: "stoa-body" },
-        deal.pending_task ? h("div", { className: "stoa-note" }, h("b", null, "A draft is waiting. "), "Open this " + pb.terms.deal + " with Hermes in chat (“show me " + deal.name.split(" ")[0] + "”) and it will write it.") : null,
+        deal.pending_task ? h("div", { className: "stoa-note" }, h("b", null, "Draft waiting. "), "Ask Hermes: “show me " + deal.name.split(" ")[0] + "”.") : null,
         facts.length ? h("div", { className: "stoa-facts" }, facts.map(function (p) {
           var v = String(p[1]);
           return h("div", { key: p[0] }, h("small", null, p[0]),
@@ -295,11 +293,11 @@
         })) : null,
         open ? h("div", { className: "stoa-sec" }, h("label", null, "Next step"),
           h("div", { className: "stoa-line" },
-            h("input", { className: "stoa-input", value: step, placeholder: "The single next action", onChange: function (e) { setStep(e.target.value); } }),
+            h("input", { className: "stoa-input", value: step, placeholder: "Next action", onChange: function (e) { setStep(e.target.value); } }),
             h("input", { className: "stoa-input", type: "date", style: { flex: "none", width: 150 }, value: due, onChange: function (e) { setDue(e.target.value); } }),
             h(Btn, { disabled: busy || (step === (deal.next_step || "") && due === (deal.next_due || "")), onClick: function () { act({ verb: "update", next_step: step, next_due: due }); } }, "Save"))) : null,
-        h("div", { className: "stoa-sec" }, h("label", null, "Log something"),
-          h("textarea", { className: "stoa-area", value: note, placeholder: "What happened? A call, an email, a thought.", onChange: function (e) { setNote(e.target.value); } }),
+        h("div", { className: "stoa-sec" }, h("label", null, "Log"),
+          h("textarea", { className: "stoa-area", value: note, placeholder: "What happened?", onChange: function (e) { setNote(e.target.value); } }),
           h("div", { className: "stoa-line", style: { marginTop: 8 } },
             h("select", { className: "stoa-select", value: kind, onChange: function (e) { setKind(e.target.value); } },
               ["note", "call", "email", "meeting", "task"].map(function (k) { return h("option", { key: k, value: k }, cap(k)); })),
@@ -325,14 +323,14 @@
     function go(verb) {
       setBusy(true);
       post("/target/" + encodeURIComponent(c.id) + "/" + verb, {}).then(function (r) {
-        if (verb === "track") props.say(r.ok ? c.company + " is in the pipeline. Hermes will find the buyer when you next open it in chat." : (r.notice || "Could not add it."));
-        else props.say(c.company + " dismissed from the map.");
+        if (verb === "track") props.say(r.ok ? c.company + " added. Hermes will find the buyer." : (r.notice || "Could not add it."));
+        else props.say(c.company + " dismissed.");
         props.close(); return props.refresh().then(function () { if (verb === "track" && r.deal) props.openDeal(r.deal); });
       }).catch(function (e) { props.say(String(e && e.message || e)); setBusy(false); });
     }
     var facts = [["Segment", c.segment], ["Size", c.size], ["Location", c.location], ["Website", c.domain], ["Signal", c.signal]].filter(function (p) { return p[1]; });
     return h(Shell, { close: props.close, label: c.company },
-      h("header", null, h("div", { className: "stoa-eyebrow" }, "On the map", h(Fit, { fit: c.fit }), c.status === "tracked" ? h(Chip, { tone: "grad" }, "in pipeline") : null),
+      h("header", null, h("div", { className: "stoa-eyebrow" }, "Fit", h(Fit, { fit: c.fit }), c.status === "tracked" ? h(Chip, { tone: "grad" }, "in pipeline") : null),
         h("h3", null, c.company), h("p", null, [c.size, c.location].filter(Boolean).join(" · ") || " ")),
       h("div", { className: "stoa-body" },
         c.why ? h("div", { className: "stoa-sec" }, h("label", null, "Why it fits"), h("p", { className: "stoa-quote" }, "“" + c.why + "”")) : null,
@@ -341,7 +339,7 @@
         })),
         c.source ? h("div", { className: "stoa-sec" }, h("label", null, "Evidence"),
           /^https?:/.test(c.source) ? h("a", { href: c.source, target: "_blank", rel: "noreferrer", style: { color: "var(--st-b)", wordBreak: "break-all" } }, c.source) : h("span", null, c.source)) : null,
-        h("div", { className: "stoa-note" }, "Adding it creates a " + pb.terms.deal + " at ", h("b", null, pb.stages[0].label), ", carries this evidence into its log, and leaves Hermes the job of finding the buyer and drafting a first note.")),
+        h("div", { className: "stoa-note" }, "Enters at ", h("b", null, pb.stages[0].label), ". Hermes finds the buyer.")),
       h("div", { className: "stoa-foot" },
         c.status === "tracked"
           ? h(Btn, { kind: "primary", onClick: function () { props.close(); if (c.deal) props.openDeal(c.deal); } }, "Open in pipeline  →")
@@ -364,7 +362,7 @@
         .catch(function (e) { props.say(String(e && e.message || e)); setBusy(false); });
     }
     return h(Shell, { close: props.close, label: "New record" },
-      h("header", null, h("div", { className: "stoa-eyebrow" }, "New " + pb.terms.deal), h("h3", null, f.name || "Who is it?"), h("p", null, f.company || " ")),
+      h("header", null, h("div", { className: "stoa-eyebrow" }, "New " + pb.terms.deal), h("h3", null, f.name || "New"), h("p", null, f.company || " ")),
       h("div", { className: "stoa-body" }, h("div", { className: "stoa-form" },
         field("name", "Name", { wide: true, input: { autoFocus: true, placeholder: "Dana Whitfield" } }),
         field("company", pb.terms.company), field("group", cap(pb.terms.group)),
@@ -372,8 +370,8 @@
         h("div", { key: "stage" }, h("div", { className: "stoa-sec" }, h("label", null, "Stage"),
           h("select", { className: "stoa-select", style: { width: "100%" }, value: f.stage, onChange: function (e) { setF(Object.assign({}, f, { stage: e.target.value })); } },
             pb.stages.map(function (st) { return h("option", { key: st.id, value: st.id }, st.label); })))),
-        field("next_step", "Next step", { wide: true, input: { placeholder: "The single next action" } }))),
-      h("div", { className: "stoa-foot" }, h(Btn, { kind: "primary", disabled: busy || !f.name.trim(), onClick: save }, "Add to the desk  →")));
+        field("next_step", "Next step", { wide: true, input: { placeholder: "Next action" } }))),
+      h("div", { className: "stoa-foot" }, h(Btn, { kind: "primary", disabled: busy || !f.name.trim(), onClick: save }, "Add  →")));
   }
 
   // -- page -------------------------------------------------------------------------------------
@@ -419,7 +417,7 @@
 
     var body;
     if (!state) {
-      body = h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, error ? "The desk is not answering" : "Opening the desk…"),
+      body = h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, error ? "No answer" : "Opening…"),
         error ? h("p", null, error) : null);
     } else {
       var tabs = [["pipeline", "Pipeline", state.totals.open], ["market", "Market map", state.totals.mapped], ["activity", "Activity", null]];
@@ -434,7 +432,7 @@
             state.markets.map(function (m) { return h("option", { key: m.id, value: m.id }, m.name); })) : null,
           h("span", { className: "stoa-grow" }),
           view !== "activity" ? h("input", { className: "stoa-input", style: { width: 220 }, placeholder: "Filter…", value: query, onChange: function (e) { setQuery(e.target.value); } }) : null,
-          h(Btn, { kind: "primary", onClick: function () { setPanel({ kind: "new" }); } }, "+ New " + state.playbook.terms.deal)),
+          h(Btn, { kind: "primary", onClick: function () { setPanel({ kind: "new" }); } }, "New")),
         view === "pipeline" ? h(Board, { state: state, query: query, open: openDeal, moved: moved }) : null,
         view === "market" ? h(MarketView, { state: state, query: query, marketId: marketId, selected: panel && panel.kind === "target" ? panel.target.id : "",
           openTarget: function (c) { setPanel({ kind: "target", target: c }); } }) : null,
