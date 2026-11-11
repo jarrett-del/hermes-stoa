@@ -60,6 +60,14 @@ The sample data shows two businesses at a realistic size. Everything in it is ma
 Loading one switches the desk to its playbook and replaces the other, so the board always reads
 as one business. `hermes stoa demo --clear` removes the sample data and leaves your own records.
 
+The recruiting agency:
+
+![The recruiting example: $1.2M in open fees across eight searches](docs/desktop-pipeline.jpg)
+
+The company selling a fraud prevention tool:
+
+![The software example: $2.5M of open pipeline](docs/desktop-saas.jpg)
+
 ## Talk to it, and watch the desk change
 
 In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
@@ -83,9 +91,7 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 Switch it on once under **Capabilities → Plugins → Stoa**. It is drawn with the app's own theme
 variables, so it follows whatever theme you run.
 
-![The pipeline page](docs/desktop-pipeline.jpg)
-
-![The market map page](docs/desktop-market.jpg)
+![The market map page, here for the fraud prevention example](docs/desktop-market.jpg)
 
 ## The web dashboard tab
 
