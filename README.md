@@ -4,7 +4,6 @@
 
 **A lightweight CRM you talk to, inside [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
 
-> *στοά*: the colonnade beside the agora, where the day's business gets done.
 
 A two-person sales team does not need a CRM with forty tabs. It needs to know who to sell to,
 the pipeline kept honest, the follow-ups written, and the calls turned into next steps, in the
