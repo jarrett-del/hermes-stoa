@@ -113,8 +113,8 @@ already running when you installed Stoa, restart it once and the tab appears.
   company uses today. Open a company for its requirements checklist, buyers and source, then
   **Add to pipeline**. **Download page** saves the map as a web page.
 - **Activity:** everything that happened, from Slack clicks, the agent and the web alike.
-- **Paper and ink.** Neutral in light and dark, with one thin line of colour. A switch picks
-  the mode, whatever dashboard theme you run.
+- **Paper and ink.** Neutral in light and dark, with one quiet line that runs from white through
+  grey to olive. A switch picks the mode, whatever dashboard theme you run.
 
 ![The market map](docs/dashboard-market-map.jpg)
 
