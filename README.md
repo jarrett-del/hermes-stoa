@@ -88,8 +88,8 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 
 ![A list waiting for review](docs/desktop-intake.jpg)
 
-Switch it on once under **Capabilities → Plugins → Stoa**. It is drawn with the app's own theme
-variables, so it follows whatever theme you run.
+Switch it on once under **Capabilities → Plugins → Stoa**. Every colour comes from the app's own
+theme, accent included, so it looks like part of Hermes in whatever theme you run.
 
 ![The market map page, here for the fraud prevention example](docs/desktop-market.jpg)
 
@@ -113,8 +113,8 @@ already running when you installed Stoa, restart it once and the tab appears.
   company uses today. Open a company for its requirements checklist, buyers and source, then
   **Add to pipeline**. **Download page** saves the map as a web page.
 - **Activity:** everything that happened, from Slack clicks, the agent and the web alike.
-- **Paper and ink.** Neutral in light and dark, with one quiet line that runs from white through
-  grey to olive. A switch picks the mode, whatever dashboard theme you run.
+- **Paper and ink.** Neutral in light and dark, with one quiet line that ends in the Hermes blue.
+  A switch picks the mode, whatever dashboard theme you run.
 
 ![The market map](docs/dashboard-market-map.jpg)
 

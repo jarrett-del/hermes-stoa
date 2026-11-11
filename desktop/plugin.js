@@ -120,9 +120,14 @@ async function track(target, sessionId) {
 
 // -- look: the app's own variables only, so every theme carries it -------------------------------
 const CSS = `
-/* Colour: the theme's own text and strokes, and one accent. Olive is fixed; the rest follows the theme. */
-.stoa { font-size: 13px; line-height: 1.45; color: var(--ui-text-primary); --stoa-olive-fill: #7f8c50;
-  --stoa-olive: color-mix(in oklab, #7f8c50 74%, var(--ui-text-primary)); }
+/* Colour: all of it comes from the app's theme. One accent, the app's own (--ui-accent), used the way the
+   app uses it: filled for the main action, tinted with a hairline for "you are here". */
+.stoa { font-size: 13px; line-height: 1.45; color: var(--ui-text-primary);
+  --stoa-accent: var(--ui-accent);
+  --stoa-on-accent: var(--dt-midground-foreground, #fff);
+  --stoa-accent-text: color-mix(in oklab, var(--ui-accent) 58%, var(--ui-text-primary));
+  --stoa-accent-soft: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  --stoa-accent-line: color-mix(in srgb, var(--ui-accent) 58%, transparent); }
 .stoa *, .stoa *::before { box-sizing: border-box; }
 .stoa-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .stoa-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px 18px; }
@@ -132,17 +137,18 @@ const CSS = `
 .stoa-figure { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; margin-top: 4px; }
 .stoa-figure small { font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--ui-text-tertiary); margin-left: 7px; }
 .stoa-page .stoa-figure { font-size: 44px; }
-.stoa-rule { height: 2px; border-radius: 2px; margin: 12px 0 4px; background: linear-gradient(90deg, var(--ui-text-primary), var(--ui-text-tertiary) 46%, var(--stoa-olive-fill)); }
+.stoa-rule { height: 2px; border-radius: 2px; margin: 12px 0 4px; background: linear-gradient(90deg, var(--ui-text-primary), var(--ui-text-tertiary) 46%, var(--stoa-accent)); }
 .stoa-sub { color: var(--ui-text-tertiary); font-size: 12px; }
 .stoa-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stoa-sec { margin-top: 16px; }
 .stoa-sechead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 8px 4px; }
 .stoa-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.stoa-row:hover, .stoa-row[data-open="1"] { background: var(--ui-row-hover-background); }
+.stoa-row:hover { background: var(--ui-row-hover-background); }
+.stoa-row[data-open="1"] { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); }
 .stoa-dot { flex: none; width: 6px; height: 6px; margin-top: 6px; border-radius: 50%; background: var(--ui-text-quaternary); }
 .stoa-dot[data-tone="bad"] { background: var(--ui-red); }
 .stoa-dot[data-tone="warn"] { background: var(--ui-orange); }
-.stoa-dot[data-tone="good"] { background: var(--stoa-olive-fill); }
+.stoa-dot[data-tone="good"] { background: var(--stoa-accent); }
 .stoa-grow { flex: 1; min-width: 0; }
 .stoa-name { font-weight: 550; }
 .stoa-num { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ui-text-secondary); white-space: nowrap; }
@@ -153,7 +159,7 @@ const CSS = `
 .stoa-inchat { max-width: 460px; margin: 6px 0; }
 .stoa-meter { display: flex; gap: 3px; margin: 8px 0 4px; }
 .stoa-meter i { flex: 1; height: 3px; border-radius: 2px; background: var(--ui-stroke-secondary); }
-.stoa-meter i[data-on="1"] { background: var(--ui-text-primary); }
+.stoa-meter i[data-on="1"] { background: var(--stoa-accent); }
 .stoa-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 14px 0 2px; padding-top: 12px; border-top: 1px solid var(--ui-stroke-tertiary); }
 .stoa-facts span { display: block; overflow-wrap: anywhere; }
 .stoa-next { margin-top: 10px; }
@@ -163,14 +169,14 @@ const CSS = `
 .stoa-btn, .stoa-select { height: 28px; padding: 0 10px; border: 1px solid var(--ui-stroke-primary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; cursor: pointer; }
 .stoa-btn, .stoa-select { transition: background .15s ease, opacity .15s ease; }
 .stoa-btn:hover, .stoa-select:hover { background: var(--ui-control-hover-background); }
-.stoa-btn[data-kind="primary"]:hover { background: var(--ui-text-primary); opacity: .88; }
-.stoa-btn[data-kind="primary"] { border-color: var(--ui-text-primary); background: var(--ui-text-primary); color: var(--ui-bg-editor); font-weight: 550; }
+.stoa-btn[data-kind="primary"]:hover { background: var(--stoa-accent); opacity: .88; }
+.stoa-btn[data-kind="primary"] { border-color: var(--stoa-accent); background: var(--stoa-accent); color: var(--stoa-on-accent); font-weight: 550; }
 .stoa-btn[data-kind="quiet"] { border-color: transparent; color: var(--ui-text-secondary); }
 .stoa-btn:disabled, .stoa-select:disabled { opacity: .5; cursor: default; }
 .stoa-chip { display: inline-block; padding: 1px 6px; border: 1px solid var(--ui-stroke-secondary); border-radius: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ui-text-tertiary); white-space: nowrap; }
 .stoa-chip[data-tone="bad"] { color: var(--ui-red); border-color: var(--ui-red); }
 .stoa-chip[data-tone="warn"] { color: var(--ui-orange); border-color: var(--ui-orange); }
-.stoa-chip[data-tone="good"] { color: var(--stoa-olive); border-color: var(--stoa-olive); }
+.stoa-chip[data-tone="good"] { color: var(--stoa-accent-text); border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
 .stoa-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .stoa-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--ui-stroke-tertiary); }
 .stoa-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin: 22px 0 6px; border-top: 1px solid var(--ui-stroke-secondary); border-bottom: 1px solid var(--ui-stroke-secondary); }
@@ -179,9 +185,9 @@ const CSS = `
 .stoa-tabs { display: inline-flex; gap: 2px; margin: 22px 0 18px; padding: 3px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
 .stoa-tab { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 15px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 13px; cursor: pointer; outline: none; transition: background .15s ease, color .15s ease; }
 .stoa-tab:hover { color: var(--ui-text-primary); background: var(--ui-control-hover-background); }
-.stoa-tab[data-on="1"], .stoa-tab[data-on="1"]:hover { background: var(--ui-text-primary); color: var(--ui-bg-editor); font-weight: 600; }
+.stoa-tab[data-on="1"], .stoa-tab[data-on="1"]:hover { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); color: var(--ui-text-primary); font-weight: 600; }
 .stoa-tab small { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; opacity: .6; }
-.stoa button:focus-visible, .stoa select:focus-visible, .stoa input:focus-visible { outline: 2px solid var(--stoa-olive); outline-offset: 2px; }
+.stoa button:focus-visible, .stoa select:focus-visible, .stoa input:focus-visible { outline: 2px solid var(--stoa-accent-line); outline-offset: 2px; }
 .stoa-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
 .stoa-split[data-side="1"] { grid-template-columns: minmax(0, 1fr) 360px; }
 .stoa-split > .stoa-box { position: sticky; top: 0; max-height: calc(100vh - 120px); overflow-y: auto; }
@@ -191,7 +197,7 @@ const CSS = `
 .stoa-card { transition: border-color .15s ease, transform .15s ease; }
 .stoa-card:hover, .stoa-card[data-open="1"] { border-color: var(--ui-stroke-primary); }
 .stoa-card:hover { transform: translateY(-1px); }
-.stoa-card[data-open="1"] { box-shadow: inset 2px 0 0 var(--stoa-olive-fill); }
+.stoa-card[data-open="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
 .stoa-cardfoot { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 12px; }
 .stoa-cardfoot em { flex: none; font-style: normal; font-size: 11px; color: var(--ui-text-tertiary); }
 .stoa-card h5 { display: flex; justify-content: space-between; gap: 8px; margin: 0; font-size: 13px; font-weight: 550; }
@@ -210,12 +216,12 @@ const CSS = `
 .stoa-filters .stoa-input { flex: 1 1 120px; min-width: 0; height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }\n.stoa-filters .stoa-input:focus { border-color: var(--ui-stroke-primary); }\n.stoa-filters .stoa-input::placeholder { color: var(--ui-text-quaternary); }
 .stoa-filters .stoa-select { max-width: 150px; }
 .stoa-toggle { height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
-.stoa-toggle[data-on="1"] { border-color: var(--stoa-olive); color: var(--ui-text-primary); background: color-mix(in srgb, var(--stoa-olive-fill) 20%, transparent); }
+.stoa-toggle[data-on="1"] { border-color: var(--stoa-accent-line); color: var(--ui-text-primary); background: var(--stoa-accent-soft); }
 .stoa-funnel { margin: 0 0 20px; padding: 16px 18px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
 .stoa-funnel svg { display: block; width: 100%; height: auto; overflow: visible; }
 .stoa-funnel text { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.stoa-fn-block { fill: var(--ui-text-primary); opacity: .58; }
-.stoa-fn-won { fill: var(--stoa-olive-fill); }
+.stoa-fn-block { fill: var(--ui-text-primary); opacity: .5; }
+.stoa-fn-won { fill: var(--stoa-accent); }
 .stoa-fn-link { fill: var(--ui-text-primary); opacity: .13; }
 .stoa-fn-label { font-size: 9.5px; letter-spacing: .12em; fill: var(--ui-text-tertiary); }
 .stoa-fn-num { font-size: 15px; font-weight: 600; fill: var(--ui-text-primary); font-family: inherit !important; }
@@ -226,7 +232,7 @@ const CSS = `
 .stoa-list { max-height: 340px; overflow-y: auto; margin-top: 10px; }
 .stoa-pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--ui-stroke-tertiary); cursor: pointer; }
 .stoa-pick:first-child { border-top: 0; }
-.stoa-pick input { flex: none; margin-top: 3px; accent-color: var(--stoa-olive-fill); }
+.stoa-pick input { flex: none; margin-top: 3px; accent-color: var(--stoa-accent); }
 .stoa-pick[data-off="1"] .stoa-grow { opacity: .5; }
 .stoa-rest { margin-top: 10px; font-size: 12px; color: var(--ui-text-tertiary); }
 .stoa-rest summary { cursor: pointer; }

@@ -9,15 +9,15 @@ import math
 from html import escape as esc
 
 CSS = """
-:root { --bg:#ffffff; --ink:#1b1c20; --soft:#4b4e58; --mute:#8a8e9b; --line:#e5e7ec; --card:#f6f7f9; --pale:#d9d8d0; --olive:#667338; color-scheme: light; }
-@media (prefers-color-scheme: dark) { :root { --bg:#0a0b0d; --ink:#e8e6de; --soft:#b3b1aa; --mute:#7d7e80; --line:#24262a; --card:#121316; --pale:#f1efe7; --olive:#7f8c50; color-scheme: dark; } }
+:root { --bg:#ffffff; --ink:#1b1c20; --soft:#4b4e58; --mute:#8a8e9b; --line:#e5e7ec; --card:#f6f7f9; --pale:#d6d9e0; --accent:#0053fd; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0a0b0d; --ink:#e8e6de; --soft:#b3b1aa; --mute:#7d7e80; --line:#24262a; --card:#121316; --pale:#eef0f5; --accent:#4a84fe; color-scheme: dark; } }
 * { box-sizing: border-box; } html, body { margin: 0; background: var(--bg); color: var(--ink); }
 body { font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 1060px; margin: 0 auto; padding: 44px 32px 80px; -webkit-font-smoothing: antialiased; }
 .mono, th, .eyebrow, .stat small, .bar em, .tag { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--mute); font-style: normal; font-weight: 400; }
 h1 { font: 400 clamp(40px, 6vw, 72px)/.98 Didot, "Bodoni 72", "Playfair Display", Georgia, serif; letter-spacing: -.02em; margin: 18px 0 14px; }
 h2 { font-size: 13px; font-weight: 600; letter-spacing: -.005em; margin: 0 0 14px; padding-top: 14px; border-top: 1px solid var(--ink); }
 p { margin: 0 0 10px; color: var(--soft); max-width: 72ch; } a { color: inherit; text-underline-offset: 3px; text-decoration-color: var(--mute); }
-section { margin-top: 44px; } .rule { height: 2px; margin: 28px 0 0; border-radius: 2px; background: linear-gradient(90deg, var(--pale), #8f8f87 46%, var(--olive)); }
+section { margin-top: 44px; } .rule { height: 2px; margin: 28px 0 0; border-radius: 2px; background: linear-gradient(90deg, var(--pale), #8b909c 46%, var(--accent)); }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0; border-top: 1px solid var(--line); margin-top: 26px; }
 .stat { padding: 16px 16px 4px 0; } .stat b { display: block; font: 400 40px/1 Didot, "Bodoni 72", Georgia, serif; font-variant-numeric: lining-nums; } .stat small { display: block; margin-top: 8px; color: var(--ink); }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; } @media (max-width: 760px) { .two { grid-template-columns: 1fr; } body { padding: 28px 18px 60px; } }

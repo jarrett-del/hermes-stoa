@@ -8,14 +8,14 @@
   --st-card: #f6f7f9;
   --st-raise: #ffffff;
   --st-wash: #e9ecf4;
-  /* One quiet line of colour: pale, to grey, to olive. */
-  --st-spec-a: #d9d8d0;
-  --st-spec-b: #8f8f87;
-  --st-spec-c: #667338;
+  /* One quiet line of colour: pale, to grey, to the Hermes blue. */
+  --st-spec-a: #d6d9e0;
+  --st-spec-b: #8b909c;
+  --st-spec-c: #0053fd;
   --st-spectrum: linear-gradient(90deg, var(--st-spec-a), var(--st-spec-b) 46%, var(--st-spec-c));
   --st-warn: #a8690a;
   --st-bad: #b3372f;
-  --st-good: #5f6b38;
+  --st-good: #0a4fe0;
   --st-serif: "Didot", "Bodoni 72", "Playfair Display", "Hoefler Text", "Iowan Old Style", Georgia, serif;
   --st-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --st-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -40,12 +40,12 @@
   --st-card: #121316;
   --st-raise: #17181c;
   --st-wash: #1e2027;
-  --st-spec-a: #f1efe7;
-  --st-spec-b: #8f8f87;
-  --st-spec-c: #7f8c50;
+  --st-spec-a: #eef0f5;
+  --st-spec-b: #8b909c;
+  --st-spec-c: #4a84fe;
   --st-warn: #d9a441;
   --st-bad: #e0766c;
-  --st-good: #a3ad74;
+  --st-good: #7ea6ff;
 }
 .stoa *, .stoa *::before, .stoa *::after { box-sizing: border-box; }
 
