@@ -135,13 +135,29 @@ class Intake:
             out["note"] = "Show this review as it is, then ask whether to apply it. " + waiting
         return out
 
+    def propose_file(self, name: str, text: str) -> dict:
+        """A CSV handed straight to the desk (dropped on the page): the same review, with no model in between."""
+        name = _text(name, 80) or "a list"
+        first = text.lstrip("\ufeff").split("\n", 1)[0]
+        rows, problems = self._parse_csv(text.lstrip("\ufeff"), tab=name.lower().endswith(".tsv") or ("\t" in first and "," not in first))
+        if not rows:
+            return {"ok": False, "error": "no rows could be read from %s; it needs a header row and at least one more" % name}
+        out = self.propose({"rows": rows, "source": name}, {})
+        if out.get("ok") and problems:
+            out["problems"] = problems[:20]
+        return out
+
     def _read_csv(self, path: Path) -> tuple:
         data = path.read_bytes()
         try:
             text = data.decode("utf-8-sig")
         except UnicodeDecodeError:      # a CSV saved by Excel on Windows
             text = data.decode("cp1252", errors="replace")
-        dialect = "excel-tab" if path.suffix.lower() == ".tsv" else "excel"
+        return self._parse_csv(text, tab=path.suffix.lower() == ".tsv")
+
+    @staticmethod
+    def _parse_csv(text: str, tab: bool = False) -> tuple:
+        dialect = "excel-tab" if tab else "excel"
         rows, problems = [], []
         for number, raw in enumerate(csv.DictReader(io.StringIO(text, newline=""), dialect=dialect), start=2):
             if None in raw:

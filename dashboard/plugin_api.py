@@ -210,6 +210,23 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
     raise HTTPException(400, "unknown action")
 
 
+@router.post("/intake")
+def intake_file(body: dict = Body(...)) -> dict:
+    """A CSV dropped on the page: the desk reads it and holds it for approval, like a list the agent read."""
+    d = desk()
+    text = str((body or {}).get("text") or "")
+    if len(text) > 2_000_000:
+        raise HTTPException(413, "that list is over 2 MB; send it in parts")
+    result = d.intake.propose_file(str((body or {}).get("name") or ""), text)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not read that list")
+    counts = result.get("counts") or {}
+    waiting = bool(counts.get("new") or counts.get("update"))
+    return {"ok": True, "id": result.get("id"), "counts": counts, "waiting": waiting, "problems": result.get("problems") or [],
+            "headline": (d.intake.headline(d.store.intake_get(result["id"])) + ". Review it at the top of the page.") if waiting
+            else "Nothing in %s would change the desk." % (str((body or {}).get("name") or "that list"))}
+
+
 @router.get("/intake/{intake_id}")
 def intake(intake_id: str) -> dict:
     """A list waiting for approval (or already dealt with): what each row would do."""

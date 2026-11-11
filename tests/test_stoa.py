@@ -1309,6 +1309,27 @@ class DashboardApiTests(unittest.TestCase):
         with self.assertRaises(self.api.HTTPException):
             self.api.act(nadia, {"verb": "move", "stage": "no-such-stage"})
 
+    def test_a_csv_dropped_on_the_page_becomes_a_review_without_a_model(self):
+        before = self.desk.store.count()
+        text = ("Name,Company,Search,Email,Stage\n"
+                "Ada Quill,Fathom Data,Staff Backend · Northwind,ada.quill@fathomdata.example,\n"
+                "Dana Whitfield,Kestrel Labs,,,Submitted\n"
+                ",,,,\n")
+        held = self.api.intake_file({"name": "badge scans.csv", "text": text})
+        self.assertEqual((held["ok"], held["waiting"], held["counts"]["new"], held["counts"]["update"]), (True, True, 1, 1))
+        self.assertIn("badge scans.csv", held["headline"])
+        self.assertEqual(self.desk.store.count(), before)                                    # held for approval, nothing written
+        self.assertEqual([item["id"] for item in self.api.state()["intakes"]], [held["id"]])
+        applied = self.api.intake_act(held["id"], "apply", {})
+        self.assertEqual((applied["added"], applied["updated"]), (1, 1))
+        self.assertEqual(self.desk.store.find("Dana Whitfield")["stage"], "submitted")
+        tabbed = self.api.intake_file({"name": "people.tsv", "text": "Name\tCompany\nBen Okoro\tHarbor Systems\n"})
+        self.assertEqual(tabbed["counts"]["new"], 1)
+        again = self.api.intake_file({"name": "again.csv", "text": "Name,Company\nAda Quill,Fathom Data\n"})
+        self.assertEqual((again["waiting"], again["headline"]), (False, "Nothing in again.csv would change the desk."))
+        with self.assertRaises(self.api.HTTPException):
+            self.api.intake_file({"name": "empty.csv", "text": "Name,Company\n"})
+
     def test_a_click_in_the_app_saves_and_returns_the_line_to_send_into_chat(self):
         dana = self.desk.store.find("Dana Whitfield")["id"]
         told = []

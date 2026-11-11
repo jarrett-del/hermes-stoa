@@ -83,12 +83,17 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   its buttons, not a description of it. *"Show me the market map"* draws the map the same way.
 - **A page of its own.** **Stoa** in the sidebar opens the funnel with its conversion rates, the
   pipeline board with the same filters, the market map with its reading, and the activity log.
-- **Talk to the page.** The box at the top of the page takes the same sentences the chat does:
-  *"Add Nadia Rahim from Larkspur to the Northwind search"*, *"what needs me today?"*. The reply
-  appears under the box and the board redraws. The page keeps its own conversation for this,
-  called **Stoa desk**, listed in the sidebar like any other.
-- **Or do it by hand.** **+ New** adds a record from a short form. **Edit** on any record changes
-  its next step, stage, value, owner and the rest, and adds a line to its log. No model involved.
+- **Talk to the page.** A dock at the foot of the page takes the same sentences the chat does:
+  *"Add Nadia Rahim from Larkspur to the Northwind search"*, *"what needs me today?"*. The
+  conversation opens above the dock and the board redraws behind it. The page keeps its own
+  conversation for this, called **Stoa desk**, listed in the sidebar like any other, one click
+  away when you want the full chat.
+- **Say it or hand it over.** The microphone dictates into the dock where the browser has speech
+  recognition. Drop a CSV anywhere on the page, or attach one, and the desk reads it itself and
+  shows the review, with no model in between. A small text file goes along with your message.
+- **Or do it by hand.** Drag a card to another column to move it. **+ New** adds a record from a
+  short form. **Edit** on any record changes its next step, stage, value, owner and the rest, and
+  adds a line to its log. Press a stage in the funnel to narrow the board to it. No model involved.
 
 ![Adding a candidate by hand on the page](docs/desktop-new.jpg)
 
@@ -405,6 +410,10 @@ What the plugin does that you would want to know before installing it:
   phrase for a market-map search) and `public-api.granola.ai` (reads your note list and note
   summaries; transcripts are never requested). No telemetry, no usage reporting, no other
   outbound requests. Research the agent does with its own web tools is Hermes's, not the plugin's.
+- **Dictation.** The microphone in the page's dock uses your browser's own speech recognition,
+  not anything of the plugin's or the agent's. In Chrome that means the audio goes to Google's
+  speech service while you dictate. It listens only while the button is on, and the button is not
+  shown where the browser has no speech recognition.
 - **Paid lookups.** People Data Labs charges per result. Every lookup counts against
   `pdl_monthly_cap`, and a buyer lookup returns at most five people.
 - **Slack.** Cards are posted and updated through the Slack app Hermes is already connected
@@ -433,7 +442,7 @@ What the plugin does that you would want to know before installing it:
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.7
+## Limits in 0.8
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -450,14 +459,16 @@ What the plugin does that you would want to know before installing it:
 - A team shares one desk. There are owners on records, but no per-person permissions.
 - The activity sweep is only as good as the tools your Hermes has connected and the model reading
   the mail. It summarises; check the record's log against the email when it matters.
-- The talk box on the page runs a turn of your agent's model, the same as typing in a chat.
+- The dock on the page runs a turn of your agent's model, the same as typing in a chat. It takes
+  CSV and small text files; a PDF, an image or a spreadsheet goes through the full chat, which is
+  one click away. Dictation is not available in the Desktop app; the full chat's microphone is.
 
 ## Development
 
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 120 tests, no network
+python3 -m unittest discover -s tests     # 121 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

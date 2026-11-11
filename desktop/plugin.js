@@ -12,23 +12,24 @@
  * keeps a conversation of its own for its talk box (see "talking to the desk" below).
  */
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
-import { createElement as h, useState } from 'react'
+import { createElement as h, useEffect, useRef, useState } from 'react'
 
 let rest = null // ctx.rest, set in register()
 let storage = null // ctx.storage, set in register()
 
 // What the pane and the page are narrowed to. One store, so both show the same thing.
-const NO_FILTER = { text: '', owner: '', group: '', due: false, quiet: false }
+const NO_FILTER = { text: '', owner: '', group: '', stage: '', due: false, quiet: false }
 const $filter = atom({ ...NO_FILTER })
 function setFilter(patch) {
   const next = { ...$filter.get(), ...patch }
   $filter.set(next)
   if (storage) storage.set('filter', next)
 }
-const filtering = f => Boolean(f.text || f.owner || f.group || f.due || f.quiet)
+const filtering = f => Boolean(f.text || f.owner || f.group || f.stage || f.due || f.quiet)
 function matches(deal, f) {
   if (f.owner && deal.owner !== f.owner) return false
   if (f.group && deal.group !== f.group) return false
+  if (f.stage && deal.stage !== f.stage) return false
   if ((f.due || f.quiet) && !((f.due && deal.due) || (f.quiet && deal.stale && !deal.due))) return false
   if (!f.text) return true
   return [deal.name, deal.company, deal.group, deal.next_step, deal.owner, deal.stage_label].join(' ').toLowerCase().includes(f.text.toLowerCase())
@@ -122,14 +123,25 @@ async function track(target, sessionId) {
 // -- talking to the desk from its own page -------------------------------------------------------
 // The page has no conversation beside it, so it keeps one of its own: an ordinary session named
 // "Stoa desk", made and resumed through the gateway the way the app makes any session, and listed
-// in the sidebar like any other. What is typed on the page is submitted to it, and the reply is
-// read off the gateway's event stream (see register) and shown in place.
-const TALK_IDLE = { busy: false, you: '', reply: '', note: '', error: '' }
-const $talk = atom({ ...TALK_IDLE })
+// in the sidebar like any other. What is typed (or dictated) into the dock at the foot of the page
+// is submitted to it, and the reply is read off the gateway's event stream (see register) and
+// shown above the dock.
+const $talk = atom({ busy: false, open: false, turns: [] })
+const $attached = atom(null) // a small text file waiting to go with the next message: { name, text }
 const talkSession = { runtime: '', stored: '', primed: false, turn: 0 }
 const setTalk = patch => $talk.set({ ...$talk.get(), ...patch })
 const PRIME = 'This conversation is the talk box on the Stoa desk page. Act on the Stoa desk with the gtm tools, and answer in a few '
   + 'short lines: the page already shows the pipeline.\n\n'
+
+/** Change the turn being answered, which is always the last one. */
+function setTurn(patch) {
+  const talk = $talk.get()
+  if (!talk.turns.length) return
+  const turns = talk.turns.slice()
+  const last = turns[turns.length - 1]
+  turns[turns.length - 1] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
+  $talk.set({ ...talk, turns })
+}
 
 async function talkOpen() {
   if (talkSession.runtime) return talkSession.runtime
@@ -151,14 +163,17 @@ async function talkOpen() {
   return runtime
 }
 
-async function say(text) {
+async function say(text, file) {
   const line = String(text || '').trim()
-  if (!line || $talk.get().busy) return
+  if ((!line && !file) || $talk.get().busy) return
   const turn = ++talkSession.turn
-  setTalk({ busy: true, you: line, reply: '', note: 'Sending…', error: '' })
+  const shown = line || 'Here is ' + file.name + '.'
+  const sent = file ? shown + '\n\nAttached file "' + file.name + '":\n```\n' + file.text + '\n```' : shown
+  $talk.set({ busy: true, open: true,
+    turns: $talk.get().turns.slice(-7).concat([{ you: shown, file: file ? file.name : '', reply: '', note: 'Sending…', error: '' }]) })
   const submit = async () => {
     const id = await talkOpen()
-    await host.request('prompt.submit', { session_id: id, text: talkSession.primed ? line : PRIME + line })
+    await host.request('prompt.submit', { session_id: id, text: talkSession.primed ? sent : PRIME + sent })
     talkSession.primed = true
   }
   try {
@@ -169,19 +184,49 @@ async function say(text) {
       talkSession.runtime = '' // the gateway let the idle session go: resume it (or start another) and send once more
       await submit()
     }
-    if (talkSession.turn === turn && $talk.get().busy && !$talk.get().reply) setTalk({ note: 'Hermes is working on it…' })
+    if (talkSession.turn === turn && $talk.get().busy) setTurn(last => (last.reply ? {} : { note: 'Hermes is working on it…' }))
     setTimeout(() => {
-      if (talkSession.turn === turn && $talk.get().busy) {
-        setTalk({ busy: false, note: 'Still working. Open the conversation to follow it; the desk updates when it is done.' })
-      }
+      if (talkSession.turn !== turn || !$talk.get().busy) return
+      setTalk({ busy: false })
+      setTurn({ note: 'Still working. Open the conversation to follow it; the desk updates when it is done.' })
     }, 180000)
   } catch (error) {
-    setTalk({ busy: false, note: '', error: 'Hermes could not take that: ' + String((error && error.message) || error) })
+    setTalk({ busy: false })
+    setTurn({ note: '', error: 'Hermes could not take that: ' + String((error && error.message) || error) })
   }
 }
 
 function openTalk() {
   if (talkSession.stored) Promise.resolve(host.openSession(talkSession.stored)).catch(() => {})
+  else host.notify({ kind: 'info', message: 'Say something to the desk first; the conversation starts then.' })
+}
+
+// A file handed to the desk. A CSV is read by the desk itself and comes back as a review, with no
+// model in between. A small text file rides along with the next message. Anything else (a PDF, an
+// image, a spreadsheet) needs the full chat, which can read it.
+const LIST_FILE = /\.(csv|tsv)$/i
+const TEXT_FILE = /\.(txt|md|markdown|json|vcf|log|ya?ml)$/i
+
+async function takeFile(file) {
+  if (!file) return
+  try {
+    if (LIST_FILE.test(file.name)) {
+      if (file.size > 2e6) return host.notify({ kind: 'warning', message: 'That list is over 2 MB. Send it in parts.' })
+      const result = await rest('/intake', { method: 'POST', body: { name: file.name, text: await file.text() } })
+      refresh()
+      host.notify({ kind: result.waiting ? 'success' : 'info', message: result.headline })
+      const page = document.querySelector('.stoa-page')
+      if (result.waiting && page) page.scrollTo({ top: 0, behavior: 'smooth' })
+      return
+    }
+    if ((TEXT_FILE.test(file.name) || String(file.type || '').startsWith('text/')) && file.size <= 60000) {
+      $attached.set({ name: file.name, text: await file.text() })
+      return
+    }
+    host.notify({ kind: 'info', message: 'A PDF, an image or a spreadsheet goes through the full chat: press "Open the conversation" and drop it there.' })
+  } catch (error) {
+    host.notifyError(error, 'Stoa could not read that file')
+  }
 }
 
 // -- look: the app's own variables only, so every theme carries it -------------------------------
@@ -197,12 +242,12 @@ const CSS = `
 .stoa *, .stoa *::before { box-sizing: border-box; }
 .stoa-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .stoa-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px 18px; }
-.stoa-page { height: 100%; overflow: auto; padding: 30px 34px 56px; }
+.stoa-page { height: 100%; overflow: auto; padding: 28px 34px 0; }
 .stoa-wrap { max-width: 1320px; margin: 0 auto; }
 .stoa-eyebrow { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ui-text-tertiary); }
 .stoa-figure { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; margin-top: 4px; }
 .stoa-figure small { font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--ui-text-tertiary); margin-left: 7px; }
-.stoa-page .stoa-figure { font-size: 44px; }
+.stoa-page .stoa-figure { font-size: 46px; }
 .stoa-rule { height: 2px; border-radius: 2px; margin: 12px 0 4px; background: linear-gradient(90deg, var(--ui-text-primary), var(--ui-text-tertiary) 46%, var(--stoa-accent)); }
 .stoa-sub { color: var(--ui-text-tertiary); font-size: 12px; }
 .stoa-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -245,9 +290,6 @@ const CSS = `
 .stoa-chip[data-tone="good"] { color: var(--stoa-accent-text); border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
 .stoa-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .stoa-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--ui-stroke-tertiary); }
-.stoa-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin: 22px 0 6px; border-top: 1px solid var(--ui-stroke-secondary); border-bottom: 1px solid var(--ui-stroke-secondary); }
-.stoa-stats > div { padding: 12px 14px 12px 0; }
-.stoa-stats b { display: block; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
 .stoa-tabs { display: inline-flex; gap: 2px; margin: 22px 0 18px; padding: 3px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
 .stoa-tab { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 15px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 13px; cursor: pointer; outline: none; transition: background .15s ease, color .15s ease; }
 .stoa-tab:hover { color: var(--ui-text-primary); background: var(--ui-control-hover-background); }
@@ -256,7 +298,7 @@ const CSS = `
 .stoa button:focus-visible, .stoa select:focus-visible, .stoa input:focus-visible { outline: 2px solid var(--stoa-accent-line); outline-offset: 2px; }
 .stoa-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
 .stoa-split[data-side="1"] { grid-template-columns: minmax(0, 1fr) 360px; }
-.stoa-split > .stoa-box { position: sticky; top: 0; max-height: calc(100vh - 120px); overflow-y: auto; }
+.stoa-split > .stoa-box { position: sticky; top: 0; max-height: calc(100vh - 235px); overflow-y: auto; }   /* it ends above the dock */
 .stoa-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(176px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
 .stoa-colhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 2px 8px; }
 .stoa-card { display: block; width: 100%; margin-bottom: 8px; padding: 10px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -286,9 +328,16 @@ const CSS = `
 .stoa-funnel { margin: 0 0 20px; padding: 16px 18px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
 .stoa-funnel svg { display: block; width: 100%; height: auto; overflow: visible; }
 .stoa-funnel text { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.stoa-fn-block { fill: var(--ui-text-primary); opacity: .5; }
-.stoa-fn-won { fill: var(--stoa-accent); }
-.stoa-fn-link { fill: var(--ui-text-primary); opacity: .13; }
+.stoa-fn-block { fill: url(#stoa-fn-fill); }
+.stoa-fn-won { fill: var(--stoa-accent); filter: drop-shadow(0 0 7px color-mix(in srgb, var(--stoa-accent) 55%, transparent)); }
+.stoa-fn-block, .stoa-fn-won { transform-box: fill-box; transform-origin: center; animation: stoa-rise .7s cubic-bezier(.2, .7, .2, 1) both; transition: filter .15s ease; }
+.stoa-fn-link { fill: url(#stoa-fn-flow); }
+.stoa-fn-pill { fill: var(--ui-bg-card); stroke: var(--ui-stroke-secondary); }
+.stoa-fn-hit { fill: transparent; }
+.stoa-fn-step[data-press="1"] { cursor: pointer; }
+.stoa-fn-step[data-press="1"]:hover .stoa-fn-block { filter: brightness(1.3); }
+.stoa-fn-step[data-on="1"] .stoa-fn-block { fill: var(--stoa-accent); opacity: .85; }
+.stoa-fn-step[data-on="1"] .stoa-fn-label { fill: var(--stoa-accent-text); }
 .stoa-fn-label { font-size: 9.5px; letter-spacing: .12em; fill: var(--ui-text-tertiary); }
 .stoa-fn-num { font-size: 15px; font-weight: 600; fill: var(--ui-text-primary); font-family: inherit !important; }
 .stoa-fn-pct { font-size: 11px; fill: var(--ui-text-primary); }
@@ -303,19 +352,60 @@ const CSS = `
 .stoa-rest { margin-top: 10px; font-size: 12px; color: var(--ui-text-tertiary); }
 .stoa-rest summary { cursor: pointer; }
 .stoa-rest p { margin: 4px 0 0 14px; }
-.stoa-talk { margin: 20px 0 0; max-width: 860px; }
-.stoa-talkbar { display: flex; gap: 8px; align-items: center; padding: 5px 5px 5px 14px; border: 1px solid var(--ui-stroke-primary); border-radius: 10px; background: var(--ui-bg-card); transition: border-color .15s ease, box-shadow .15s ease; }
-.stoa-talkbar:focus-within { border-color: var(--stoa-accent-line); box-shadow: 0 0 0 1px var(--stoa-accent-line); }
-.stoa-talkbar input { flex: 1; min-width: 0; height: 32px; border: 0; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 14px; }
-.stoa .stoa-talkbar input, .stoa .stoa-talkbar input:focus-visible { outline: none; }
-.stoa-talkbar input::placeholder { color: var(--ui-text-quaternary); }
-.stoa-talkbar .stoa-btn { flex: none; height: 32px; padding: 0 16px; font-size: 13px; }
-.stoa-said { margin-top: 8px; padding: 12px 14px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
-.stoa-you { color: var(--ui-text-secondary); overflow-wrap: anywhere; }
-.stoa-reply { margin-top: 8px; max-height: 280px; overflow-y: auto; overflow-wrap: anywhere; }
+.stoa-reply { margin-top: 10px; overflow-wrap: anywhere; }
 .stoa-reply p { margin: 0 0 8px; }
 .stoa-reply p:last-child { margin-bottom: 0; }
-.stoa-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin: 0 0 14px; }
+/* The dock floats at the foot of the page; the board fades out beneath it instead of running into it. */
+.stoa-dockzone { position: sticky; bottom: 0; z-index: 6; margin: 26px -34px 0; padding: 54px 34px 16px; background: linear-gradient(to top, var(--background, #0d1015) 46%, transparent); pointer-events: none; }
+.stoa-dock { width: min(780px, 100%); margin: 0 auto; pointer-events: auto; }
+.stoa-glass { border: 1px solid var(--ui-stroke-primary); border-radius: 16px; background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 84%, transparent); -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2); box-shadow: 0 18px 50px -14px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .22); }
+.stoa-sheet { margin-bottom: 8px; padding: 10px 14px 14px; max-height: min(46vh, 430px); overflow-y: auto; animation: stoa-lift .2s ease both; }
+.stoa-sheethead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.stoa-turn + .stoa-turn { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-youline { display: flex; justify-content: flex-end; }
+.stoa-you { max-width: 86%; padding: 6px 12px; border-radius: 13px 13px 4px 13px; background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stoa-accent) 24%, transparent); overflow-wrap: anywhere; white-space: pre-wrap; }
+.stoa-you small { display: block; margin-top: 2px; font-size: 11px; color: var(--ui-text-tertiary); }
+.stoa-working { display: inline-flex; align-items: center; gap: 8px; }
+.stoa-working::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--stoa-accent); animation: stoa-blink 1s ease-in-out infinite; }
+.stoa-composer { padding: 7px; transition: border-color .15s ease, box-shadow .15s ease; }
+.stoa-composer:focus-within { border-color: var(--stoa-accent-line); box-shadow: 0 18px 50px -14px rgba(0, 0, 0, .6), 0 0 0 1px var(--stoa-accent-line); }
+.stoa-composerrow { display: flex; align-items: flex-end; gap: 3px; }
+.stoa-composer textarea { flex: 1; min-width: 0; min-height: 34px; max-height: 132px; padding: 7px 6px; border: 0; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 14px; line-height: 1.45; resize: none; }
+.stoa .stoa-composer textarea, .stoa .stoa-composer textarea:focus-visible { outline: none; }
+.stoa-composer textarea::placeholder { color: var(--ui-text-quaternary); }
+.stoa-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--ui-text-secondary); cursor: pointer; transition: background .15s ease, color .15s ease, opacity .15s ease; }
+.stoa-icon:hover { background: var(--ui-control-hover-background); color: var(--ui-text-primary); }
+.stoa-icon:disabled { opacity: .4; cursor: default; }
+.stoa-icon[data-kind="send"] { margin-left: 3px; border-radius: 50%; background: var(--stoa-accent); color: var(--stoa-on-accent); }
+.stoa-icon[data-kind="send"]:hover { background: var(--stoa-accent); opacity: .88; }
+.stoa-icon[data-kind="send"]:disabled { opacity: .32; }
+.stoa-icon[data-on="1"] { color: var(--ui-red); background: color-mix(in srgb, var(--ui-red) 14%, transparent); animation: stoa-pulse 1.4s ease-in-out infinite; }
+.stoa-filechip { display: inline-flex; align-items: center; gap: 6px; margin: 1px 0 6px 4px; padding: 2px 3px 2px 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; font-size: 12px; color: var(--ui-text-secondary); }
+.stoa-hints { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 8px; }
+.stoa-hint { height: 28px; padding: 0 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 999px; background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: var(--ui-text-secondary); font: inherit; font-size: 12px; cursor: pointer; transition: color .15s ease, border-color .15s ease; }
+.stoa-hint:hover { color: var(--ui-text-primary); border-color: var(--ui-stroke-primary); }
+.stoa-hint:disabled { opacity: .5; cursor: default; }
+.stoa-dropnote { position: sticky; top: 0; z-index: 7; width: fit-content; margin: 0 auto 12px; padding: 8px 18px; border: 1px solid var(--stoa-accent-line); border-radius: 999px; background: var(--stoa-accent-soft); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 13px; }
+.stoa-page[data-drop="1"] { box-shadow: inset 0 0 0 2px var(--stoa-accent-line); }
+.stoa-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 14px 44px; }
+.stoa-headstats { display: flex; flex-wrap: wrap; gap: 10px 36px; padding-bottom: 5px; }
+.stoa-headstats b { display: block; margin-top: 3px; font-size: 20px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stoa-tabsrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.stoa-col { min-width: 0; border-radius: 10px; transition: opacity .2s ease, background .15s ease; }
+.stoa-col[data-dim="1"] { opacity: .38; }
+.stoa-col[data-over="1"] { background: var(--stoa-accent-soft); box-shadow: 0 0 0 5px var(--stoa-accent-soft), 0 0 0 6px var(--stoa-accent-line); }
+.stoa-weight { height: 2px; margin: 0 2px 9px; border-radius: 2px; background: var(--ui-stroke-tertiary); }
+.stoa-weight i { display: block; height: 100%; border-radius: 2px; background: var(--ui-text-tertiary); transition: width .4s ease; }
+.stoa-weight[data-won="1"] i { background: var(--stoa-accent); }
+.stoa-card[draggable="true"] { cursor: grab; }
+.stoa-card[draggable="true"]:active { cursor: grabbing; }
+.stoa-split > .stoa-box { animation: stoa-slide .22s ease both; }
+@keyframes stoa-rise { from { transform: scaleY(.12); opacity: 0; } }
+@keyframes stoa-lift { from { transform: translateY(8px); opacity: 0; } }
+@keyframes stoa-slide { from { transform: translateX(10px); opacity: 0; } }
+@keyframes stoa-blink { 50% { opacity: .25; } }
+@keyframes stoa-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ui-red) 16%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .stoa *, .stoa *::before { animation: none !important; transition: none !important; } }
 .stoa-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-top: 12px; }
 .stoa-form label { display: block; min-width: 0; }
 .stoa-form label[data-wide="1"] { grid-column: 1 / -1; }
@@ -565,34 +655,50 @@ function Filters({ state }) {
 }
 
 // -- the funnel: how many reach each stage, and what share moves on ------------------------------
+// Press a stage to narrow the board to it; press it again to let go.
 function Funnel({ state }) {
   const flow = state.flow, pb = state.playbook
+  const filter = useValue($filter)
   if (!flow || !flow.total) return null
-  const steps = flow.stages.map(stage => ({ label: stage.label, reached: stage.reached, here: stage.here, lost: stage.lost, value: stage.value }))
-    .concat([{ label: flow.won_label, reached: flow.won, won: true, value: flow.won_value }])
-  const W = 1000, H = 184, mid = 96, tall = 92, col = W / steps.length, block = col * 0.5
+  const steps = flow.stages.map(stage => ({ id: stage.id, label: stage.label, reached: stage.reached, here: stage.here, lost: stage.lost, value: stage.value }))
+    .concat([{ id: '', label: flow.won_label, reached: flow.won, won: true, value: flow.won_value }])
+  const W = 1000, H = 196, mid = 102, tall = 100, col = W / steps.length, block = col * 0.5
   const height = step => Math.max(3, (tall * step.reached) / flow.total)
   const closed = flow.won + flow.lost
-  const parts = []
+  const links = [], groups = []
   steps.forEach((step, index) => {
     const x = index * col, tallness = height(step), next = steps[index + 1]
-    parts.push(h('rect', { key: 'b' + index, className: step.won ? 'stoa-fn-won' : 'stoa-fn-block', x, y: mid - tallness / 2, width: block, height: tallness, rx: 2 }))
     if (next) {
-      const after = height(next), right = (index + 1) * col
-      parts.push(h('polygon', { key: 'l' + index, className: 'stoa-fn-link',
+      const after = height(next), right = (index + 1) * col, centre = x + block + (col - block) / 2
+      links.push(h('polygon', { key: 'l' + index, className: 'stoa-fn-link',
         points: [x + block, mid - tallness / 2, right, mid - after / 2, right, mid + after / 2, x + block, mid + tallness / 2].join(' ') }))
-      parts.push(h('text', { key: 'p' + index, className: 'stoa-fn-pct', x: x + block + (col - block) / 2, y: mid + 4, textAnchor: 'middle' },
+      links.push(h('rect', { key: 'q' + index, className: 'stoa-fn-pill', x: centre - 19, y: mid - 10, width: 38, height: 20, rx: 10 }))
+      links.push(h('text', { key: 'p' + index, className: 'stoa-fn-pct', x: centre, y: mid + 4, textAnchor: 'middle' },
         step.reached ? Math.round((100 * next.reached) / step.reached) + '%' : '–'))
     }
-    parts.push(h('text', { key: 't' + index, className: 'stoa-fn-label', x, y: 11 }, step.label.toUpperCase().slice(0, Math.max(6, Math.floor(col / 7.6)))))
-    parts.push(h('text', { key: 'n' + index, className: 'stoa-fn-num', x, y: 30 }, String(step.reached)))
-    parts.push(h('text', { key: 's' + index, className: 'stoa-fn-sub', x, y: mid + tall / 2 + 20 },
-      step.won ? (step.value ? money(step.value, pb.currency) : '') : step.here + ' here' + (step.value ? ' · ' + money(step.value, pb.currency) : '')))
-    if (step.lost) parts.push(h('text', { key: 'x' + index, className: 'stoa-fn-sub', x, y: mid + tall / 2 + 33 }, step.lost + ' lost here'))
+    const on = Boolean(step.id) && filter.stage === step.id
+    groups.push(h('g', { key: 'g' + index, className: 'stoa-fn-step', 'data-on': on ? '1' : '0', 'data-press': step.id ? '1' : '0',
+      onClick: step.id ? () => setFilter({ stage: on ? '' : step.id }) : undefined },
+      h('title', null, step.id ? (on ? 'Show every stage' : 'Show only ' + step.label) : step.label),
+      h('rect', { className: 'stoa-fn-hit', x: x - 4, y: 0, width: col - 2, height: H }),
+      h('rect', { className: step.won ? 'stoa-fn-won' : 'stoa-fn-block', x, y: mid - tallness / 2, width: block, height: tallness, rx: 3,
+        style: { animationDelay: index * 55 + 'ms' } }),
+      h('text', { className: 'stoa-fn-label', x, y: 11 }, step.label.toUpperCase().slice(0, Math.max(6, Math.floor(col / 7.6)))),
+      h('text', { className: 'stoa-fn-num', x, y: 31 }, String(step.reached)),
+      h('text', { className: 'stoa-fn-sub', x, y: mid + tall / 2 + 22 },
+        step.won ? (step.value ? money(step.value, pb.currency) : '') : step.here + ' here' + (step.value ? ' · ' + money(step.value, pb.currency) : '')),
+      step.lost ? h('text', { className: 'stoa-fn-sub', x, y: mid + tall / 2 + 35 }, step.lost + ' lost here') : null))
   })
   return h('div', { className: 'stoa-funnel' },
     h('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'How many records reach each stage, and what share moves on' },
-      parts),
+      h('defs', null,
+        h('linearGradient', { id: 'stoa-fn-fill', x1: 0, y1: 0, x2: 0, y2: 1 },
+          h('stop', { offset: '0%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.62 } }),
+          h('stop', { offset: '100%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.36 } })),
+        h('linearGradient', { id: 'stoa-fn-flow', x1: 0, y1: 0, x2: 1, y2: 0 },
+          h('stop', { offset: '0%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.2 } }),
+          h('stop', { offset: '100%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.08 } }))),
+      links, groups),
     h('div', { className: 'stoa-funnel-foot' },
       h('span', null, h('b', null, closed ? Math.round((100 * flow.won) / closed) + '%' : '–'), ' win rate' + (closed ? ' (' + flow.won + ' of ' + closed + ' closed)' : '')),
       h('span', null, h('b', null, Math.round((100 * flow.won) / flow.total) + '%'), ' of everything that entered has been ' + flow.won_label.toLowerCase()),
@@ -664,7 +770,17 @@ function Pane() {
       h(Btn, { kind: 'quiet', onClick: () => toChat("What's on my plate today on the Stoa desk?") }, "What's on my plate?")))
 }
 
-// -- the talk box on the page ---------------------------------------------------------------------
+// -- the dock at the foot of the page: say it, dictate it, or hand it a file ------------------------
+const ICON = {
+  clip: 'M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5',
+  mic: 'M12 2.5a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0v-6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4',
+  up: 'M12 19.5v-15M5.5 11L12 4.5 18.5 11',
+  down: 'M6 9.5l6 6 6-6',
+  x: 'M6.5 6.5l11 11M17.5 6.5l-11 11'
+}
+const Icon = ({ name, size }) => h('svg', { width: size || 17, height: size || 17, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+  strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, h('path', { d: ICON[name] }))
+
 /** A reply, set plainly: paragraphs, bullets and bold. Lines that only draw a card in a chat are left out. */
 function Words({ text }) {
   const clean = String(text || '').replace(/^[ \t]*::stoa-[a-z]+\{[^}\n]*\}[ \t]*$/gm, '').trim()
@@ -673,49 +789,138 @@ function Words({ text }) {
     block.split('\n').map((line, at) => h('span', { key: at, style: { display: 'block' } }, bold(line.replace(/^\s*[-*]\s+/, '•  ').replace(/^#+\s+/, '')))))))
 }
 
-function Talk() {
+// Dictation is the browser's own speech recognition, where it has one (Chrome, Edge and Safari do;
+// the Desktop app does not, and there the microphone in the full chat is the one to use).
+const Recognition = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null
+
+function Dock({ state }) {
   const talk = useValue($talk)
+  const file = useValue($attached)
   const [text, setText] = useState('')
-  const send = () => {
-    if (!text.trim() || talk.busy) return
-    say(text)
+  const [listening, setListening] = useState(false)
+  const area = useRef(null), picker = useRef(null), sheet = useRef(null), ear = useRef(null), before = useRef('')
+  useEffect(() => {
+    const el = area.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 132) + 'px'
+  }, [text])
+  useEffect(() => {
+    if (sheet.current) sheet.current.scrollTop = sheet.current.scrollHeight
+  }, [talk.turns, talk.open])
+  useEffect(() => () => { try { if (ear.current) ear.current.abort() } catch { /* already stopped */ } }, [])
+  const hush = () => { try { if (ear.current) ear.current.stop() } catch { /* already stopped */ } }
+  const send = line => {
+    const words = typeof line === 'string' ? line : text
+    if ((!words.trim() && !file) || talk.busy) return
+    hush()
+    say(words, file)
     setText('')
+    $attached.set(null)
   }
-  return h('div', { className: 'stoa-talk' },
-    h('div', { className: 'stoa-talkbar' },
-      h('input', { value: text, placeholder: 'Tell Stoa what happened, or ask it anything…', 'aria-label': 'Talk to the desk', disabled: talk.busy,
-        onChange: event => setText(event.target.value),
-        onKeyDown: event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) send() } }),
-      h(Btn, { kind: 'primary', disabled: talk.busy || !text.trim(), onClick: send }, talk.busy ? 'Working…' : 'Send')),
-    talk.you || talk.error ? h('div', { className: 'stoa-said' },
-      h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' } },
-        h('div', { className: 'stoa-you' }, talk.you),
-        h('div', { style: { display: 'flex', gap: 4, flex: 'none' } },
+  const dictate = () => {
+    if (listening) return hush()
+    try {
+      const hearing = new Recognition()
+      hearing.lang = navigator.language || 'en-US'
+      hearing.interimResults = true
+      hearing.continuous = true
+      before.current = text.trim() ? text.replace(/\s*$/, ' ') : ''
+      hearing.onresult = event => {
+        let said = ''
+        for (let index = 0; index < event.results.length; index++) said += event.results[index][0].transcript
+        setText(before.current + said)
+      }
+      hearing.onerror = event => {
+        setListening(false)
+        if (event.error === 'no-speech' || event.error === 'aborted') return
+        host.notify({ kind: 'warning', message: event.error === 'not-allowed' || event.error === 'service-not-allowed'
+          ? 'The browser did not allow the microphone.' : 'Dictation is not available here. The microphone in the full chat works everywhere.' })
+      }
+      hearing.onend = () => setListening(false)
+      hearing.start()
+      ear.current = hearing
+      setListening(true)
+    } catch {
+      setListening(false)
+    }
+  }
+  const hints = ['What needs me today?', 'Who has gone quiet?', 'What moved this week?']
+  return h('div', { className: 'stoa-dockzone' }, h('div', { className: 'stoa-dock' },
+    talk.turns.length && talk.open ? h('div', { className: 'stoa-glass stoa-sheet', ref: sheet },
+      h('div', { className: 'stoa-sheethead' },
+        h('span', { className: 'stoa-eyebrow' }, 'Stoa desk'),
+        h('span', { style: { display: 'flex', gap: 2 } },
           h(Btn, { kind: 'quiet', onClick: openTalk }, 'Open the conversation'),
-          talk.busy ? null : h(Btn, { kind: 'quiet', 'aria-label': 'Dismiss', onClick: () => $talk.set({ ...TALK_IDLE }) }, '×'))),
-      talk.reply ? h(Words, { text: talk.reply }) : null,
-      talk.note ? h('div', { className: 'stoa-sub', style: { marginTop: 6 } }, talk.note) : null,
-      talk.error ? h('div', { style: { marginTop: 6, color: 'var(--ui-red)' } }, talk.error) : null) : null)
+          h('button', { type: 'button', className: 'stoa-icon', 'aria-label': 'Hide the conversation', title: 'Hide', onClick: () => setTalk({ open: false }) }, h(Icon, { name: 'down' })))),
+      talk.turns.map((turn, index) => h('div', { key: index, className: 'stoa-turn' },
+        h('div', { className: 'stoa-youline' }, h('span', { className: 'stoa-you' }, turn.you, turn.file ? h('small', null, turn.file) : null)),
+        turn.reply ? h(Words, { text: turn.reply }) : null,
+        turn.note ? h('div', { className: 'stoa-sub stoa-working', style: { marginTop: 8 } }, turn.note) : null,
+        turn.error ? h('div', { style: { marginTop: 8, color: 'var(--ui-red)' } }, turn.error) : null)))
+      : talk.turns.length ? h('div', { className: 'stoa-hints' },
+        h('button', { type: 'button', className: 'stoa-hint', onClick: () => setTalk({ open: true }) }, 'Show the conversation'))
+        : !text && !file ? h('div', { className: 'stoa-hints' }, hints.map(hint =>
+          h('button', { type: 'button', key: hint, className: 'stoa-hint', disabled: talk.busy, onClick: () => send(hint) }, hint))) : null,
+    h('div', { className: 'stoa-glass stoa-composer' },
+      file ? h('div', { className: 'stoa-filechip' }, h(Icon, { name: 'clip', size: 13 }), file.name,
+        h('button', { type: 'button', className: 'stoa-icon', style: { width: 22, height: 22 }, 'aria-label': 'Remove the file', onClick: () => $attached.set(null) }, h(Icon, { name: 'x', size: 13 }))) : null,
+      h('div', { className: 'stoa-composerrow' },
+        h('button', { type: 'button', className: 'stoa-icon', title: 'Hand it a file: a CSV becomes a review, a text file goes with your message', 'aria-label': 'Attach a file',
+          onClick: () => picker.current && picker.current.click() }, h(Icon, { name: 'clip' })),
+        h('input', { ref: picker, type: 'file', hidden: true, accept: '.csv,.tsv,.txt,.md,.json,.vcf,text/*',
+          onChange: event => { takeFile(event.target.files[0]); event.target.value = '' } }),
+        h('textarea', { ref: area, rows: 1, value: text, disabled: talk.busy, 'aria-label': 'Talk to the desk',
+          placeholder: listening ? 'Listening…' : 'Tell Stoa what happened, ask it anything, or drop a list on the page…',
+          onChange: event => setText(event.target.value),
+          onKeyDown: event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send() } } }),
+        Recognition ? h('button', { type: 'button', className: 'stoa-icon', 'data-on': listening ? '1' : '0', disabled: talk.busy,
+          title: listening ? 'Stop dictating' : 'Dictate (your browser\'s speech recognition)', 'aria-label': listening ? 'Stop dictating' : 'Dictate', onClick: dictate },
+          h(Icon, { name: 'mic' })) : null,
+        h('button', { type: 'button', className: 'stoa-icon', 'data-kind': 'send', disabled: talk.busy || (!text.trim() && !file), title: 'Send', 'aria-label': 'Send',
+          onClick: () => send() }, h(Icon, { name: 'up' }))))))
 }
 
 // -- the full page -------------------------------------------------------------------------------
+// The board is worked by hand as well as by talking: drag a card to another column to move it.
+const DRAG = 'text/stoa-deal'
+const dragging = event => Boolean(event.dataTransfer) && [...event.dataTransfer.types].includes(DRAG)
+
 function Board({ state, openId, setOpenId }) {
   const pb = state.playbook
   const filter = useValue($filter)
+  const [over, setOver] = useState('')
   const open = state.deals.filter(deal => deal.status === 'open' && matches(deal, filter))
-  const won = state.deals.filter(deal => deal.status === 'won' && matches(deal, { ...filter, due: false, quiet: false }))
+  const won = state.deals.filter(deal => deal.status === 'won' && matches(deal, { ...filter, stage: '', due: false, quiet: false }))
     .sort((a, b) => (a.stage_at < b.stage_at ? 1 : -1))
   const known = new Set(pb.stages.map(stage => stage.id))
   const strays = open.filter(deal => !known.has(deal.stage))
   const columns = pb.stages.map(stage => ({ ...stage, here: open.filter(deal => deal.stage === stage.id) }))
     .concat(strays.length ? [{ id: '~other', label: 'Other stages', other: true, here: strays }] : [])
     .concat([{ id: '~won', label: pb.won.label, won: true, here: won.slice(0, 8) }])
-  return h('div', { className: 'stoa-board' }, columns.map(column => {
-    const value = column.here.reduce((sum, deal) => sum + (deal.value || 0), 0)
-    return h('div', { key: column.id },
+    .map(column => ({ ...column, value: column.here.reduce((sum, deal) => sum + (deal.value || 0), 0) }))
+  const most = Math.max(1, ...columns.filter(column => !column.won).map(column => column.value))
+  const drop = (event, column) => {
+    const id = event.dataTransfer.getData(DRAG)
+    setOver('')
+    if (!id || column.other) return
+    event.preventDefault()
+    const deal = state.deals.find(item => item.id === id)
+    const target = column.won ? pb.won.id : column.id
+    if (deal && deal.stage !== target) act(id, { verb: 'move', stage: target })
+  }
+  return h('div', { className: 'stoa-board' }, columns.map(column =>
+    h('div', { key: column.id, className: 'stoa-col', 'data-over': over === column.id ? '1' : '0', 'data-dim': filter.stage && !column.won && column.id !== filter.stage ? '1' : '0',
+      onDragOver: event => { if (dragging(event) && !column.other) { event.preventDefault(); if (over !== column.id) setOver(column.id) } },
+      onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setOver('') },
+      onDrop: event => drop(event, column) },
       h('div', { className: 'stoa-colhead' }, h('span', { className: 'stoa-eyebrow stoa-clip' }, column.label),
-        h('span', { className: 'stoa-num' }, column.here.length + (value ? ' · ' + money(value, pb.currency) : ''))),
+        h('span', { className: 'stoa-num' }, column.here.length + (column.value ? ' · ' + money(column.value, pb.currency) : ''))),
+      h('div', { className: 'stoa-weight', 'data-won': column.won ? '1' : '0' }, h('i', { style: { width: (column.won ? 100 : Math.round((100 * column.value) / most)) + '%' } })),
       column.here.length ? column.here.map(deal => h('button', { type: 'button', key: deal.id, className: 'stoa-card', 'data-open': openId === deal.id ? '1' : '0',
+        draggable: !column.won, title: column.won ? undefined : 'Drag to another column to move it',
+        onDragStart: event => { event.dataTransfer.setData(DRAG, deal.id); event.dataTransfer.effectAllowed = 'move' },
+        onDragEnd: () => setOver(''),
         onClick: () => setOpenId(openId === deal.id ? '' : deal.id) },
         h('h5', null, h('span', { className: 'stoa-clip' }, deal.name), deal.value ? h('span', { className: 'stoa-num' }, money(deal.value, pb.currency)) : null),
         h('div', { className: 'stoa-cardfoot', style: { marginTop: 0 } },
@@ -727,8 +932,7 @@ function Board({ state, openId, setOpenId }) {
           deal.due ? h(Chip, { tone: dueTone(deal) }, deal.next_due < today() ? 'overdue' : 'due today') : null,
           deal.stale && !deal.due ? h(Chip, null, 'quiet') : null,
           deal.pending ? h(Chip, { tone: 'good' }, 'draft waiting') : null) : null))
-        : h('div', { className: 'stoa-empty' }, '—'))
-  }))
+        : h('div', { className: 'stoa-empty' }, over === column.id ? 'Drop it here' : '—'))))
 }
 
 function Company({ company, sessionId }) {
@@ -785,31 +989,55 @@ function Page() {
   const [openId, setOpenId] = useState('')
   const [adding, setAdding] = useState(false)
   const [marketId, setMarketId] = useState('')
+  const [dropping, setDropping] = useState(false)
+  const split = useRef(null)
+  // A record or the form opens beside the board: bring it clear of the dock if it would sit under it.
+  useEffect(() => {
+    if (!adding && !openId) return undefined
+    const timer = setTimeout(() => {
+      const box = split.current && split.current.querySelector(':scope > .stoa-box')
+      const page = split.current && split.current.closest('.stoa-page')
+      if (!box || !page) return
+      const frame = page.getBoundingClientRect(), rect = box.getBoundingClientRect()
+      const hidden = rect.bottom - (frame.bottom - 150)
+      if (hidden > 0) page.scrollBy({ top: Math.min(hidden, Math.max(0, rect.top - frame.top - 12)), behavior: 'smooth' })
+    }, 260)
+    return () => clearTimeout(timer)
+  }, [adding, openId])
   if (!query.data) return h('div', { className: 'stoa stoa-page' }, h(Unavailable, { error: query.error, loading: query.isLoading }))
   const state = query.data, pb = state.playbook, totals = state.totals
   const market = state.markets.find(item => item.id === marketId) || state.markets[0]
   const stats = [['Open', totals.open], ['Due', totals.due], ['Quiet', totals.stale], ['Mapped', totals.mapped], ['From the map', totals.tracked],
     ['Won', totals.won + (totals.won_value ? ' · ' + money(totals.won_value, pb.currency) : '')]]
-  return h('div', { className: 'stoa stoa-page' }, h(Style), h('div', { className: 'stoa-wrap' },
-    h('div', { className: 'stoa-eyebrow' }, 'Stoa · ' + pb.title),
-    h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open')),
+  // A file dragged in from the computer lands on the desk, wherever on the page it is let go.
+  const carrying = event => Boolean(event.dataTransfer) && [...event.dataTransfer.types].includes('Files')
+  return h('div', { className: 'stoa stoa-page', 'data-drop': dropping ? '1' : '0',
+    onDragOver: event => { if (carrying(event)) { event.preventDefault(); if (!dropping) setDropping(true) } },
+    onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setDropping(false) },
+    onDrop: event => { if (!carrying(event)) return; event.preventDefault(); setDropping(false); takeFile(event.dataTransfer.files[0]) } },
+  h(Style),
+  dropping ? h('div', { className: 'stoa-dropnote' }, 'Drop it on the desk: a CSV becomes a review to approve') : null,
+  h('div', { className: 'stoa-wrap' },
+    h('div', { className: 'stoa-head' },
+      h('div', null,
+        h('div', { className: 'stoa-eyebrow' }, 'Stoa · ' + pb.title),
+        h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open'))),
+      h('div', { className: 'stoa-headstats' }, stats.map(pair => h('div', { key: pair[0] }, h('span', { className: 'stoa-eyebrow' }, pair[0]), h('b', null, String(pair[1])))))),
     h('div', { className: 'stoa-rule' }),
-    h('div', { className: 'stoa-stats' }, stats.map(pair => h('div', { key: pair[0] }, h('span', { className: 'stoa-eyebrow' }, pair[0]), h('b', null, String(pair[1]))))),
-    h(Talk),
-    (state.intakes || []).length ? h('div', { style: { marginTop: 18, maxWidth: 720 } },
+    (state.intakes || []).length ? h('div', { style: { marginTop: 20, maxWidth: 720 } },
       h('div', { className: 'stoa-eyebrow', style: { marginBottom: 6 } }, 'Waiting for your review'),
       state.intakes.map(item => h('div', { key: item.id, style: { marginBottom: 10 } }, h(Review, { id: item.id })))) : null,
-    h('div', null, h('div', { className: 'stoa-tabs', role: 'tablist' }, [['pipeline', 'Pipeline', totals.open], ['market', 'Market map', totals.mapped], ['activity', 'Activity', 0]].map(item =>
-      h('button', { type: 'button', key: item[0], role: 'tab', 'aria-selected': tab === item[0], className: 'stoa-tab', 'data-on': tab === item[0] ? '1' : '0',
-        onClick: () => setTab(item[0]) }, item[1], item[2] ? h('small', null, String(item[2])) : null)))),
+    h('div', { className: 'stoa-tabsrow' },
+      h('div', { className: 'stoa-tabs', role: 'tablist' }, [['pipeline', 'Pipeline', totals.open], ['market', 'Market map', totals.mapped], ['activity', 'Activity', 0]].map(item =>
+        h('button', { type: 'button', key: item[0], role: 'tab', 'aria-selected': tab === item[0], className: 'stoa-tab', 'data-on': tab === item[0] ? '1' : '0',
+          onClick: () => setTab(item[0]) }, item[1], item[2] ? h('small', null, String(item[2])) : null))),
+      tab === 'pipeline' ? h(Btn, { onClick: () => { setOpenId(''); setAdding(true) } }, '+  New ' + pb.terms.deal) : null),
     tab === 'pipeline' ? h('div', null,
       state.deals.length ? h(Funnel, { state }) : null,
-      h('div', { className: 'stoa-bar' },
-        h('div', { style: { flex: '1 1 420px', maxWidth: 760 } }, state.deals.length ? h(Filters, { state }) : null),
-        h(Btn, { onClick: () => { setOpenId(''); setAdding(true) } }, '+  New ' + pb.terms.deal)),
-      h('div', { className: 'stoa-split', 'data-side': adding || openId ? '1' : '0' },
+      state.deals.length ? h('div', { style: { margin: '0 0 14px', maxWidth: 760 } }, h(Filters, { state })) : null,
+      h('div', { className: 'stoa-split', ref: split, 'data-side': adding || openId ? '1' : '0' },
         state.deals.length ? h(Board, { state, openId, setOpenId: id => { setAdding(false); setOpenId(id) } })
-          : h('p', { className: 'stoa-sub' }, 'Nothing on the desk yet. Add a ' + pb.terms.deal + ' here, tell Stoa about one above, send it a list, or ask it to map a market.'),
+          : h('p', { className: 'stoa-sub' }, 'Nothing on the desk yet. Add a ' + pb.terms.deal + ' with the button above, tell Stoa about one below, drop a list on the page, or ask it to map a market.'),
         adding ? h(NewRecord, { state, close: () => setAdding(false), opened: id => { setAdding(false); setOpenId(id) } })
           : openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId('') }) : null)) : null,
     tab === 'market' ? (market
@@ -817,11 +1045,12 @@ function Page() {
         state.markets.length > 1 ? h('div', { className: 'stoa-tabs', style: { marginTop: 0 } }, state.markets.map(item =>
           h('button', { type: 'button', key: item.id, className: 'stoa-tab', 'data-on': item.id === market.id ? '1' : '0', onClick: () => setMarketId(item.id) }, item.name))) : null,
         h(Market, { market }))
-      : h('p', { className: 'stoa-sub' }, 'No market map yet. Ask Hermes: “Map the market for us.”')) : null,
+      : h('p', { className: 'stoa-sub' }, 'No market map yet. Ask Stoa below: “Map the market for us.”')) : null,
     tab === 'activity' ? h('div', { style: { maxWidth: 760 } }, state.activity.map(entry => h('div', { key: entry.id, className: 'stoa-row', style: { cursor: 'default' } },
       h('i', { className: 'stoa-dot', 'data-tone': entry.kind === 'stage' ? 'good' : '' }),
       h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name' }, entry.name), h('span', null, '  ' + entry.text),
-        h('span', { className: 'stoa-sub', style: { display: 'block' } }, ago(entry.at) + ' · ' + entry.kind + (entry.by ? ' · ' + entry.by : ''))))) ) : null))
+        h('span', { className: 'stoa-sub', style: { display: 'block' } }, ago(entry.at) + ' · ' + entry.kind + (entry.by ? ' · ' + entry.by : ''))))) ) : null),
+  h(Dock, { state }))
 }
 
 // -- drawn inside a reply: ::stoa-card{id="…"} and ::stoa-map{market="…"} ------------------------
@@ -863,29 +1092,32 @@ export default {
     ctx.setInterval(hello, 30000)
     // The agent, a Slack click or another window changed the desk: redraw now, not at the next poll.
     ctx.onEvent('plugin.stoa.changed', refresh)
-    // The talk box on the page: hear its own conversation, and nobody else's.
-    const mine = event => Boolean(talkSession.runtime) && String((event && (event.session_id || event.sessionId)) || '') === talkSession.runtime
+    // The dock on the page: hear its own conversation, and nobody else's.
+    const mine = event => Boolean(talkSession.runtime) && $talk.get().busy
+      && String((event && (event.session_id || event.sessionId)) || '') === talkSession.runtime
     ctx.onEvent('message.delta', event => {
       const text = event && event.payload && event.payload.text
-      if (mine(event) && typeof text === 'string') setTalk({ reply: $talk.get().reply + text, note: '' })
+      if (mine(event) && typeof text === 'string') setTurn(last => ({ reply: last.reply + text, note: '' }))
     })
     ctx.onEvent('tool.start', event => {
-      if (!mine(event) || !$talk.get().busy) return
-      const reply = $talk.get().reply
-      setTalk({ note: 'Working on the desk…', reply: reply && !reply.endsWith('\n') ? reply + '\n\n' : reply })
+      if (mine(event)) setTurn(last => ({ note: 'Working on the desk…', reply: last.reply && !last.reply.endsWith('\n') ? last.reply + '\n\n' : last.reply }))
     })
     ctx.onEvent('message.complete', event => {
       if (!mine(event)) return
       const payload = (event && event.payload) || {}
-      const final = [payload.text, payload.rendered].find(value => typeof value === 'string' && value.trim()) || $talk.get().reply
       const failed = typeof payload.error === 'string' ? payload.error : ''
-      setTalk({ busy: false, note: '', reply: final || (failed ? '' : 'Done.'), error: failed })
+      setTurn(last => {
+        const final = [payload.text, payload.rendered].find(value => typeof value === 'string' && value.trim()) || last.reply
+        return { note: '', reply: final || (failed ? '' : 'Done.'), error: failed }
+      })
+      setTalk({ busy: false })
       refresh()
     })
     ctx.onEvent('error', event => {
-      if (!mine(event) || !$talk.get().busy) return
+      if (!mine(event)) return
       const payload = (event && event.payload) || {}
-      setTalk({ busy: false, note: '', error: String(payload.message || payload.error || 'Hermes could not answer that.') })
+      setTurn({ note: '', error: String(payload.message || payload.error || 'Hermes could not answer that.') })
+      setTalk({ busy: false })
     })
     ctx.registerMany([
       { id: 'pane', area: 'panes', title: 'Stoa', data: { placement: 'right', width: '340px' }, render: () => h(Pane) },
