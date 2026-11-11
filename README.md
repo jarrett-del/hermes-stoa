@@ -141,7 +141,7 @@ change are one database transaction, so it holds across Slack, the web tab and t
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
 | **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
 | **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
-| **4 automations** | Morning brief, meeting-notes sweep, weekly market watch, Friday review, under `/blueprint` |
+| **6 automations** | Morning brief, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
 | **3 playbooks** | `b2b-sales`, `recruiting`, `agency`, plus any you or the agent write |
 
@@ -273,6 +273,22 @@ Stoa writes drafts and never sends. When the Google Workspace skill (or any Gmai
 connected to Hermes, the agent saves what it drafts as a Gmail draft addressed to the record's
 email, ready for you to read and send. Without it, drafts arrive in the chat.
 
+### Google Sheets
+
+Connect Google to Hermes (its Google Workspace skill covers Gmail, Drive, Sheets and Docs) and
+the desk can live in a Sheet as well:
+
+- *"Mirror the desk to my Google Sheet."* Hermes writes the whole pipeline to a tab called
+  `Stoa`: one row per record, in your playbook's own column names. The *Mirror the desk to a
+  Google Sheet* automation keeps doing it a few times a day.
+- *"Pull my Sheet edits."* Hermes reads the tab back and Stoa shows what people changed there
+  (a stage, a fee, a new row) as a review to approve, the same card as any other list. The
+  *Bring Sheet edits back* automation does that once a day.
+
+The records themselves stay in Stoa's own database, which is what keeps a button click instant.
+The Sheet is as fresh as its last mirror, and a Sheet edit reaches the desk when you approve it,
+not the moment it is typed.
+
 ### Spreadsheets
 
 `gtm_export` writes the whole pipeline to a CSV that opens in Google Sheets or Excel, and reads
@@ -373,7 +389,8 @@ What the plugin does that you would want to know before installing it:
 - A map is as good as the research behind it. Fit scores are the agent's judgement against your
   brief; the source link is there so you can check.
 - One Slack workspace per profile.
-- There is no direct Google Sheets sync yet; CSV is the bridge.
+- The Google Sheet is a mirror, not the database: it updates when Hermes mirrors it, and edits made
+  in it come back when you approve them. Deleting a row in the Sheet does not remove the record.
 - After updating the plugin, restart the gateway so the Slack buttons bind to the new code.
 - A team shares one desk. There are owners on records, but no per-person permissions.
 
@@ -382,7 +399,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 111 tests, no network
+python3 -m unittest discover -s tests     # 113 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

@@ -1020,6 +1020,42 @@ class IntakeTests(unittest.TestCase):
         pdf.write_bytes(b"%PDF-1.4")
         self.assertIn("read it yourself", self.desk.intake.run({"action": "propose", "path": str(pdf)})["error"])
 
+    def test_the_pipeline_written_to_a_sheet_and_read_back_changes_nothing(self):
+        table = self.desk.export({"action": "table"})
+        self.assertEqual(table["columns"][:5], ["ID", "Candidate", "Current company", "Search", "Stage"])   # the playbook's words
+        self.assertEqual(table["count"], self.desk.store.count())
+        self.assertIn("Current title", table["columns"])
+        back = self.desk.intake.run({"action": "propose", "source": "Google Sheet", "columns": table["columns"], "rows": table["rows"]})
+        self.assertEqual((back["counts"]["same"], back["counts"]["new"], back["counts"]["update"]), (table["count"], 0, 0))
+        self.assertNotIn("ignored_columns", back)                                          # "Updated" is the desk's own column
+        self.assertIn("Nothing here would change the desk", back["note"])
+
+    def test_edits_made_in_the_sheet_come_back_as_exactly_those_edits(self):
+        table = self.desk.export({"action": "table"})
+        columns, rows = table["columns"], [list(row) for row in table["rows"]]
+        at = {name: index for index, name in enumerate(columns)}
+        dana = next(row for row in rows if row[at["ID"]] == self.dana["id"])
+        dana[at["Stage"]] = "Submitted"                                                    # someone moved her in the Sheet
+        dana[at["Candidate"]] = "Dana Whitfield-Okafor"                                    # and corrected her name
+        other = next(row for row in rows if row[at["ID"]] != self.dana["id"])
+        other[at["Fee"]] = "$61k"
+        other[at["Due"]] = "12/05/2026"
+        rows.append(["", "Ada Quill", "Fathom Data", "Staff Backend · Northwind", "Contacted"] + [""] * (len(columns) - 5))
+        rows.append([""] * len(columns))                                                   # an empty line at the bottom
+        back = self.desk.intake.run({"action": "propose", "source": "Google Sheet", "columns": columns, "rows": rows})
+        self.assertEqual((back["counts"]["update"], back["counts"]["new"], back["counts"]["problem"]), (2, 1, 0))
+        changed = {row["deal"]: {c["field"]: c["to"] for c in row["changes"]} for row in back["rows"] if row["kind"] == "update"}
+        self.assertEqual(changed[self.dana["id"]], {"Candidate": "Dana Whitfield-Okafor", "Stage": "Submitted"})
+        self.assertEqual(changed[other[at["ID"]]], {"Fee": "$61k", "Due": "2026-12-05"})
+        self.desk.intake.run({"action": "apply", "id": back["id"]})
+        dana_now = self.desk.store.get(self.dana["id"])
+        self.assertEqual((dana_now["name"], dana_now["stage"]), ("Dana Whitfield-Okafor", "submitted"))
+        self.assertEqual(self.desk.store.get(other[at["ID"]])["value"], 61000.0)
+        self.assertEqual(self.desk.store.find("Ada Quill")["stage"], "contacted")
+        again = self.desk.export({"action": "table"})                                      # mirror again: the Sheet and the desk agree
+        settled = self.desk.intake.run({"action": "propose", "columns": again["columns"], "rows": again["rows"]})
+        self.assertEqual((settled["counts"]["update"], settled["counts"]["new"]), (0, 0))
+
     def test_two_people_pressing_apply_write_the_list_once(self):
         out = self.propose()
         results = []
@@ -1100,7 +1136,8 @@ class RegisterTests(unittest.TestCase):
     def test_everything_the_manifest_promises_is_registered(self):
         self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_intake", "gtm_market",
                                                   "gtm_notes", "gtm_pipeline", "gtm_playbook"])
-        self.assertEqual(sorted(self.ctx.blueprints), ["friday-review", "market-watch", "morning-brief", "notes-sweep"])
+        self.assertEqual(sorted(self.ctx.blueprints), ["friday-review", "market-watch", "morning-brief", "notes-sweep",
+                                                       "sheet-mirror", "sheet-pull"])
         self.assertEqual(sorted(self.ctx.skills), ["desk", "market-map", "playbook-authoring"])
         self.assertIn("gtm", self.ctx.commands)
         self.assertEqual(stoa.LIVE_DESKS[-1].home, Path(self.tmp.name))

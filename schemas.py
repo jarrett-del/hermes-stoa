@@ -231,12 +231,14 @@ GTM_EXPORT = {
         "action='import' adds records from a CSV with a name column (company, group, stage, value, owner, email, "
         "linkedin, next_step, next_due and playbook fields are picked up when present); existing records are skipped. "
         "Use dry_run=true first to see what an import would add. For a file someone sends, prefer gtm_intake: "
-        "it shows what would change, including updates to existing records, before anything is written."
+        "it shows what would change, including updates to existing records, before anything is written. "
+        "action='table' returns the pipeline as columns and rows, ready to write into a spreadsheet tab such as a "
+        "Google Sheet; read that tab back later with gtm_intake(columns=..., rows=...) to bring edits home."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["export", "import"]},
+            "action": {"type": "string", "enum": ["export", "import", "table"]},
             "path": {"type": "string", "description": "import: the CSV to read. export: where to write (optional)."},
             "dry_run": {"type": "boolean", "description": "import: count what would be added without adding it."},
         },
@@ -265,7 +267,7 @@ GTM_INTAKE = {
                 "description": "propose: the records, at most 500. apply: the row numbers to apply (default: every new and changed row).",
                 "type": "array",
                 "items": {
-                    "anyOf": [{"type": "integer"}, {
+                    "anyOf": [{"type": "integer"}, {"type": "array", "items": {}}, {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "The person, or the company when the record is a company."},
@@ -286,6 +288,8 @@ GTM_INTAKE = {
                 },
             },
             "path": {"type": "string", "description": "propose: a CSV file to read instead of rows."},
+            "columns": {"type": "array", "items": {"type": "string"},
+                        "description": "propose: the header row, when rows are lists of cells (a spreadsheet tab read as a table)."},
             "id": {"type": "string", "description": "show/apply/discard: the list's id. May be left out when only one is waiting."},
             "skip": {"type": "array", "items": {"type": "integer"}, "description": "apply: row numbers to leave out."},
         },

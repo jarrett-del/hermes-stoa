@@ -207,6 +207,31 @@ def register(ctx) -> None:
                {"name": "time", "type": "time", "label": "What time on Mondays?", "default": "07:30"}, deliver],
         tags=["gtm", "market", "weekly"],
     )
+    sheet = {"name": "sheet", "type": "text", "label": "Which Google Sheet? (its link)", "default": ""}
+    ctx.register_automation_blueprint(
+        "sheet-mirror",
+        title="Mirror the desk to a Google Sheet",
+        description="A few times a day: write the whole pipeline to a tab of your Google Sheet, for everyone who lives in Sheets.",
+        category="work",
+        schedule_template="0 {hours} * * 1-5",
+        prompt_template=("Load the skill stoa:desk and follow its Google Sheets section to mirror the desk to the tab \"Stoa\" "
+                         "of this Google Sheet: {sheet}. If it worked, reply with exactly [SILENT]. If it did not, say what "
+                         "failed in one line."),
+        slots=[sheet, {"name": "hours", "type": "text", "label": "Which hours? (cron hour list)", "default": "8,12,16"}, deliver],
+        tags=["gtm", "sheets"],
+    )
+    ctx.register_automation_blueprint(
+        "sheet-pull",
+        title="Bring Sheet edits back to the desk",
+        description="Once a day: read the Google Sheet and propose what people changed there, for you to approve.",
+        category="work",
+        schedule_template="{minute} {hour} * * 1-5",
+        prompt_template=("Load the skill stoa:desk and follow its Google Sheets section to read the tab \"Stoa\" of this "
+                         "Google Sheet: {sheet}, and propose its edits with gtm_intake. Do not apply them. If nothing would "
+                         "change, reply with exactly [SILENT]; otherwise show the review and say it is waiting."),
+        slots=[sheet, {"name": "time", "type": "time", "label": "What time?", "default": "17:00"}, deliver],
+        tags=["gtm", "sheets"],
+    )
     ctx.register_automation_blueprint(
         "friday-review",
         title="Friday pipeline review",

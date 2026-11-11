@@ -127,6 +127,25 @@ people up when asked, or when a record is about to get outreach and lacks the ba
 enrich a whole list unprompted. Enrichment fills blanks only and never overwrites what a person
 entered.
 
+## Google Sheets
+
+The records live on the desk, not in a Sheet. When Google is connected to you (the
+google-workspace skill, or any tool that reads and writes Sheets), you keep a Sheet in step:
+
+**Desk to Sheet** ("mirror the desk to my sheet"). Call `gtm_export(action="table")`. Write
+`columns` as the first row and `rows` beneath it into a tab named `Stoa` of their Sheet, starting
+at A1. If the tab held more rows than you are writing, overwrite the leftover rows with empty
+cells. Never touch other tabs. If they have no Sheet yet, create one, do the same, and give them
+the link.
+
+**Sheet to desk** ("pull my sheet edits"). Read the whole `Stoa` tab. Pass its first row as
+`columns` and the rest as `rows` to `gtm_intake(action="propose", source="Google Sheet")`. The ID
+column tells the desk which record each row is; a row someone added without an ID is matched like
+any other list. Show the review and apply only when told. Deleting a row in the Sheet does not
+remove the record.
+
+After edits are applied, mirror again so the Sheet shows the result.
+
 ## Getting data in and out
 
 `gtm_export(action="export")` writes a CSV that opens in Google Sheets or Excel. To bring an

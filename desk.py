@@ -783,7 +783,30 @@ class Desk:
             if not args.get("path"):
                 return {"ok": False, "error": "import needs the path of a CSV file"}
             return self.import_csv(Path(str(args["path"])).expanduser(), dry_run=bool(args.get("dry_run")))
-        return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["export", "import"]}
+        if action == "table":
+            return self.table(_int(args.get("limit") or 1000, 1000, 1, 5000))
+        return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["export", "import", "table"]}
+
+    def table(self, limit: int = 1000) -> dict:
+        """The pipeline as a header row and rows, in the words of the playbook: what goes into a
+        spreadsheet tab. The same table read back through gtm_intake changes nothing, and an edit
+        made in the spreadsheet comes back as exactly that edit (the ID column says which record)."""
+        playbook = self.playbook()
+        terms = playbook.terms
+        columns = (["ID", terms["deal"].capitalize(), terms["company"], terms["group"].capitalize(), "Stage", terms["value"],
+                    terms["owner"].capitalize(), "Next step", "Due", "Email", "LinkedIn"]
+                   + [field["label"] for field in playbook.fields] + ["Updated"])
+        deals = sorted(self.store.list(status="all"),
+                       key=lambda d: (playbook.position(d["stage"]) if d["status"] == "open" else 99, d["grp"].lower(), d["name"].lower()))
+        rows = [[d["id"], d["name"], d["company"], d["grp"], playbook.label(d["stage"]), d["value"] or "", d["owner"], d["next_step"],
+                 d["next_due"], d["email"], d["linkedin"]] + [str(d["fields"].get(field["key"], "")) for field in playbook.fields]
+                + [d["updated_at"][:10]] for d in deals[:limit]]
+        out = {"ok": True, "columns": columns, "rows": rows, "count": len(rows),
+               "note": "Write columns as the first row and rows beneath it. Keep the ID column: it is how an edit made in "
+                       "the spreadsheet finds its record when the tab is read back with gtm_intake."}
+        if len(deals) > limit:
+            out["truncated"] = len(deals) - limit
+        return out
 
     def import_csv(self, path: Path, dry_run: bool = False) -> dict:
         if not path.is_file():

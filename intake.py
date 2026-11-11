@@ -26,6 +26,7 @@ ALIASES = {"group": "grp", "account": "grp", "deal": "name", "contact": "name", 
            "e-mail": "email", "email_address": "email", "record_id": "record", "id": "record"}
 # "record" is the id of the record a row is about, to settle a match; "deal" in a spreadsheet header means the name.
 CORE = ("name", "company", "grp", "email", "linkedin", "stage", "value", "owner", "next_step", "next_due", "source", "note", "record")
+READ_ONLY = ("updated", "status", "last_touch", "added", "created")     # columns the desk writes out and never reads back
 
 
 def _text(value: Any, limit: int = 500) -> str:
@@ -89,6 +90,10 @@ class Intake:
                                               "an image), read it yourself and pass what you find as rows."}
             rows, problems = self._read_csv(path)
             source = source or path.name
+        columns = args.get("columns")
+        if isinstance(columns, list) and columns and isinstance(rows, list):       # a table: a header row, then rows of cells
+            names = [str(column) for column in columns]
+            rows = [dict(zip(names, row)) for row in rows if isinstance(row, (list, tuple)) and any(_text(cell) for cell in row)]
         if not isinstance(rows, list) or not rows:
             return {"ok": False, "error": "pass rows (a list of objects with at least a name or a company) or the path of a CSV"}
         if len(rows) > MAX_ROWS:
@@ -150,8 +155,8 @@ class Intake:
     def _clean(self, raw: Any, playbook) -> tuple:
         """One row as the desk's own fields: ``(row, warnings, ignored column names)``."""
         aliases = dict(ALIASES)
-        aliases[playbook.terms["group"].lower()] = "grp"
-        aliases[playbook.terms["deal"].lower()] = "name"
+        for term, key in (("group", "grp"), ("deal", "name"), ("value", "value"), ("owner", "owner"), ("company", "company")):
+            aliases[playbook.terms[term].lower().replace(" ", "_")] = key
         field_keys = {field["key"] for field in playbook.fields}
         by_label = {field["label"].lower(): field["key"] for field in playbook.fields}
         row: dict = {"fields": {}}
@@ -164,6 +169,8 @@ class Intake:
             key = label.replace(" ", "_")
             key = aliases.get(key, key)
             text = value if key == "value" and isinstance(value, (int, float)) and not isinstance(value, bool) else _text(value)
+            if key in READ_ONLY:
+                continue
             if key in CORE:
                 row[key] = text
             elif key in field_keys:
@@ -233,7 +240,8 @@ class Intake:
     def _changes(self, record: dict, row: dict, playbook) -> list:
         """What applying this row would change on the record: ``[{key, field, from, to}]``."""
         terms = playbook.terms
-        labels = (("company", terms["company"]), ("grp", terms["group"].capitalize()), ("email", "Email"), ("linkedin", "LinkedIn"),
+        named = (("name", terms["deal"].capitalize()),) if row.get("record") else ()      # found by id: the name may be the edit
+        labels = named + (("company", terms["company"]), ("grp", terms["group"].capitalize()), ("email", "Email"), ("linkedin", "LinkedIn"),
                   ("owner", terms["owner"].capitalize()), ("next_step", "Next step"), ("next_due", "Due"))
         changes = []
         for key, label in labels:
