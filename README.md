@@ -263,9 +263,13 @@ Without it everything else still works: the stage moves, the card updates, and t
 gets a line saying *"Saved. Reply here and I'll write it up."*
 
 Hermes lets a plugin continue a conversation a person started, never open one. So a card you
-asked for in a conversation hands its drafts straight back to that conversation. A card that
-arrived on its own (from a scheduled job, say) parks the writing task on the record and waits
-for your reply in its thread; the task is picked up the moment you answer.
+asked the agent for hands its drafts straight back to that conversation. A card that arrived
+another way (from `!gtm`, or a scheduled job) waits for your reply in its thread; the task is
+picked up the moment you answer.
+
+A writing task is never lost. It is saved on the record before the hand-off, and cleared when
+the agent opens the record to do it. If no draft turn has started within 45 seconds, the thread
+is told how to ask, so a click never ends in silence.
 
 ## Disclosure
 
@@ -317,7 +321,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 92 tests, no network
+python3 -m unittest discover -s tests     # 94 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

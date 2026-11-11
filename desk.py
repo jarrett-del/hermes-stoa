@@ -461,7 +461,7 @@ class Desk:
         return out
 
     def park_followup(self, deal_id: str, followup: str) -> None:
-        """Keep a writing task the gateway would not start; the next gtm_deal(get) hands it over."""
+        """Keep a writing task on the record; the next gtm_deal(get) hands it over and clears it."""
         self.store.meta_set("pending:" + deal_id, followup)
 
     def _followup(self, playbook: Playbook, deal: dict, actor: str, task: str, happened: str, reason: str = "") -> str:
@@ -795,6 +795,8 @@ class Desk:
         playbook = self.playbook()
         word = raw.lower()
         in_slack = bool(session) and session.get("platform") == "slack" and self.slack is not None and self.slack.available
+        if in_slack:        # a command opens no agent session, so there is none for a later click to hand back to
+            session = dict(session, session_key="")
         if word in ("", "board"):
             if not self.store.count():
                 return ("The desk is empty. Tell me about a %s to add it, or run `hermes stoa demo` for sample data."

@@ -22,6 +22,7 @@ log = logging.getLogger("hermes.plugins.stoa")
 ACTIONS = re.compile(r"^%s(advance|draft|enrich|lost|more|reopen|track)$" % cards.PREFIX)
 MAP = "map:"  # key under which a posted market map is remembered
 POST_TIMEOUT = 20
+HANDOFF_GRACE = 45  # seconds an accepted hand-off gets to open the record before the thread is told how to ask
 
 
 class SlackDesk:
@@ -30,6 +31,8 @@ class SlackDesk:
         self.inject = inject
         self.app: Any = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.grace = HANDOFF_GRACE
+        self._watching: set = set()
 
     # -- wiring ---------------------------------------------------------------------------------
     def wire(self, native: Any, adapter: Any = None) -> None:
@@ -173,9 +176,8 @@ class SlackDesk:
         await self._refresh(deal_id, skip=(channel, ts))
 
         if result.get("followup"):
-            if not await self._hand_off(result["followup"], channel, ts, thread, user.get("id", ""), actor, team):
-                await asyncio.to_thread(self.desk.park_followup, deal_id, result["followup"])
-                await self._say(channel, thread, "Saved. Reply here (\"draft it\" is enough) and I'll write it up.")
+            hint = "Saved %s. Reply here (\"draft it\" is enough) and I'll write it up." % result["deal"]["name"]
+            await self._hand_over(deal_id, result["followup"], hint, channel, ts, thread, user.get("id", ""), actor, team)
         elif result.get("notice"):
             await self._say(channel, thread, result["notice"])
 
@@ -188,12 +190,38 @@ class SlackDesk:
             await self._update(channel, ts, key)
             await self._refresh(key, skip=(channel, ts))
         if result.get("followup") and result.get("deal"):
-            if not await self._hand_off(result["followup"], channel, ts, thread, user_id, actor, team):
-                await asyncio.to_thread(self.desk.park_followup, result["deal"]["id"], result["followup"])
-                await self._say(channel, thread, "Added %s to the pipeline. Reply here and I'll find the right contact "
-                                                 "and draft the first note." % result["deal"]["company"])
+            hint = ("Added %s to the pipeline. Reply here and I'll find the right contact and draft the first note."
+                    % result["deal"]["company"])
+            await self._hand_over(result["deal"]["id"], result["followup"], hint, channel, ts, thread, user_id, actor, team)
         elif result.get("notice"):
             await self._say(channel, thread, result["notice"])
+
+    async def _hand_over(self, deal_id: str, followup: str, hint: str, channel: str, ts: str, thread: str,
+                         user_id: str, actor: str, team: str) -> None:
+        """Give the writing task to the agent without ever losing it.
+
+        The task is parked on the record first. The agent's first step in any turn about the record
+        is ``gtm_deal(get)``, which hands the task over and clears it. Hermes says yes to a hand-off
+        before it has routed it, and a turn that never starts makes no sound; so the thread is told
+        how to ask when Hermes refuses outright, and also when the task is still parked after a
+        grace period.
+        """
+        await asyncio.to_thread(self.desk.park_followup, deal_id, followup)
+        if not await self._hand_off(followup, channel, ts, thread, user_id, actor, team):
+            await self._say(channel, thread, hint)
+            return
+        watch = asyncio.get_running_loop().create_task(self._check_started(deal_id, followup, channel, thread, hint))
+        self._watching.add(watch)
+        watch.add_done_callback(self._watching.discard)
+
+    async def _check_started(self, deal_id: str, followup: str, channel: str, thread: str, hint: str) -> None:
+        try:
+            await asyncio.sleep(self.grace)
+            if await asyncio.to_thread(self.desk.store.meta_get, "pending:" + deal_id) == followup:
+                log.info("stoa: no agent turn picked up the task for %s; telling the thread how to ask", deal_id)
+                await self._say(channel, thread, hint)
+        except Exception:
+            log.debug("stoa: hand-off check failed", exc_info=True)
 
     async def _hand_off(self, followup: str, channel: str, ts: str, thread: str, user_id: str, actor: str, team: str) -> bool:
         """Give the writing task to the agent. Hermes lets a plugin continue a conversation a
@@ -213,7 +241,7 @@ class SlackDesk:
             except Exception:
                 log.warning("stoa: handing the follow-up to the agent failed", exc_info=True)
         log.info("stoa: the gateway did not start the follow-up turn (no conversation to continue, or "
-                 "plugins.entries.stoa.allow_gateway_injection is not true); the task is parked on the record")
+                 "plugins.entries.stoa.allow_gateway_injection is not true); the task stays parked on the record")
         return False
 
 

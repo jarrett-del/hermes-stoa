@@ -1125,6 +1125,7 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
                 return self.accept_session
             return self.accept
         self.slack = SlackDesk(self.desk, inject)
+        self.slack.grace = 0.05
         self.desk.slack = self.slack
         self.app = FakeApp()
         self.slack.wire(self.app, None)
@@ -1155,7 +1156,7 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         post = self.app.client.posts[-1]
         self.assertEqual((post["channel"], post["thread_ts"]), ("D1", "1690000000.000100"))
         self.assertIn("stoa_advance", json.dumps(post["blocks"]))
-        self.assertEqual(self.desk.store.card_session("D1", "1700000000.000001"), "sess-1")
+        self.assertEqual(self.desk.store.card_session("D1", "1700000000.000001"), "")     # a command has no session
         reply = await asyncio.to_thread(self.desk.slash, "map", here)
         self.assertEqual(reply, "")
         self.assertIn("stoa_track", json.dumps(self.app.client.posts[-1]["blocks"]))
@@ -1183,6 +1184,33 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
                          ("slack", "C1", "1700000000.000001", "U1"))
         self.assertEqual(self.app.client.posts, [])
         self.assertEqual(self.desk.store.activities(self.dana["id"], limit=1)[0]["actor"], "jo")
+        # the agent's turn opens the record, which hands it the task and clears it: no hint is needed
+        self.assertIn("submission note", self.desk.deal({"action": "get", "deal": self.dana["id"]})["pending_task"])
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.app.client.posts, [])
+
+    async def test_a_hand_off_hermes_accepts_and_then_drops_still_reaches_the_person(self):
+        # Hermes answers yes before it has routed the turn. Here it says yes and no turn ever starts.
+        await self.slack.on_action(self.ack, self.body(thread_ts="1699999999.000001"),
+                                   {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})
+        self.assertEqual(len(self.injected), 1)
+        self.assertEqual(self.app.client.posts, [])                        # nothing yet: the turn may be starting
+        await asyncio.sleep(0.3)
+        hint = self.app.client.posts[-1]
+        self.assertEqual(hint["thread_ts"], "1699999999.000001")
+        self.assertIn("Saved Dana Whitfield. Reply here", hint["text"])
+        self.assertEqual(len(self.app.client.posts), 1)
+        self.assertIn("submission note", self.desk.deal({"action": "get", "deal": self.dana["id"]})["pending_task"])
+
+    async def test_a_card_from_the_command_does_not_claim_a_session(self):
+        here = {"platform": "slack", "chat_id": "D1", "thread_id": "1690000000.000100", "session_key": "no-such-session"}
+        await asyncio.to_thread(self.desk.slash, "dana whitfield", here)
+        self.assertEqual(self.desk.store.card_session("D1", "1700000000.000001"), "")
+        self.accept = False                                                 # nobody has spoken to the agent in this thread
+        await self.slack.on_action(self.ack, self.body(ts="1700000000.000001", thread_ts="1690000000.000100"),
+                                   {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})
+        self.assertEqual([target for _content, target in self.injected if isinstance(target, str)], [])   # no session tried
+        self.assertIn("Reply here", self.app.client.posts[-1]["text"])      # told at once, not after the grace period
 
     async def test_refused_injection_parks_the_task_and_leaves_a_hint(self):
         self.accept = False
