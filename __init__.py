@@ -66,8 +66,13 @@ def build_desk(ctx) -> Desk:
                 actor=lambda: _session().get("actor", ""))
 
 
+LIVE_DESKS: list = []  # desks of loaded plugin instances, newest last (the dashboard tab reuses the live one)
+
+
 def register(ctx) -> None:
     desk = build_desk(ctx)
+    LIVE_DESKS.append(desk)
+    del LIVE_DESKS[:-4]
 
     # -- tools ----------------------------------------------------------------------------------
     for schema, fn, emoji in (

@@ -33,7 +33,33 @@ hermes stoa demo          # optional: fictional records and a sample market map 
 
 Then, in any Hermes chat: *"Map the market for us"*, *"What's on my plate?"*, or `/gtm`.
 
-## What it looks like
+## See it at work
+
+Stoa adds a tab to the Hermes web dashboard. It refreshes every few seconds, so when someone
+taps a button in Slack you watch the card move.
+
+![The pipeline board](docs/dashboard-pipeline.jpg)
+
+- **The funnel, live:** companies mapped → leads added → in play → won, with what is due and
+  what has gone quiet underneath.
+- **Pipeline board:** a column per playbook stage. Open a card to see its log, set the next
+  step, log a call, advance it, close it with a reason, or snooze it.
+- **Market map:** every segment as a cluster, each company sized by fit and filled in once it
+  is in the pipeline. Open one for the evidence and source, then **Add to pipeline**.
+- **Activity:** everything that happened, from Slack clicks, the agent and the web alike.
+- **Light and dark**, with a switch, whatever dashboard theme you run.
+
+![The market map](docs/dashboard-market-map.jpg)
+
+Buttons on the web do the same instant, deterministic work as the buttons in Slack. The web
+cannot start an agent turn, so when a click calls for a draft the task waits on the record
+(the card shows *draft waiting*) and Hermes writes it the next time that record comes up in chat.
+
+| | |
+|---|---|
+| ![A record](docs/dashboard-record.jpg) | ![Dark mode](docs/dashboard-dark.jpg) |
+
+## What it looks like in chat
 
 A card in Slack (shown here as the text version every other surface gets):
 
@@ -66,6 +92,7 @@ Two people clicking the same button at once move the stage once, not twice.
 | **8 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
+| **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
 | **`/gtm`** | The board, the brief, or one record, on every surface Hermes runs on (Slack, Telegram, CLI, Desktop…) |
 | **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
 | **4 automations** | Morning brief, meeting-notes sweep, weekly market watch, Friday review, under `/blueprint` |
@@ -216,6 +243,9 @@ What the plugin does that you would want to know before installing it:
   with. The plugin never reads, stores or sees the Slack token.
 - **Credentials.** `PDL_API_KEY`, `EXA_API_KEY` and `GRANOLA_API_KEY` are read through Hermes's secret scope
   (`agent.secret_scope.get_secret`). The plugin reads no `.env` or credential file.
+- **Web dashboard.** The tab's backend adds routes under `/api/plugins/stoa/`, behind the
+  dashboard's own sign-in. They read and change the pipeline; they call no model and no outside
+  service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
 - **Files outside the plugin's own data.** It reads Markdown and text files in the folder you
   set as `notes_dir`, and a CSV at a path you (or the agent, on your request) pass to import.
   Export writes a CSV to the plugin's `exports/` folder unless a path is given.
@@ -225,13 +255,14 @@ What the plugin does that you would want to know before installing it:
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.2
+## Limits in 0.3
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - A map is as good as the research behind it. Fit scores are the agent's judgement against your
   brief; the source link is there so you can check.
 - One Slack workspace per profile.
 - There is no direct Google Sheets sync yet; CSV is the bridge.
+- After updating the plugin, restart the gateway so the Slack buttons bind to the new code.
 - A team shares one desk. There are owners on records, but no per-person permissions.
 
 ## Development
@@ -239,7 +270,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 59 tests, no network
+python3 -m unittest discover -s tests     # 63 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
@@ -254,6 +285,7 @@ hermes plugins doctor . --ci
 | `slackdesk.py` | Posting cards and answering button clicks |
 | `market.py` | Market maps: segments, targets, and the step into the pipeline |
 | `sources.py` | People Data Labs, Exa and meeting-note sources |
+| `dashboard/` | The web tab: `plugin_api.py` (routes), `dist/index.js` and `dist/style.css` (hand-written, no build step) |
 
 ## License
 

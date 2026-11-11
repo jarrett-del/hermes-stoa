@@ -561,6 +561,74 @@ class MarketTests(unittest.TestCase):
         self.assertEqual((self.desk.store.count(), self.market({"action": "list"})["markets"]), (0, []))
 
 
+class DashboardApiTests(unittest.TestCase):
+    """The dashboard tab's backend, called directly (no web server needed)."""
+
+    def setUp(self):
+        try:
+            import fastapi  # noqa: F401
+        except ImportError:
+            self.skipTest("fastapi is not installed here; Hermes provides it")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        spec = importlib.util.spec_from_file_location("stoa_dash_api_test", ROOT / "dashboard" / "plugin_api.py")
+        self.api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.api)
+        self.desk = make_desk(self.tmp.name)
+        self.api.desk = lambda: self.desk
+        demo.load(self.desk)
+
+    def test_state_is_complete_and_serialisable(self):
+        state = json.loads(json.dumps(self.api.state()))
+        self.assertEqual(state["playbook"]["name"], "recruiting")
+        self.assertEqual((state["totals"]["open"], state["totals"]["mapped"], state["totals"]["tracked"]), (7, 7, 0))
+        self.assertEqual((state["totals"]["due"], state["totals"]["stale"]), (4, 1))
+        self.assertEqual(len(state["markets"][0]["segments"]), 3)
+        dana = [d for d in state["deals"] if d["name"] == "Dana Whitfield"][0]
+        self.assertEqual((dana["position"], dana["advance"], dana["pending"]), (2, "Submit to client", False))
+        self.assertTrue(state["activity"])
+
+    def test_advance_parks_the_draft_and_is_idempotent(self):
+        dana = self.desk.store.find("Dana Whitfield")
+        result = self.api.act(dana["id"], {"verb": "advance", "extra": "screened"})
+        self.assertEqual((result["ok"], result["parked"]), (True, True))
+        detail = self.api.deal(dana["id"])
+        self.assertEqual(detail["stage"], "submitted")
+        self.assertIn("submission note", detail["pending_task"])
+        again = self.api.act(dana["id"], {"verb": "advance", "extra": "screened"})
+        self.assertIn("Already moved", again["notice"])
+        self.assertEqual(self.desk.store.get(dana["id"])["stage"], "submitted")
+
+    def test_log_update_close_and_bad_requests(self):
+        from fastapi import HTTPException
+        dana = self.desk.store.find("Dana Whitfield")
+        self.api.act(dana["id"], {"verb": "log", "kind": "call", "text": "Spoke for ten minutes."})
+        self.api.act(dana["id"], {"verb": "update", "next_step": "Send two roles", "next_due": "2030-01-01"})
+        self.api.act(dana["id"], {"verb": "lost", "extra": "0"})
+        detail = self.api.deal(dana["id"])
+        self.assertEqual((detail["status"], detail["lost_reason"], detail["next_step"]), ("lost", "Not a fit", "Send two roles"))
+        self.assertIn("Spoke for ten minutes.", [a["text"] for a in detail["activity"]])
+        self.api.act(dana["id"], {"verb": "reopen"})
+        self.assertEqual(self.desk.store.get(dana["id"])["status"], "open")
+        for call in (lambda: self.api.act("ghost", {"verb": "advance"}), lambda: self.api.act(dana["id"], {"verb": "explode"}),
+                     lambda: self.api.deal("ghost"), lambda: self.api.add_deal({"company": "No name"})):
+            with self.assertRaises(HTTPException):
+                call()
+
+    def test_add_and_market_actions(self):
+        added = self.api.add_deal({"name": "Ada Park", "company": "Orbit", "stage": "contacted"})
+        self.assertEqual(self.desk.store.get(added["deal"]["id"])["stage"], "contacted")
+        target = self.desk.markets.target("Brightside Freight")
+        tracked = self.api.target(target["id"], "track", None)
+        self.assertTrue(tracked["ok"])
+        self.assertIn("most likely buyer", self.api.deal(tracked["deal"])["pending_task"])
+        self.assertFalse(self.api.target(target["id"], "track", None)["ok"])
+        other = self.desk.markets.target("Quill Cargo")
+        self.assertEqual(self.api.target(other["id"], "dismiss", {"reason": "Builds in-house"})["dismissed"], ["Quill Cargo"])
+        counts = self.api.state()["markets"][0]["counts"]
+        self.assertEqual((counts["mapped"], counts["tracked"], counts["dismissed"]), (6, 1, 1))
+
+
 class FakeClient:
     def __init__(self):
         self.posts, self.updates = [], []
