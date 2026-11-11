@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+EN = chr(0x2013)   # the dash in "50-199" style size bands
 
 
 def _load_package():
@@ -223,6 +224,43 @@ class DeskTests(unittest.TestCase):
         self.assertEqual(second["deal"]["stage"], "submitted")
         self.assertIn("Already moved", second["notice"])
         self.assertEqual(second["followup"], "")
+
+    def test_twenty_clicks_at_once_move_the_stage_once(self):
+        import threading
+        deal = self.add(stage="screened")
+        results = []
+        threads = [threading.Thread(target=lambda i=i: results.append(self.desk.click("advance", deal["id"], "screened", "u%d" % i)))
+                   for i in range(20)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(self.desk.store.get(deal["id"])["stage"], "submitted")
+        self.assertEqual(len([r for r in results if r["followup"]]), 1)
+        self.assertEqual(len([r for r in results if "Already moved" in r["notice"]]), 19)
+        self.assertEqual(len([a for a in self.desk.store.activities(deal["id"], limit=100) if a["kind"] == "stage"]), 1)
+
+    def test_a_tool_move_that_loses_the_race_changes_nothing(self):
+        deal = self.add(stage="screened")
+        stale = self.desk.store.get(deal["id"])
+        self.desk.click("advance", deal["id"], "screened", "jo")
+        self.assertIsNone(self.desk._move(stale, "interview", self.desk.playbook(), "agent"))
+        self.assertEqual(self.desk.store.get(deal["id"])["stage"], "submitted")
+        closed = self.desk.deal({"action": "close", "deal": deal["id"], "outcome": "lost", "reason": "Timing"})["deal"]
+        self.assertEqual(self.desk.store.get(deal["id"])["fields"]["_prev_stage"], "submitted")
+        self.assertNotIn("Updated fields", [a["text"] for a in self.desk.store.activities(deal["id"], limit=20)])
+        self.assertEqual(closed["status"], "lost")
+
+    def test_numbers_and_lists_of_the_wrong_shape_are_forgiven(self):
+        demo.load(self.desk)
+        for args in ({"limit": "x"}, {"limit": [1]}, {"view": "activity", "days": "99999999999999999999"}, {"view": "activity", "limit": 10 ** 30},
+                     {"limit": None}, {"limit": -5}, {"limit": "12.0"}):
+            self.assertTrue(self.desk.pipeline(args)["ok"], args)
+        self.assertTrue(self.desk.deal({"action": "snooze", "deal": "priya", "days": "soon"})["ok"])
+        self.assertEqual(self.desk.deal({"action": "snooze", "deal": "priya", "days": 0})["deal"].get("snoozed_until"), None)
+        self.assertTrue(self.desk.deal({"action": "get", "deal": "priya", "activities": {}})["ok"])
+        self.assertTrue(self.desk.notes({"days": "many"})["ok"])
+        for targets in (-1, 3.5, True, {"a": 1}, [None, {}], None):
+            self.assertFalse(self.desk.market({"action": "track", "targets": targets})["ok"])
+            self.assertFalse(self.desk.market({"action": "dismiss", "targets": targets})["ok"])
 
     def test_click_lost_snooze_reopen_and_gone(self):
         deal = self.add()
@@ -557,7 +595,7 @@ class MarketTests(unittest.TestCase):
         demo.load(self.desk)
         s = self.market({"action": "show"})
         self.assertEqual(s["numbers"], {"companies": 7, "segments": 3, "in_pipeline": 0, "with_signal": 3, "buyers_named": 4,
-                                        "assessed": 7, "bridges": 2, "avg_fit": 3.7})
+                                        "assessed": 7, "bridges": 2, "avg_fit": 3.7, "dismissed": 0})
         self.assertEqual([(r["label"], r["rate"], r["of"]) for r in s["requirements"]],
                          [("50 to 500 people", 100, 7), ("Scorecards kept in spreadsheets", 43, 7),
                           ("Own compliance team", 43, 7), ("Carrier base growing", 71, 7)])
@@ -576,7 +614,7 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(meridian["uses"], "Spreadsheets")
         self.assertEqual([r["shown"] for r in meridian["requirements"]], [True, True, True, True])
         self.assertEqual(meridian["requirements"][1]["evidence"], "Job ad asks for advanced Excel for carrier scoring")
-        for heading in ("How rare each requirement is (of 7 checked)", "Who holds this market today", "Where the segments meet",
+        for heading in ("How rare each requirement is", " 43%  Own compliance team (3 of 7 checked)", "Who holds this market today", "Where the segments meet",
                         "First calls", " 57%  Spreadsheets (4)", "1. Brightside Freight \u2014 Fresh funding"):
             self.assertIn(heading, s["map"])
         json.dumps(s)
@@ -590,9 +628,48 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(added["problems"], ["None Shown: 'Wears a hat' is not one of this market's requirements"])
         fits = {c["company"]: c["fit"] for seg in self.market({"action": "show"})["segments"] for c in seg["companies"]}
         self.assertEqual(fits, {"Two Of Four": 3, "None Shown": 1, "Scored By Hand": 5})
-        self.market({"action": "add", "companies": [{"company": "Two Of Four", "requirements": {"Bills over 10k": "Tariff sheet"}}]})
-        rates = {r["label"]: (r["shown"], r["of"]) for r in self.market({"action": "show"})["requirements"]}
-        self.assertEqual(rates, {"Owns the roof": (1, 3), "Over 50 staff": (1, 3), "Has a facilities lead": (0, 3), "Bills over 10k": (1, 3)})
+        self.market({"action": "add", "companies": [{"company": "Two Of Four", "requirements": {"Bills over 10k": "Tariff sheet"}},
+                                                      {"company": "Scored By Hand", "requirements": {"Over 50 staff": "90 people"}}]})
+        shown = self.market({"action": "show"})
+        # each requirement is measured only among the companies actually checked for it
+        rates = {r["label"]: (r["shown"], r["of"]) for r in shown["requirements"]}
+        self.assertEqual(rates, {"Owns the roof": (1, 3), "Over 50 staff": (2, 2), "Has a facilities lead": (0, 1), "Bills over 10k": (1, 1)})
+        # fit follows the requirements as more is learned, unless it was set by hand
+        fits = {c["company"]: c["fit"] for seg in shown["segments"] for c in seg["companies"]}
+        self.assertEqual(fits, {"Two Of Four": 4, "None Shown": 1, "Scored By Hand": 5})
+        # rewording the requirements does not count old evidence against the new wording
+        self.market({"action": "define", "name": "Solar", "requirements": ["Flat roof", "Pays its own power bill"]})
+        reworded = self.market({"action": "show"})
+        self.assertEqual([(r["label"], r["of"]) for r in reworded["requirements"]], [("Flat roof", 0), ("Pays its own power bill", 0)])
+        self.assertEqual(reworded["numbers"]["assessed"], 0)
+        self.assertNotIn("How rare each requirement is", reworded["map"])
+
+    def test_review_findings_stay_fixed(self):
+        from stoa.market import _clean, _key, _people, size_band
+        self.assertEqual([size_band(x) for x in ("Founded 2015, 80 people", "$40M ARR, 300 people", "250 key staff", "about 1.2k employees")],
+                         ["50%s199" % EN, "200%s999" % EN, "200%s999" % EN, "1,000+"])
+        self.assertEqual([_clean(x) for x in (False, True, 0, None, [], {"a": 1}, "  two   words ", 42)], ["", "", "", "", "", "", "two words", "42"])
+        self.assertEqual(len({_key("\u65e5\u672c\u8a9e\u306e\u8981\u4ef6"), _key("\u5225\u306e\u8981\u4ef6"), _key("Caf\u00e9 owner"), _key("Cafe owner")}), 4)
+        merged = _people([{"name": "A B", "title": "x"}, {"name": "a b", "title": "VP", "linkedin": "li/ab"}, {"name": "C D", "linkedin": "LI/AB"}])
+        self.assertEqual(merged, [{"name": "C D", "title": "VP", "linkedin": "LI/AB"}])
+        self.assertEqual(len(_people([{"name": "P%d" % i} for i in range(9)])), 6)
+        self.market({"action": "define", "name": "Rooms", "requirements": ["\u65e5\u672c\u8a9e\u306e\u8981\u4ef6", "\u5225\u306e\u8981\u4ef6"]})
+        self.market({"action": "add", "companies": [
+            {"company": "Kyoto Inn", "signal": False, "uses": False, "why": 0, "requirements": {"\u65e5\u672c\u8a9e\u306e\u8981\u4ef6": "yes", "\u5225\u306e\u8981\u4ef6": ""},
+             "people": [{"name": "Miles Brandt", "title": "COO", "linkedin": "li/miles", "email": "miles@inn.example"}]}]})
+        shown = self.market({"action": "show"})
+        self.assertEqual([(r["shown"], r["of"]) for r in shown["requirements"]], [(1, 1), (0, 1)])
+        self.assertEqual((shown["numbers"]["with_signal"], shown["holds"]), (0, []))
+        tracked = self.market({"action": "track", "targets": ["Kyoto Inn"], "contact": "miles brandt", "title": "Chief Operating Officer"})
+        deal = self.desk.store.get(tracked["added_to_pipeline"][0]["deal"])
+        self.assertEqual((deal["email"], deal["linkedin"], deal["fields"].get("title")),
+                         ("miles@inn.example", "li/miles", "Chief Operating Officer"))
+
+    def test_scheduled_jobs_are_opted_in_by_name(self):
+        desk = make_desk(self.tmp.name, config={"channels": ["C1"]})
+        self.assertFalse(desk.allowed({"platform": "cron", "chat_id": ""}))
+        self.assertTrue(make_desk(self.tmp.name, config={"channels": ["C1", "cron"]}).allowed({"platform": "cron"}))
+        self.assertTrue(make_desk(self.tmp.name).allowed({"platform": "cron"}))
 
     def test_first_calls_fall_back_to_the_strongest_fits(self):
         self.define()

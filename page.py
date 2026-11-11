@@ -136,8 +136,9 @@ def render(summary: dict, terms: dict, share: bool = False) -> str:
     panels = []
     checked = [r for r in summary["requirements"] if r["of"]]
     if checked:
-        panels.append("<div><h2>How rare each requirement is</h2><p>Share of the %d companies checked that show each one.</p>%s</div>"
-                      % (checked[0]["of"], _bars(checked, lambda r: r["label"], lambda r: r["rate"], total=100)))
+        panels.append("<div><h2>How rare each requirement is</h2><p>Share of the companies checked for each one that show it.</p>%s</div>"
+                      % _bars(checked, lambda r: r["label"], lambda r: r["rate"],
+                              note=lambda r: "%d of %d checked" % (r["shown"], r["of"]), total=100))
     if summary["holds"]:
         panels.append("<div><h2>Who holds this market today</h2><p>What the %d companies we could place use now.</p>%s</div>"
                       % (summary["holds_of"], _bars(summary["holds"], lambda r: r["name"], lambda r: r["share"],

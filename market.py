@@ -44,11 +44,15 @@ def dots(fit: int) -> str:
 
 
 def _clean(value: Any, limit: int = 400) -> str:
-    return " ".join(str(value if value is not None else "").split())[:limit]
+    """Tidy text from a tool argument. Anything that is not text or a number (``false``, a list) counts as blank."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)) or not value:
+        return ""
+    return " ".join(str(value).split())[:limit]
 
 
 def _key(label: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", (label or "").lower()).strip("_")[:48]
+    """A stable key for a requirement's wording, in any script."""
+    return re.sub(r"[^\w]+", "_", str(label or "").lower(), flags=re.UNICODE).strip("_")[:80]
 
 
 def region_of(location: str) -> str:
@@ -58,12 +62,17 @@ def region_of(location: str) -> str:
 
 
 def size_band(size: str) -> str:
-    """A headcount band, when the size text is a headcount ('220 people', '50-200 employees', '1,200')."""
+    """A headcount band, when the size text gives a headcount ('220 people', 'Founded 2015, 80 staff', '1,200').
+
+    The headcount is the number that sits with the word for people, not the first number in the text.
+    """
     text = (size or "").lower().replace(",", "")
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(k)?", text)
+    number = r"(\d+(?:\.\d+)?)(k\b)?"
+    match = re.search(number + r"(?:\s*(?:-|–|to)\s*\d+(?:\.\d+)?k?\b)?\+?(?:\s+[a-z-]+){0,2}?\s*"
+                      r"(?:people|employees?|staff|headcount|ftes?|persons?)\b", text)
+    if not match and re.fullmatch(r"[\d\s.k+–-]+", text):      # a bare number or range is a headcount too
+        match = re.search(number, text)
     if not match:
-        return ""
-    if not (re.search(r"people|employee|staff|headcount|fte|person", text) or re.fullmatch(r"[\d\s.k+–-]+", text)):
         return ""
     count = float(match.group(1)) * (1000 if match.group(2) else 1)
     for limit, label in SIZE_BANDS:
@@ -72,23 +81,47 @@ def size_band(size: str) -> str:
     return SIZE_BANDS[-1][1]
 
 
+def _refs(args: dict) -> list:
+    """The companies an action names: ``targets`` (a list or one string) or ``target``."""
+    raw = args.get("targets") if args.get("targets") is not None else args.get("target")
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(r).strip() for r in raw if isinstance(r, (str, int)) and str(r).strip()] if isinstance(raw, (list, tuple)) else []
+
+
+def _whole(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        number = int(float(value)) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    return max(low, min(number, high))
+
+
 def _people(raw: Any) -> list:
-    """Buyers at a company, as a clean list of {name, title, linkedin, email, why}."""
-    out, seen = [], set()
+    """Buyers at a company, as a clean list of {name, title, linkedin, email, why}: one entry per person.
+
+    The same person seen again (by name, or by LinkedIn URL) updates their entry rather than adding another,
+    so what is learned later fills in or corrects what was known.
+    """
+    out = []
     for item in raw if isinstance(raw, list) else []:
         if isinstance(item, str):
             name, _, title = item.partition(" — ") if " — " in item else item.partition(" - ")
             item = {"name": name, "title": title}
         if not isinstance(item, dict):
             continue
-        person = {"name": _clean(item.get("name"), 80), "title": _clean(item.get("title"), 100),
-                  "linkedin": _clean(item.get("linkedin"), 200), "email": _clean(item.get("email"), 120),
-                  "why": _clean(item.get("why"), 200)}
-        mark = (person["linkedin"] or person["name"]).lower()
-        if person["name"] and mark not in seen:
-            seen.add(mark)
-            out.append({k: v for k, v in person.items() if v})
-    return out[:MAX_PEOPLE]
+        person = {k: v for k, v in (("name", _clean(item.get("name"), 80)), ("title", _clean(item.get("title"), 100)),
+                                    ("linkedin", _clean(item.get("linkedin"), 200)), ("email", _clean(item.get("email"), 120)),
+                                    ("why", _clean(item.get("why"), 200))) if v}
+        if not person.get("name"):
+            continue
+        same = next((p for p in out if p["name"].lower() == person["name"].lower()
+                     or (person.get("linkedin") and p.get("linkedin", "").lower() == person["linkedin"].lower())), None)
+        if same is not None:
+            same.update(person)
+        elif len(out) < MAX_PEOPLE:
+            out.append(person)
+    return out
 
 
 class Markets:
@@ -224,8 +257,9 @@ class Markets:
         companies = args.get("companies") or []
         if isinstance(companies, dict):
             companies = [companies]
-        known = {c["key"]: c["key"] for c in market["detail"].get("criteria", [])}
-        known.update({_key(c["label"]): c["key"] for c in market["detail"].get("criteria", [])})
+        current = market["detail"].get("criteria") or []
+        known = {c["key"]: c["key"] for c in current}
+        known.update({_key(c["label"]): c["key"] for c in current})
         added, updated, problems = [], [], []
         stamp = st.now()
         with self.store._conn() as conn:
@@ -258,12 +292,16 @@ class Markets:
                 people = _people((detail.get("people") or []) + (raw.get("people") if isinstance(raw.get("people"), list) else []))
                 if people:
                     detail["people"] = people
-                if not isinstance(fit, (int, float)) and detail.get("criteria") and known and not row:
-                    shown = len([v for v in detail["criteria"].values() if v])   # no score given: read it off the requirements
-                    fit = max(1, int(5 * shown / max(1, len(market["detail"].get("criteria", []))) + 0.5))
+                if isinstance(fit, bool) or not isinstance(fit, (int, float)):
+                    fit = None
+                if fit is not None:
+                    detail["fit_set"] = True                       # scored by hand: leave it alone from now on
+                elif isinstance(given, dict) and current and not detail.get("fit_set"):
+                    shown = len([c for c in current if detail.get("criteria", {}).get(c["key"])])   # read it off the requirements
+                    fit = max(1, int(5 * shown / len(current) + 0.5))
                 if row:
                     sets = {k: v for k, v in values.items() if v and v != row[k]}
-                    if isinstance(fit, (int, float)):
+                    if fit is not None:
                         sets["fit"] = max(1, min(int(fit), 5))
                     sets["detail"] = json.dumps(detail)
                     conn.execute("UPDATE targets SET %s, updated_at = ? WHERE id = ?" % ", ".join("%s = ?" % k for k in sets),
@@ -274,7 +312,7 @@ class Markets:
                         "INSERT INTO targets (id, market_id, company, domain, segment, fit, size, location, why, signal, source, "
                         "detail, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (tid, market["id"], company[:120], values["domain"], values["segment"],
-                         max(1, min(int(fit), 5)) if isinstance(fit, (int, float)) else 3, values["size"], values["location"],
+                         max(1, min(int(fit), 5)) if fit is not None else 3, values["size"], values["location"],
                          values["why"], values["signal"], values["source"], json.dumps(detail), stamp, stamp))
                     added.append(company)
             conn.execute("UPDATE markets SET updated_at = ? WHERE id = ?", (stamp, market["id"]))
@@ -326,17 +364,18 @@ class Markets:
                 seg["companies"] = seg["companies"][:25]
         return dict(summary, ok=True)
 
-    def summary(self, market_id: str, segment: str = "", status: str = "") -> dict:
+    def summary(self, market_id: str, segment: str = "", status: str = "", text: bool = True, with_rows: bool = False) -> dict:
         """Everything the map says, computed from what has been recorded. Used by the tool, the web tab and the page."""
         market = self._market(market_id)
-        rows = self.targets(market["id"], status if status in STATUSES else "", segment)
-        if status not in STATUSES:
-            rows = [r for r in rows if r["status"] != "dismissed"]
+        everything = self.targets(market["id"], "", segment)
+        rows = [r for r in everything if (r["status"] == status if status in STATUSES else r["status"] != "dismissed")]
         criteria = market["detail"].get("criteria") or []
         total = len(rows)
+        place = {r["id"]: region_of(r["location"]) for r in rows}
+        band = {r["id"]: size_band(r["size"]) for r in rows}
         segments = []
         for name, group in by_segment(market, rows):
-            regions = Counter(region_of(r["location"]) for r in group if region_of(r["location"]))
+            regions = Counter(place[r["id"]] for r in group if place[r["id"]])
             segments.append({
                 "segment": name,
                 "description": next((s.get("description", "") for s in market["segments"] if s["name"].lower() == name.lower()), ""),
@@ -346,12 +385,15 @@ class Markets:
                 "regions": [k for k, _ in regions.most_common(3)],
                 "uses": [k for k, _ in _tally(r["detail"].get("uses", "") for r in group)[:3]],
                 "companies": [_view(r, criteria, name) for r in group]})
-        assessed = [r for r in rows if r["detail"].get("criteria")]
+        # a requirement's rarity is measured only among the companies actually checked for it
         requirements = []
         for c in criteria:
-            shown = len([r for r in assessed if r["detail"]["criteria"].get(c["key"])])
-            requirements.append({"label": c["label"], "shown": shown, "of": len(assessed),
-                                 "rate": round(100 * shown / len(assessed)) if assessed else 0})
+            checked = [r for r in rows if c["key"] in (r["detail"].get("criteria") or {})]
+            shown = len([r for r in checked if r["detail"]["criteria"].get(c["key"])])
+            requirements.append({"label": c["label"], "shown": shown, "of": len(checked),
+                                 "rate": round(100 * shown / len(checked)) if checked else 0})
+        keys = {c["key"] for c in criteria}
+        assessed = len([r for r in rows if keys & set(r["detail"].get("criteria") or {})])
         using = [r for r in rows if r["detail"].get("uses")]
         holds = []
         for name, count in _tally(r["detail"]["uses"] for r in using)[:8]:
@@ -361,33 +403,37 @@ class Markets:
         seg_names.update({s["name"].lower(): s["name"] for s in market["segments"]})
         pairs: dict = {}
         for r in rows:
-            other = seg_names.get(r["detail"].get("also", "").lower())
+            other = seg_names.get(str(r["detail"].get("also", "")).lower())
             own = r["segment"] or "Unsorted"
             if other and other.lower() != own.lower():
                 pairs.setdefault(tuple(sorted((own, other), key=str.lower)), []).append(r["company"])
         bridges = [{"between": list(pair), "count": len(names), "companies": names[:8]}
                    for pair, names in sorted(pairs.items(), key=lambda kv: -len(kv[1]))]
-        people = sum(len(r["detail"].get("people") or []) for r in rows)
-        return {
+        calls = self.first_calls(market, rows)
+        out = {
             "market": {"id": market["id"], "name": market["name"], "brief": market["brief"],
                        "requirements": [c["label"] for c in criteria], "reading": market["detail"].get("reading", ""),
                        "implications": market["detail"].get("implications") or [], "updated_at": market["updated_at"]},
             "numbers": {"companies": total, "segments": len(segments),
                         "in_pipeline": len([r for r in rows if r["status"] == "tracked"]),
-                        "with_signal": len([r for r in rows if r["signal"]]), "buyers_named": people,
-                        "assessed": len(assessed), "bridges": sum(b["count"] for b in bridges),
-                        "avg_fit": round(sum(r["fit"] for r in rows) / total, 1) if total else 0},
-            "map": map_text(market, rows, requirements, holds, bridges, self.first_calls(market, rows)),
+                        "with_signal": len([r for r in rows if r["signal"]]),
+                        "buyers_named": sum(len(r["detail"].get("people") or []) for r in rows),
+                        "assessed": assessed, "bridges": sum(b["count"] for b in bridges),
+                        "avg_fit": round(sum(r["fit"] for r in rows) / total, 1) if total else 0,
+                        "dismissed": len([r for r in everything if r["status"] == "dismissed"])},
             "segments": segments,
             "requirements": requirements,
             "holds": holds, "holds_of": len(using),
-            "regions": [{"name": k, "count": v} for k, v in Counter(
-                region_of(r["location"]) for r in rows if region_of(r["location"])).most_common(8)],
-            "sizes": [{"band": label, "count": len([r for r in rows if size_band(r["size"]) == label])} for _, label in SIZE_BANDS
-                      if any(size_band(r["size"]) == label for r in rows)],
+            "regions": [{"name": k, "count": v} for k, v in Counter(v for v in place.values() if v).most_common(8)],
+            "sizes": [{"band": label, "count": list(band.values()).count(label)} for _, label in SIZE_BANDS if label in band.values()],
             "bridges": bridges,
-            "first_calls": self.first_calls(market, rows),
+            "first_calls": calls,
         }
+        if text:
+            out["map"] = map_text(market, rows, requirements, holds, bridges, calls)
+        if with_rows:
+            out["_rows"] = rows
+        return out
 
     def first_calls(self, market: dict, rows: list) -> list:
         """The few companies to ring first: the ones the agent chose, else the strongest fits, spread across segments."""
@@ -416,7 +462,7 @@ class Markets:
         query = str(args.get("query") or "").strip()
         if not query:
             return {"ok": False, "error": "search needs a query describing the kind of company"}
-        result = sources.exa_companies(key, query, int(args.get("limit") or 8), http=self.desk.http)
+        result = sources.exa_companies(key, query, _whole(args.get("limit") or 8, 8, 1, 15), http=self.desk.http)
         if result.get("ok"):
             result["note"] = ("These are candidates, not yet on the map. Judge each against the market brief and add the ones "
                               "that fit with gtm_market(action='add'), giving the reason and the source URL.")
@@ -430,13 +476,10 @@ class Markets:
         target = self.target(str(args.get("target") or args.get("company") or ""))
         company = target["company"] if target else str(args.get("company") or "")
         domain = target["domain"] if target else sources.domain_of(str(args.get("website") or ""))
-        try:
-            limit = max(1, min(int(args.get("limit") or 3), 5))
-        except (TypeError, ValueError):
-            limit = 3
+        limit = _whole(args.get("limit") or 3, 3, 1, 5)
         month = "pdl_calls:" + st.today()[:7]
-        cap = int(self.desk.setting("pdl_monthly_cap", 50) or 0)
-        used = int(self.store.meta_get(month, "0") or 0)
+        cap = _whole(self.desk.setting("pdl_monthly_cap", 50), 50, 0, 10 ** 6)
+        used = _whole(self.store.meta_get(month, "0"), 0, 0, 10 ** 9)
         if cap and used + limit > cap:
             return {"ok": False, "error": "This would pass the monthly People Data Labs cap (%d used of %d). Raise "
                                           "pdl_monthly_cap in the plugin's settings to continue." % (used, cap)}
@@ -460,9 +503,7 @@ class Markets:
     def track(self, args: dict, actor: str = "") -> dict:
         """Turn targets into pipeline records at the playbook's first stage."""
         market = self._market(args.get("market"))
-        refs = args.get("targets") or ([args["target"]] if args.get("target") else [])
-        if isinstance(refs, str):
-            refs = [refs]
+        refs = _refs(args)
         if not refs:
             return {"ok": False, "error": "track needs `targets`: ids or company names from the map"}
         playbook = self.desk.playbook()
@@ -478,10 +519,12 @@ class Markets:
                 continue
             owner_market = self._market(target["market_id"]) or {"name": ""}
             buyer = (target["detail"].get("people") or [{}])[0]          # the first buyer found, unless one is named now
-            named = str(args.get("contact") or "").strip() if len(refs) == 1 else ""
+            named = _clean(args.get("contact"), 80) if len(refs) == 1 else ""
             contact = named or buyer.get("name", "")
-            person = {"title": str(args.get("title") or ""), "email": str(args.get("email") or ""),
-                      "linkedin": str(args.get("linkedin") or "")} if named else buyer
+            person = buyer
+            if named:        # start from what the map knows about that person, then apply what was passed now
+                person = dict(next((p for p in target["detail"].get("people") or [] if p["name"].lower() == named.lower()), {}))
+                person.update({k: _clean(args.get(k), 200) for k in ("title", "email", "linkedin") if _clean(args.get(k), 200)})
             group = target["company"] if playbook.terms["group"].lower() in ACCOUNT_WORDS else owner_market["name"]
             keys = {f["key"] for f in playbook.fields}
             deal = self.store.add(
@@ -515,9 +558,7 @@ class Markets:
         return out
 
     def dismiss(self, args: dict) -> dict:
-        refs = args.get("targets") or ([args["target"]] if args.get("target") else [])
-        if isinstance(refs, str):
-            refs = [refs]
+        refs = _refs(args)
         market = self._market(args.get("market"))
         done, touched = [], set()
         for ref in refs[:50]:
@@ -576,9 +617,8 @@ class Markets:
         market = self._market(market_id)
         if market is None:
             return []
-        summary = self.summary(market_id)
-        rows = [r for r in self.targets(market_id) if r["status"] != "dismissed"]
-        return map_blocks(market, rows, summary)
+        summary = self.summary(market_id, text=False, with_rows=True)
+        return map_blocks(market, summary["_rows"], summary)
 
     def _refresh(self, market_id: str) -> None:
         slack = self.desk.slack
@@ -715,8 +755,8 @@ def map_text(market: dict, rows: list, requirements: Optional[list] = None, hold
         if len(group) > 15:
             lines.append("  … and %d more" % (len(group) - 15))
     if requirements and any(r["of"] for r in requirements):
-        lines += ["", "How rare each requirement is (of %d checked)" % requirements[0]["of"]]
-        lines += ["  %3d%%  %s" % (r["rate"], r["label"]) for r in requirements]
+        lines += ["", "How rare each requirement is"]
+        lines += ["  %3d%%  %s (%d of %d checked)" % (r["rate"], r["label"], r["shown"], r["of"]) for r in requirements if r["of"]]
     if holds:
         lines += ["", "Who holds this market today"]
         lines += ["  %3d%%  %s (%d)" % (h["share"], h["name"], h["count"]) for h in holds[:6]]

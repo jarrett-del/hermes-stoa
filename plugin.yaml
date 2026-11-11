@@ -33,7 +33,7 @@ config_schema:
     type: list
     default: []
     label: Limit to these chats
-    description: "Chat ids (for example Slack channel ids) where the desk is available. Empty means everywhere. Terminal and Desktop sessions are always allowed."
+    description: "Chat ids (for example Slack channel ids) where the desk is available. Empty means everywhere. Terminal and Desktop sessions are always allowed; add the word cron to let scheduled jobs use it too."
   notes_dir:
     type: str
     default: ""

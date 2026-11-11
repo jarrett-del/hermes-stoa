@@ -23,6 +23,15 @@ GRANOLA_KEY = "GRANOLA_API_KEY"
 LOG_KINDS = ("note", "call", "email", "meeting", "task")
 
 
+def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
+    """A whole number from a tool argument, whatever was actually passed, kept within sensible bounds."""
+    try:
+        number = int(float(value)) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    return max(low, min(number, high))
+
+
 class _Blank(dict):
     def __missing__(self, key):
         return ""
@@ -90,6 +99,8 @@ class Desk:
         session = session or {}
         if session.get("platform", "") in ("", "cli", "tui", "desktop", "local"):
             return True
+        if session.get("platform") == "cron":        # scheduled jobs have no chat: they are opted in by name
+            return "cron" in allow
         return session.get("chat_id", "") in allow
 
     def can_enrich(self) -> bool:
@@ -151,9 +162,9 @@ class Desk:
         if view == "brief":
             return self.brief()
         if view == "activity":
-            days = int(args.get("days") or 7)
+            days = _int(args.get("days") or 7, 7, 1, 3650)
             since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            acts = self.store.activities(limit=int(args.get("limit") or 40), since=since)
+            acts = self.store.activities(limit=_int(args.get("limit") or 40, 40, 1, 500), since=since)
             return {"ok": True, "view": "activity", "days": days, "activity": [
                 {"deal": a["deal_id"], "at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"]} for a in acts]}
         stage = playbook.resolve_stage(str(args.get("stage") or "")) or ""
@@ -164,7 +175,7 @@ class Desk:
             deals = [d for d in deals if cards.is_stale(playbook, d, self.store.last_touch(d["id"]))]
         elif view == "due":
             deals = sorted([d for d in deals if cards.is_due(d)], key=lambda d: d["next_due"])
-        limit = int(args.get("limit") or 60)
+        limit = _int(args.get("limit") or 60, 60, 1, 500)
         out = {"ok": True, "view": view, "playbook": playbook.name, "count": len(deals),
                "open_value": sum(d["value"] for d in deals if d["status"] == "open")}
         if view == "board":
@@ -265,7 +276,7 @@ class Desk:
         if error:
             return error
         if action == "get":
-            out = {"ok": True, "deal": self.view(deal, playbook, activities=int(args.get("activities") or 12)),
+            out = {"ok": True, "deal": self.view(deal, playbook, activities=_int(args.get("activities") or 12, 12, 0, 100)),
                    "card": self.text_card(deal)}
             pending = self.store.meta_pop("pending:" + deal["id"])
             if pending:  # a button was clicked but the agent's turn could not be started at the time
@@ -283,15 +294,24 @@ class Desk:
             if not stage:
                 return {"ok": False, "error": "unknown stage '%s'" % target,
                         "stages": playbook.stage_ids() + [playbook.won["id"], playbook.lost["id"]]}
-            deal = self._move(deal, stage, playbook, actor, str(args.get("reason") or ""))
+            moved = self._move(deal, stage, playbook, actor, str(args.get("reason") or ""))
+            if moved is None:
+                return self._raced(deal["id"], playbook, action)
+            deal = moved
         elif action == "close":
             outcome = str(args.get("outcome") or "").lower()
             if outcome not in ("won", "lost"):
                 return {"ok": False, "error": "close needs outcome: won or lost"}
             stage = playbook.won["id"] if outcome == "won" else playbook.lost["id"]
-            deal = self._move(deal, stage, playbook, actor, str(args.get("reason") or ""))
+            moved = self._move(deal, stage, playbook, actor, str(args.get("reason") or ""))
+            if moved is None:
+                return self._raced(deal["id"], playbook, action)
+            deal = moved
         elif action == "reopen":
-            deal = self._reopen(deal, playbook, actor, str(args.get("stage") or ""))
+            moved = self._reopen(deal, playbook, actor, str(args.get("stage") or ""))
+            if moved is None:
+                return self._raced(deal["id"], playbook, action)
+            deal = moved
         elif action == "log":
             text = str(args.get("text") or "").strip()
             if not text:
@@ -303,7 +323,7 @@ class Desk:
                 self.store.update(deal["id"], actor=actor, **follow)
             deal = self.store.get(deal["id"])
         elif action == "snooze":
-            deal = self.store.snooze(deal["id"], int(args.get("days") or 3), actor=actor)
+            deal = self.store.snooze(deal["id"], _int(args.get("days") if args.get("days") is not None else 3, 3, 0, 365), actor=actor)
         else:
             return {"ok": False, "error": "unknown action '%s'" % action,
                     "actions": ["get", "add", "update", "move", "close", "reopen", "log", "snooze"]}
@@ -333,17 +353,21 @@ class Desk:
             self.store.log(deal["id"], "note", str(args["note"])[:4000], actor=actor)
         return {"ok": True, "action": "add", "deal": self.view(self.store.get(deal["id"]), playbook)}
 
-    def _move(self, deal: dict, stage: str, playbook: Playbook, actor: str, reason: str = "") -> dict:
-        status = playbook.status_of(stage)
-        if status != "open" and deal["status"] == "open":
-            self.store.update(deal["id"], fields={"_prev_stage": deal["stage"]})
-        return self.store.move(deal["id"], stage, status=status, reason=reason, actor=actor, label=playbook.label(stage))
+    def _move(self, deal: dict, stage: str, playbook: Playbook, actor: str, reason: str = "") -> Optional[dict]:
+        """Move a record from the stage it was read at. ``None`` means someone else moved it first."""
+        return self.store.move(deal["id"], stage, status=playbook.status_of(stage), reason=reason, actor=actor,
+                               label=playbook.label(stage), expect=deal["stage"])
 
-    def _reopen(self, deal: dict, playbook: Playbook, actor: str, stage: str = "") -> dict:
+    def _reopen(self, deal: dict, playbook: Playbook, actor: str, stage: str = "") -> Optional[dict]:
         target = playbook.resolve_stage(stage) or deal["fields"].get("_prev_stage") or playbook.first_stage()
         if playbook.status_of(target) != "open" or playbook.position(target) < 0:
             target = playbook.first_stage()
-        return self.store.move(deal["id"], target, status="open", actor=actor, label=playbook.label(target))
+        return self.store.move(deal["id"], target, status="open", actor=actor, label=playbook.label(target), expect=deal["stage"])
+
+    def _raced(self, deal_id: str, playbook: Playbook, action: str) -> dict:
+        """Someone else changed the stage between our read and our write: say where it stands now."""
+        return {"ok": True, "action": action, "changed": False, "deal": self.view(self.store.get(deal_id), playbook, activities=3),
+                "note": "Someone else moved this record a moment ago, so nothing was changed. This is where it stands now."}
 
     # -- button clicks --------------------------------------------------------------------------
     def click(self, verb: str, deal_id: str, extra: str = "", actor: str = "") -> dict:
@@ -366,6 +390,10 @@ class Desk:
                 out["notice"] = "This stage is not in the current playbook; ask me to move it instead."
                 return out
             moved = self._move(deal, nxt, playbook, actor)
+            if moved is None:      # another click got there first
+                out["deal"] = self.store.get(deal_id)
+                out["notice"] = "Already moved to %s; the card is now up to date." % playbook.label(out["deal"]["stage"])
+                return out
             out["deal"] = moved
             task = playbook.draft_prompt("enter", nxt)
             if task:
@@ -380,6 +408,10 @@ class Desk:
             reasons = playbook.lost["reasons"]
             reason = reasons[int(extra)] if extra.isdigit() and int(extra) < len(reasons) else ""
             moved = self._move(deal, playbook.lost["id"], playbook, actor, reason)
+            if moved is None:
+                out["deal"] = self.store.get(deal_id)
+                out["notice"] = "Already moved to %s; the card is now up to date." % playbook.label(out["deal"]["stage"])
+                return out
             out["deal"] = moved
             task = playbook.draft_prompt("lost")
             if task:
@@ -394,7 +426,7 @@ class Desk:
             if deal["status"] == "open":
                 out["notice"] = "Already open; the card is now up to date."
                 return out
-            out["deal"] = self._reopen(deal, playbook, actor)
+            out["deal"] = self._reopen(deal, playbook, actor) or self.store.get(deal_id)
         elif verb in ("snooze3", "snooze7"):
             out["deal"] = self.store.snooze(deal_id, 3 if verb == "snooze3" else 7, actor=actor)
             out["notice"] = "Snoozed until %s." % out["deal"]["snoozed_until"]
@@ -484,8 +516,8 @@ class Desk:
         cached = result is not None
         if result is None:
             month = "pdl_calls:" + st.today()[:7]
-            cap = int(self.setting("pdl_monthly_cap", 50) or 0)
-            used = int(self.store.meta_get(month, "0") or 0)
+            cap = _int(self.setting("pdl_monthly_cap", 50), 50, 0, 10 ** 6)
+            used = _int(self.store.meta_get(month, "0"), 0, 0, 10 ** 9)
             if cap and used >= cap:
                 return {"ok": False, "error": "The monthly People Data Labs cap (%d lookups) is used up. "
                                               "Raise pdl_monthly_cap in the plugin's settings to continue." % cap}
@@ -544,7 +576,7 @@ class Desk:
 
     def notes(self, args: dict) -> dict:
         action = str(args.get("action") or "inbox").lower()
-        days = int(args.get("days") or self.setting("notes_days", 7) or 7)
+        days = _int(args.get("days") or self.setting("notes_days", 7) or 7, 7, 1, 3650)
         if action == "inbox":
             notes, status, problems = self._note_sources(days)
             waiting = [n for n in notes if not self.store.note_seen(n["id"])]

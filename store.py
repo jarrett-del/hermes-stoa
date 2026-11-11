@@ -158,7 +158,11 @@ class Store:
                 have = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
                 for column, declaration in columns.items():
                     if column not in have:
-                        conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, declaration))
+                        try:
+                            conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, declaration))
+                        except sqlite3.OperationalError as exc:     # another process added it a moment ago
+                            if "duplicate column" not in str(exc).lower():
+                                raise
 
     # -- connection -----------------------------------------------------------------------------
     class _Session:
@@ -290,23 +294,41 @@ class Store:
         return self.get(deal_id)
 
     def move(self, deal_id: str, stage: str, *, status: str = "open", reason: str = "", actor: str = "",
-             label: str = "") -> dict:
-        deal = self.get(deal_id)
-        if deal is None:
-            raise KeyError(deal_id)
+             label: str = "", expect: Optional[str] = None) -> Optional[dict]:
+        """Change a record's stage and log it.
+
+        With ``expect`` the change only happens if the record is still at that stage. The check and
+        the change share one write transaction, so two clicks, two people or two processes acting
+        on the same record cannot both move it. Returns ``None`` when someone else got there first.
+        """
         stamp = now()
-        text = "%s → %s" % (deal["stage"], label or stage)
-        if reason:
-            text += " (%s)" % reason
         with self._conn() as conn:
-            conn.execute("UPDATE deals SET stage = ?, status = ?, lost_reason = ?, snoozed_until = '', stage_at = ?, "
-                         "updated_at = ? WHERE id = ?", (stage, status, reason if status == "lost" else "", stamp, stamp, deal_id))
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT stage, status, fields FROM deals WHERE id = ?", (deal_id,)).fetchone()
+            if row is None:
+                raise KeyError(deal_id)
+            if expect is not None and row["stage"] != expect:
+                return None
+            fields = row["fields"]
+            if status != "open" and row["status"] == "open":    # remember where it was, for a later reopen
+                try:
+                    data = json.loads(fields or "{}")
+                except ValueError:
+                    data = {}
+                data["_prev_stage"] = row["stage"]
+                fields = json.dumps(data)
+            text = "%s \u2192 %s" % (row["stage"], label or stage)
+            if reason:
+                text += " (%s)" % reason
+            conn.execute("UPDATE deals SET stage = ?, status = ?, lost_reason = ?, snoozed_until = '', fields = ?, stage_at = ?, "
+                         "updated_at = ? WHERE id = ?", (stage, status, reason if status == "lost" else "", fields, stamp, stamp, deal_id))
             conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
                          (deal_id, stamp, "stage", actor, text))
         return self.get(deal_id)
 
     def snooze(self, deal_id: str, days: int, *, actor: str = "") -> dict:
-        until = (dt.date.today() + dt.timedelta(days=max(0, int(days)))).isoformat() if days else ""
+        days = max(0, min(int(days), 3650))
+        until = (dt.date.today() + dt.timedelta(days=days)).isoformat() if days else ""
         stamp = now()
         with self._conn() as conn:
             if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():

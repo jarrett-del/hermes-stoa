@@ -86,7 +86,7 @@ def state() -> dict:
     week_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     markets = []
     for market in d.markets.list_markets():
-        summary = d.markets.summary(market["id"])
+        summary = d.markets.summary(market["id"], text=False)
         markets.append({
             "id": market["id"], "name": market["name"], "brief": market["brief"],
             "requirements": summary["market"]["requirements"], "reading": summary["market"]["reading"],
@@ -97,7 +97,7 @@ def state() -> dict:
             "regions": summary["regions"], "sizes": summary["sizes"], "bridges": summary["bridges"],
             "first_calls": summary["first_calls"],
             "counts": {"mapped": summary["numbers"]["companies"], "tracked": summary["numbers"]["in_pipeline"],
-                       "dismissed": len(d.markets.targets(market["id"], "dismissed"))}})
+                       "dismissed": summary["numbers"]["dismissed"]}})
     activity = [{"id": a["id"], "deal": a["deal_id"], "name": names.get(a["deal_id"], a["deal_id"]), "at": a["at"],
                  "kind": a["kind"], "text": a["text"], "by": a["actor"]} for a in d.store.activities(limit=40)]
     open_deals = [x for x in deals if x["status"] == "open"]

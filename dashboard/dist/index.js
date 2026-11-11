@@ -206,8 +206,6 @@
     var W = 1000, H = 330, slot = W / n;
     var golden = Math.PI * (3 - Math.sqrt(5));
     return h("svg", { className: "stoa-sky", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Market map" },
-      h("defs", null, h("linearGradient", { id: "stoa-g", x1: "0", y1: "0", x2: "1", y2: "1" },
-        h("stop", { offset: "0", stopColor: "var(--st-a)" }), h("stop", { offset: "0.55", stopColor: "var(--st-b)" }), h("stop", { offset: "1", stopColor: "var(--st-c)" }))),
       segments.map(function (seg, si) {
         var cx = slot * (si + 0.5), cy = 138;
         var rows = seg.companies.slice().sort(function (a, b) { return b.fit - a.fit; }).slice(0, 14);
@@ -313,8 +311,8 @@
     var regions = market.regions || [], sizes = market.sizes || [], notes = market.implications || [];
     var panels = [];
     if (rates.length) panels.push(h("div", { className: "stoa-panel stoa-pad", key: "rates" },
-      h("div", { className: "stoa-h" }, "How rare each requirement is", h("em", null, "of " + rates[0].of + " checked")),
-      h(Bars, { unit: "%", max: 100, rows: rates.map(function (r) { return { label: r.label, value: r.rate }; }) })));
+      h("div", { className: "stoa-h" }, "How rare each requirement is", h("em", null, n.assessed + " checked")),
+      h(Bars, { unit: "%", max: 100, rows: rates.map(function (r) { return { label: r.label, value: r.rate, note: r.shown + " of " + r.of }; }) })));
     if (holds.length) panels.push(h("div", { className: "stoa-panel stoa-pad", key: "holds" },
       h("div", { className: "stoa-h" }, "Who holds this market today", h("em", null, "of " + market.holds_of + " placed")),
       h(Bars, { unit: "%", max: 100, rows: holds.map(function (x) { return { label: x.name, value: x.share, note: x.companies.slice(0, 3).join(", ") }; }) })));
@@ -325,10 +323,10 @@
           h("em", null, ("0" + (i + 1)).slice(-2)), h("strong", null, c.company), h("span", null, c.why), c.buyer ? h("em", null, c.buyer) : null);
       })));
     var spread = regions.length && regions[0].count > 1;   // bars only say something when places repeat
-    if (sizes.length || regions.length > 1) panels.push(h("div", { className: "stoa-panel stoa-pad", key: "where" },
+    if (sizes.length || regions.length) panels.push(h("div", { className: "stoa-panel stoa-pad", key: "where" },
       h("div", { className: "stoa-h" }, "Where they are, how big", h("em", null, regions.length + (regions.length === 1 ? " place" : " places"))),
       sizes.length ? h(Bars, { rows: sizes.map(function (z) { return { label: z.band + " people", value: z.count }; }) }) : null,
-      spread ? h(Bars, { rows: regions.slice(0, 5).map(function (r) { return { label: r.name, value: r.count }; }) })
+      !regions.length ? null : spread ? h(Bars, { rows: regions.slice(0, 5).map(function (r) { return { label: r.name, value: r.count }; }) })
         : h("div", { className: "stoa-imp" }, h("b", null, "IN"), h("span", null, regions.map(function (r) { return r.name; }).join(", ")))));
     if (bridges.length) panels.push(h("div", { className: "stoa-panel stoa-pad", key: "meet" },
       h("div", { className: "stoa-h" }, "Where the segments meet", h("em", null, n.bridges)),
