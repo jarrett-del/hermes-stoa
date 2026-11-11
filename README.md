@@ -75,13 +75,14 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 
 - **A pane beside the chat.** What needs you today, every stage, the first calls from your map.
   Tell Hermes *"I spoke to Marcus, follow up Thursday"* and the pane redraws as the agent saves it.
+  Narrow it by owner, by search or account, to what is due or what has gone quiet, or by any text.
 - **A click saves, then Hermes writes.** Press **Draft follow-up** or the stage button on a
   record. The change is saved at once, one line goes into the open chat as if you had typed it,
   and the draft comes back in the conversation.
 - **Cards in the conversation.** Ask *"show me Dana"* and the reply contains the live card, with
   its buttons, not a description of it. *"Show me the market map"* draws the map the same way.
-- **A page of its own.** **Stoa** in the sidebar opens the pipeline board, the market map with
-  its reading, and the activity log.
+- **A page of its own.** **Stoa** in the sidebar opens the funnel with its conversion rates, the
+  pipeline board with the same filters, the market map with its reading, and the activity log.
 - **Lists you send in.** Drop a file into the chat. The review appears in the conversation and in
   the pane: a tick box per row, what each one would add or change, and one **Apply** button.
 
@@ -102,13 +103,13 @@ already running when you installed Stoa, restart it once and the tab appears.
 
 - **The number that matters, live:** what is in play, beside mapped → leads → in play → won,
   with what is due and what has gone quiet underneath.
-- **Flow:** a Sankey diagram of how far records get: what moves on, what sits in each stage,
-  what is lost and where, and what is won.
+- **Funnel:** how many records reach each stage, the share that moves on to the next, what is
+  sitting in each stage and where records are lost, with the win rate beneath it.
 - **Pipeline board:** a column per playbook stage. Open a card to see its log, set the next
   step, log a call, advance it, close it with a reason, or snooze it.
 - **Market map:** every segment as a cluster, each company sized by fit and filled in once it
   is in the pipeline, with the map's reading beneath it: requirement rarity, who holds the
-  market, first calls, where segments meet, and a second Sankey from segment to what each
+  market, first calls, where segments meet, and a flow diagram from segment to what each
   company uses today. Open a company for its requirements checklist, buyers and source, then
   **Add to pipeline**. **Download page** saves the map as a web page.
 - **Activity:** everything that happened, from Slack clicks, the agent and the web alike.

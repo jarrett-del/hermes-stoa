@@ -118,14 +118,14 @@
 /* flow: a Sankey of how far records get */
 .stoa-flowwrap { margin: 2px 0 26px; padding: 18px 20px 8px; background: var(--st-card); border: 1px solid var(--st-line); border-radius: 10px; }
 .stoa-flow { width: 100%; height: auto; display: block; overflow: visible; }
-.stoa-flow path, .stoa-flow rect { transition: d 0.6s ease, height 0.6s ease, y 0.6s ease; }
-.stoa-flow-on { fill: var(--st-ink); opacity: 0.16; }
-.stoa-flow-in { fill: var(--st-ink); opacity: 0.07; }
-.stoa-flow-won { fill: url(#stoa-spec); opacity: 0.85; }
-.stoa-flow-here { fill: var(--st-ink); opacity: 0.34; }
-.stoa-flow-lost { fill: var(--st-mute); opacity: 0.22; }
-.stoa-flow-node, .stoa-flow-end { fill: var(--st-ink); }
-.stoa-flow-rail { stroke: var(--st-line); stroke-width: 1; stroke-dasharray: 2 5; }
+.stoa-flow rect, .stoa-flow polygon { transition: height 0.6s ease, y 0.6s ease; }
+.stoa-fn-block { fill: var(--st-ink); opacity: 0.86; }
+.stoa-fn-link { fill: var(--st-ink); opacity: 0.13; }
+.stoa-fn-won { fill: url(#stoa-spec); }
+.stoa-fn-num { font-family: var(--st-serif, "Didot", "Bodoni 72", Georgia, serif) !important; font-size: 19px; fill: var(--st-ink); }
+.stoa-fn-pct { font-size: 11px; fill: var(--st-ink); }
+.stoa-flowfoot { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 4px 0 8px; font-size: 12px; color: var(--st-mute); }
+.stoa-flowfoot b { color: var(--st-ink); font-weight: 600; }
 .stoa-flow text { font-family: var(--st-mono); }
 .stoa-flow-label { font-size: 9.5px; letter-spacing: 0.12em; fill: var(--st-ink); }
 .stoa-flow-count, .stoa-flow-src { font-size: 9px; letter-spacing: 0.08em; fill: var(--st-mute); }

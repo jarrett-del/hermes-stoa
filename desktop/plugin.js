@@ -10,10 +10,28 @@
  * click calls for writing, one line is sent into the open chat (host.composer.submit, the same as
  * typing it) and the agent writes the draft there.
  */
-import { host, queryClient, useQuery } from '@hermes/plugin-sdk'
+import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
 import { createElement as h, useState } from 'react'
 
 let rest = null // ctx.rest, set in register()
+let storage = null // ctx.storage, set in register()
+
+// What the pane and the page are narrowed to. One store, so both show the same thing.
+const NO_FILTER = { text: '', owner: '', group: '', due: false, quiet: false }
+const $filter = atom({ ...NO_FILTER })
+function setFilter(patch) {
+  const next = { ...$filter.get(), ...patch }
+  $filter.set(next)
+  if (storage) storage.set('filter', next)
+}
+const filtering = f => Boolean(f.text || f.owner || f.group || f.due || f.quiet)
+function matches(deal, f) {
+  if (f.owner && deal.owner !== f.owner) return false
+  if (f.group && deal.group !== f.group) return false
+  if ((f.due || f.quiet) && !((f.due && deal.due) || (f.quiet && deal.stale && !deal.due))) return false
+  if (!f.text) return true
+  return [deal.name, deal.company, deal.group, deal.next_step, deal.owner, deal.stage_label].join(' ').toLowerCase().includes(f.text.toLowerCase())
+}
 const STATE = ['stoa', 'state']
 const refresh = () => queryClient.invalidateQueries({ queryKey: ['stoa'] })
 
@@ -159,9 +177,6 @@ const CSS = `
 .stoa-tab[data-on="1"] { background: var(--ui-row-active-background, var(--ui-row-hover-background)); color: var(--ui-text-primary); font-weight: 550; }
 .stoa-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
 .stoa-split[data-side="1"] { grid-template-columns: minmax(0, 1fr) 360px; }
-.stoa-flow { margin: -2px 2px 10px; }
-.stoa-flow u { display: block; height: 3px; margin: 0 0 5px; border-radius: 2px; background: var(--ui-stroke-secondary); text-decoration: none; overflow: hidden; }
-.stoa-flow u i { display: block; height: 100%; background: var(--ui-text-primary); }
 .stoa-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(176px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
 .stoa-colhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 2px 8px; }
 .stoa-card { display: block; width: 100%; margin-bottom: 8px; padding: 10px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -178,6 +193,22 @@ const CSS = `
 .stoa-rate u i { display: block; height: 100%; background: var(--ui-text-primary); }
 .stoa-reading { max-width: 70ch; margin: 8px 0 0; color: var(--ui-text-secondary); white-space: pre-line; }
 .stoa-h2 { margin: 26px 0 8px; font-size: 15px; font-weight: 600; }
+.stoa-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.stoa-filters .stoa-input { flex: 1 1 120px; min-width: 0; height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }\n.stoa-filters .stoa-input:focus { border-color: var(--ui-stroke-primary); }\n.stoa-filters .stoa-input::placeholder { color: var(--ui-text-quaternary); }
+.stoa-filters .stoa-select { max-width: 150px; }
+.stoa-toggle { height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.stoa-toggle[data-on="1"] { border-color: var(--ui-text-primary); color: var(--ui-text-primary); background: var(--ui-row-hover-background); }
+.stoa-funnel { margin: 0 0 20px; padding: 16px 18px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
+.stoa-funnel svg { display: block; width: 100%; height: auto; overflow: visible; }
+.stoa-funnel text { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.stoa-fn-block { fill: var(--ui-text-primary); opacity: .82; }
+.stoa-fn-link { fill: var(--ui-text-primary); opacity: .13; }
+.stoa-fn-label { font-size: 9.5px; letter-spacing: .12em; fill: var(--ui-text-tertiary); }
+.stoa-fn-num { font-size: 15px; font-weight: 600; fill: var(--ui-text-primary); font-family: inherit !important; }
+.stoa-fn-pct { font-size: 11px; fill: var(--ui-text-primary); }
+.stoa-fn-sub { font-size: 9px; letter-spacing: .06em; fill: var(--ui-text-tertiary); }
+.stoa-funnel-foot { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font-size: 12px; color: var(--ui-text-tertiary); }
+.stoa-funnel-foot b { color: var(--ui-text-primary); font-weight: 600; }
 .stoa-list { max-height: 340px; overflow-y: auto; margin-top: 10px; }
 .stoa-pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--ui-stroke-tertiary); cursor: pointer; }
 .stoa-pick:first-child { border-top: 0; }
@@ -307,6 +338,63 @@ function Review({ id }) {
         (result.added || 0) + ' added · ' + (result.updated || 0) + ' updated' + (result.left ? ' · ' + result.left + ' left out' : '')) : null)
 }
 
+// -- narrowing what is shown ----------------------------------------------------------------------
+function Filters({ state }) {
+  const f = useValue($filter)
+  const open = state.deals.filter(deal => deal.status === 'open')
+  const owners = [...new Set(open.map(deal => deal.owner).filter(Boolean))].sort()
+  const groups = [...new Set(open.map(deal => deal.group).filter(Boolean))].sort()
+  const terms = state.playbook.terms
+  return h('div', { className: 'stoa-filters' },
+    h('input', { className: 'stoa-input', value: f.text, placeholder: 'Filter…', 'aria-label': 'Filter by text', onChange: event => setFilter({ text: event.target.value }) }),
+    owners.length > 1 ? h('select', { className: 'stoa-select', value: f.owner, 'aria-label': 'Owner', onChange: event => setFilter({ owner: event.target.value }) },
+      [h('option', { key: '', value: '' }, 'Everyone')].concat(owners.map(owner => h('option', { key: owner, value: owner }, owner)))) : null,
+    groups.length > 1 ? h('select', { className: 'stoa-select', value: f.group, 'aria-label': cap(terms.group), onChange: event => setFilter({ group: event.target.value }) },
+      [h('option', { key: '', value: '' }, 'All ' + terms.groups)].concat(groups.map(group => h('option', { key: group, value: group }, group)))) : null,
+    h('button', { type: 'button', className: 'stoa-toggle', 'data-on': f.due ? '1' : '0', onClick: () => setFilter({ due: !f.due }) }, 'Due'),
+    h('button', { type: 'button', className: 'stoa-toggle', 'data-on': f.quiet ? '1' : '0', onClick: () => setFilter({ quiet: !f.quiet }) }, 'Quiet'),
+    filtering(f) ? h('button', { type: 'button', className: 'stoa-toggle', onClick: () => setFilter({ ...NO_FILTER }) }, 'Clear') : null)
+}
+
+// -- the funnel: how many reach each stage, and what share moves on ------------------------------
+function Funnel({ state }) {
+  const flow = state.flow, pb = state.playbook
+  if (!flow || !flow.total) return null
+  const steps = flow.stages.map(stage => ({ label: stage.label, reached: stage.reached, here: stage.here, lost: stage.lost, value: stage.value }))
+    .concat([{ label: flow.won_label, reached: flow.won, won: true, value: flow.won_value }])
+  const W = 1000, H = 184, mid = 96, tall = 92, col = W / steps.length, block = col * 0.5
+  const height = step => Math.max(3, (tall * step.reached) / flow.total)
+  const closed = flow.won + flow.lost
+  const parts = []
+  steps.forEach((step, index) => {
+    const x = index * col, tallness = height(step), next = steps[index + 1]
+    parts.push(h('rect', { key: 'b' + index, className: 'stoa-fn-block', x, y: mid - tallness / 2, width: block, height: tallness, rx: 2,
+      style: step.won ? { fill: 'url(#stoa-fn-won)', opacity: 1 } : undefined }))
+    if (next) {
+      const after = height(next), right = (index + 1) * col
+      parts.push(h('polygon', { key: 'l' + index, className: 'stoa-fn-link',
+        points: [x + block, mid - tallness / 2, right, mid - after / 2, right, mid + after / 2, x + block, mid + tallness / 2].join(' ') }))
+      parts.push(h('text', { key: 'p' + index, className: 'stoa-fn-pct', x: x + block + (col - block) / 2, y: mid + 4, textAnchor: 'middle' },
+        step.reached ? Math.round((100 * next.reached) / step.reached) + '%' : '–'))
+    }
+    parts.push(h('text', { key: 't' + index, className: 'stoa-fn-label', x, y: 11 }, step.label.toUpperCase().slice(0, Math.max(6, Math.floor(col / 7.6)))))
+    parts.push(h('text', { key: 'n' + index, className: 'stoa-fn-num', x, y: 30 }, String(step.reached)))
+    parts.push(h('text', { key: 's' + index, className: 'stoa-fn-sub', x, y: mid + tall / 2 + 20 },
+      step.won ? (step.value ? money(step.value, pb.currency) : '') : step.here + ' here' + (step.value ? ' · ' + money(step.value, pb.currency) : '')))
+    if (step.lost) parts.push(h('text', { key: 'x' + index, className: 'stoa-fn-sub', x, y: mid + tall / 2 + 33 }, step.lost + ' lost here'))
+  })
+  return h('div', { className: 'stoa-funnel' },
+    h('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'How many records reach each stage, and what share moves on' },
+      h('defs', null, h('linearGradient', { id: 'stoa-fn-won', x1: '0', y1: '0', x2: '1', y2: '0' },
+        h('stop', { offset: '0', style: { stopColor: 'var(--ui-blue)' } }), h('stop', { offset: '0.4', style: { stopColor: 'var(--ui-purple)' } }),
+        h('stop', { offset: '0.75', style: { stopColor: 'var(--ui-red)' } }), h('stop', { offset: '1', style: { stopColor: 'var(--ui-yellow)' } }))),
+      parts),
+    h('div', { className: 'stoa-funnel-foot' },
+      h('span', null, h('b', null, closed ? Math.round((100 * flow.won) / closed) + '%' : '–'), ' win rate' + (closed ? ' (' + flow.won + ' of ' + closed + ' closed)' : '')),
+      h('span', null, h('b', null, Math.round((100 * flow.won) / flow.total) + '%'), ' of everything that entered has been ' + flow.won_label.toLowerCase()),
+      h('span', null, 'Percentages are the share that reached the next stage; ' + pb.terms.deals + ' still in a stage have not had their chance yet.')))
+}
+
 // -- the pane beside the conversation ------------------------------------------------------------
 function Row({ deal, sub, right, tone, open, onClick }) {
   return h('button', { type: 'button', className: 'stoa-row', 'data-open': open ? '1' : '0', onClick },
@@ -319,10 +407,12 @@ function Row({ deal, sub, right, tone, open, onClick }) {
 
 function Pane() {
   const query = useDesk()
+  const filter = useValue($filter)
   const [openId, setOpenId] = useState('')
   if (!query.data) return h(Unavailable, { error: query.error, loading: query.isLoading })
   const state = query.data, pb = state.playbook, totals = state.totals
-  const open = state.deals.filter(deal => deal.status === 'open')
+  const everyone = state.deals.filter(deal => deal.status === 'open')
+  const open = everyone.filter(deal => matches(deal, filter))
   const due = open.filter(deal => deal.due).sort((a, b) => (a.next_due < b.next_due ? -1 : 1))
   const quiet = open.filter(deal => deal.stale && !deal.due)
   const toggle = id => setOpenId(openId === id ? '' : id)
@@ -337,7 +427,9 @@ function Pane() {
         h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open')),
         h('div', { className: 'stoa-sub' }, [plural(totals.open, 'open', 'open'), totals.due ? totals.due + ' due' : '', totals.stale ? totals.stale + ' quiet' : '']
           .filter(Boolean).join(' · ')),
-        h('div', { className: 'stoa-rule' })),
+        h('div', { className: 'stoa-rule' }),
+        state.deals.length ? h('div', { style: { marginTop: 10 } }, h(Filters, { state })) : null,
+        filtering(filter) ? h('div', { className: 'stoa-sub', style: { marginTop: 6 } }, 'Showing ' + open.length + ' of ' + everyone.length) : null),
       (state.intakes || []).length ? h('div', { className: 'stoa-sec' },
         h('div', { className: 'stoa-sechead' }, h('span', { className: 'stoa-eyebrow' }, 'Waiting for your review'), h('span', { className: 'stoa-num' }, state.intakes.length)),
         state.intakes.map(item => h('div', { key: item.id, style: { marginBottom: 8 } }, h(Review, { id: item.id })))) : null,
@@ -356,7 +448,7 @@ function Pane() {
             h('span', { className: 'stoa-num' }, here.length + (value ? ' · ' + money(value, pb.currency) : ''))),
           here.map(deal => listed(deal, stage.id + ':' + deal.id, [deal.company, deal.next_step].filter(Boolean).join(' · '), money(deal.value, pb.currency))))
       }),
-      calls.length ? h('div', { className: 'stoa-sec' },
+      calls.length && !filtering(filter) ? h('div', { className: 'stoa-sec' },
         h('div', { className: 'stoa-sechead' }, h('span', { className: 'stoa-eyebrow' }, 'First calls'), h('span', { className: 'stoa-num' }, state.markets[0].name)),
         calls.map(call => h('div', { key: call.id, className: 'stoa-row', style: { cursor: 'default' } },
           h('span', { className: 'stoa-grow' },
@@ -371,26 +463,20 @@ function Pane() {
 // -- the full page -------------------------------------------------------------------------------
 function Board({ state, openId, setOpenId }) {
   const pb = state.playbook
-  const open = state.deals.filter(deal => deal.status === 'open')
-  const won = state.deals.filter(deal => deal.status === 'won').sort((a, b) => (a.stage_at < b.stage_at ? 1 : -1))
+  const filter = useValue($filter)
+  const open = state.deals.filter(deal => deal.status === 'open' && matches(deal, filter))
+  const won = state.deals.filter(deal => deal.status === 'won' && matches(deal, { ...filter, due: false, quiet: false }))
+    .sort((a, b) => (a.stage_at < b.stage_at ? 1 : -1))
   const known = new Set(pb.stages.map(stage => stage.id))
   const strays = open.filter(deal => !known.has(deal.stage))
-  const flow = {}
-  state.flow.stages.forEach(stage => { flow[stage.id] = stage })
-  const total = Math.max(1, state.flow.total)
-  const columns = pb.stages.map(stage => ({ ...stage, here: open.filter(deal => deal.stage === stage.id), flow: flow[stage.id] }))
+  const columns = pb.stages.map(stage => ({ ...stage, here: open.filter(deal => deal.stage === stage.id) }))
     .concat(strays.length ? [{ id: '~other', label: 'Other stages', other: true, here: strays }] : [])
-    .concat([{ id: '~won', label: pb.won.label, won: true, here: won.slice(0, 8), flow: { reached: state.flow.won, lost: 0 } }])
+    .concat([{ id: '~won', label: pb.won.label, won: true, here: won.slice(0, 8) }])
   return h('div', { className: 'stoa-board' }, columns.map(column => {
     const value = column.here.reduce((sum, deal) => sum + (deal.value || 0), 0)
-    const reached = column.flow ? column.flow.reached : column.here.length
     return h('div', { key: column.id },
       h('div', { className: 'stoa-colhead' }, h('span', { className: 'stoa-eyebrow stoa-clip' }, column.label),
         h('span', { className: 'stoa-num' }, column.here.length + (value ? ' · ' + money(value, pb.currency) : ''))),
-      h('div', { className: 'stoa-flow' },
-        h('u', null, h('i', { style: { width: Math.round((100 * reached) / total) + '%' } })),
-        h('div', { className: 'stoa-sub' }, column.won ? reached + ' won' : column.other ? 'from another playbook'
-          : reached + ' reached' + (column.flow && column.flow.lost ? ' · ' + column.flow.lost + ' lost' : ''))),
       column.here.length ? column.here.map(deal => h('button', { type: 'button', key: deal.id, className: 'stoa-card', 'data-open': openId === deal.id ? '1' : '0',
         onClick: () => setOpenId(openId === deal.id ? '' : deal.id) },
         h('h5', null, h('span', { className: 'stoa-clip' }, deal.name), deal.value ? h('span', { className: 'stoa-num' }, money(deal.value, pb.currency)) : null),
@@ -474,9 +560,12 @@ function Page() {
     h('div', { className: 'stoa-tabs' }, [['pipeline', 'Pipeline'], ['market', 'Market map'], ['activity', 'Activity']].map(pair =>
       h('button', { type: 'button', key: pair[0], className: 'stoa-tab', 'data-on': tab === pair[0] ? '1' : '0', onClick: () => setTab(pair[0]) }, pair[1]))),
     tab === 'pipeline' ? (state.deals.length
-      ? h('div', { className: 'stoa-split', 'data-side': openId ? '1' : '0' },
-        h(Board, { state, openId, setOpenId }),
-        openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId('') }) : null)
+      ? h('div', null,
+        h(Funnel, { state }),
+        h('div', { style: { margin: '0 0 14px', maxWidth: 760 } }, h(Filters, { state })),
+        h('div', { className: 'stoa-split', 'data-side': openId ? '1' : '0' },
+          h(Board, { state, openId, setOpenId }),
+          openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId('') }) : null))
       : h('p', { className: 'stoa-sub' }, 'Nothing on the desk yet. Tell Hermes about a ' + pb.terms.deal + ', or ask it to map a market.')) : null,
     tab === 'market' ? (market
       ? h('div', null,
@@ -521,6 +610,8 @@ export default {
   name: 'Stoa',
   register(ctx) {
     rest = ctx.rest
+    storage = ctx.storage
+    $filter.set({ ...NO_FILTER, ...(ctx.storage.get('filter', {}) || {}) })
     // While the app is open the desk knows it can draw cards and maps in the conversation here.
     const hello = () => { ctx.rest('/hello', { method: 'POST', body: {} }).catch(() => {}) }
     hello()

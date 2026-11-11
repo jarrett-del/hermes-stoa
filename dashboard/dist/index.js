@@ -119,40 +119,41 @@
     return "M" + x0 + "," + y0 + " C" + m + "," + y0 + " " + m + "," + y1 + " " + x1 + "," + y1 +
       " L" + x1 + "," + (y1 + h1) + " C" + m + "," + (y1 + h1) + " " + m + "," + (y0 + h0) + " " + x0 + "," + (y0 + h0) + " Z";
   }
+  // The funnel: how many records reach each stage, and what share moves on to the next.
   function Flow(props) {
-    var f = props.state.flow, cur = props.state.playbook.currency;
+    var f = props.state.flow, pb = props.state.playbook, cur = pb.currency;
     if (!f || !f.total) return null;
-    var st = f.stages, n = st.length, W = 1000, top = 34, main = 104, rail = 186, H = 214, bar = 5;
-    var u = main / f.total, x = function (i) { return 96 + i * ((W - 96 - 70) / n); };
-    var parts = [];
-    // where records come from
-    var mapH = f.from_map * u, dirH = (f.total - f.from_map) * u;
-    if (f.from_map) parts.push(h("path", { key: "sm", className: "stoa-flow-in", d: ribbon(0, top, x(0), top, mapH, mapH) }));
-    if (f.total - f.from_map) parts.push(h("path", { key: "sd", className: "stoa-flow-in", d: ribbon(0, top + mapH + (f.from_map ? 10 : 0), x(0), top + mapH, dirH, dirH) }));
-    if (f.from_map) parts.push(h("text", { key: "tm", className: "stoa-flow-src", x: 0, y: top - 8 }, "MAP " + f.from_map));
-    if (f.total - f.from_map) parts.push(h("text", { key: "td", className: "stoa-flow-src", x: 0, y: top + mapH + dirH + (f.from_map ? 10 : 0) + 14 }, "DIRECT " + (f.total - f.from_map)));
-    st.forEach(function (s, i) {
-      var hgt = s.reached * u, onward = (i + 1 < n ? st[i + 1].reached : f.won) * u, stay = s.here * u, drop = s.lost * u;
-      var nx = i + 1 < n ? x(i + 1) : W - 70 + 0;
-      if (onward > 0) parts.push(h("path", { key: "o" + i, className: i + 1 < n ? "stoa-flow-on" : "stoa-flow-won", d: ribbon(x(i) + bar, top, nx, top, onward, onward) }));
-      if (stay > 0) parts.push(h("rect", { key: "h" + i, className: "stoa-flow-here", x: x(i) + bar, y: top + onward, width: 26, height: stay }));
-      if (drop > 0) parts.push(h("path", { key: "l" + i, className: "stoa-flow-lost", d: ribbon(x(i) + bar, top + onward + stay, x(i) + 64, rail - drop, drop, drop) }));
-      parts.push(h("rect", { key: "n" + i, className: "stoa-flow-node", x: x(i), y: top, width: bar, height: Math.max(hgt, 1) }));
-      parts.push(h("text", { key: "t" + i, className: "stoa-flow-label", x: x(i), y: 12 }, s.label.toUpperCase()));
-      parts.push(h("text", { key: "c" + i, className: "stoa-flow-count", x: x(i), y: 25 }, s.reached + (s.here ? "  ·  " + s.here + " here" : "") + (s.value ? "  ·  " + money(s.value, cur) : "")));
+    var steps = f.stages.map(function (s) { return { label: s.label, reached: s.reached, here: s.here, lost: s.lost, value: s.value }; })
+      .concat([{ label: f.won_label, reached: f.won, won: true, value: f.won_value }]);
+    var W = 1000, H = 184, mid = 96, tall = 92, col = W / steps.length, block = col * 0.5;
+    var height = function (step) { return Math.max(3, tall * step.reached / f.total); };
+    var closed = f.won + f.lost, parts = [];
+    steps.forEach(function (step, i) {
+      var x = i * col, hgt = height(step), next = steps[i + 1];
+      parts.push(h("rect", { key: "b" + i, className: step.won ? "stoa-fn-won" : "stoa-fn-block", x: x, y: mid - hgt / 2, width: block, height: hgt, rx: 2 }));
+      if (next) {
+        var after = height(next), right = (i + 1) * col;
+        parts.push(h("polygon", { key: "l" + i, className: "stoa-fn-link",
+          points: [x + block, mid - hgt / 2, right, mid - after / 2, right, mid + after / 2, x + block, mid + hgt / 2].join(" ") }));
+        parts.push(h("text", { key: "p" + i, className: "stoa-fn-pct", x: x + block + (col - block) / 2, y: mid + 4, textAnchor: "middle" },
+          step.reached ? Math.round(100 * next.reached / step.reached) + "%" : "–"));
+      }
+      parts.push(h("text", { key: "t" + i, className: "stoa-flow-label", x: x, y: 11 }, step.label.toUpperCase().slice(0, Math.max(6, Math.floor(col / 7.6)))));
+      parts.push(h("text", { key: "n" + i, className: "stoa-fn-num", x: x, y: 32 }, String(step.reached)));
+      parts.push(h("text", { key: "s" + i, className: "stoa-flow-count", x: x, y: mid + tall / 2 + 20 },
+        step.won ? (step.value ? money(step.value, cur) : "") : step.here + " here" + (step.value ? "  ·  " + money(step.value, cur) : "")));
+      if (step.lost) parts.push(h("text", { key: "x" + i, className: "stoa-flow-count", x: x, y: mid + tall / 2 + 33 }, step.lost + " lost here"));
     });
-    var wonH = Math.max(f.won * u, 1);
-    parts.push(h("rect", { key: "w", className: "stoa-flow-end", x: W - 70, y: top, width: bar, height: wonH }));
-    parts.push(h("text", { key: "wl", className: "stoa-flow-label", x: W - 70, y: 12 }, f.won_label.toUpperCase()));
-    parts.push(h("text", { key: "wc", className: "stoa-flow-count", x: W - 70, y: 25 }, f.won + (f.won_value ? "  ·  " + money(f.won_value, cur) : "")));
-    parts.push(h("line", { key: "r", className: "stoa-flow-rail", x1: x(0), x2: W - 70 + bar, y1: rail, y2: rail }));
-    parts.push(h("text", { key: "rl", className: "stoa-flow-src", x: x(0), y: rail + 16 }, f.lost_label.toUpperCase() + " " + f.lost));
     return h("div", { className: "stoa-flowwrap" },
-      h("svg", { className: "stoa-flow", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "How records flow through the stages" },
+      h("svg", { className: "stoa-flow", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "How many records reach each stage, and what share moves on" },
         h("defs", null, h("linearGradient", { id: "stoa-spec", x1: "0", y1: "0", x2: "1", y2: "0" },
           h("stop", { offset: "0", stopColor: "#2f56e8" }), h("stop", { offset: "0.38", stopColor: "#6a3fd6" }),
           h("stop", { offset: "0.72", stopColor: "#d6413f" }), h("stop", { offset: "1", stopColor: "#e6b93a" }))),
-        parts));
+        parts),
+      h("div", { className: "stoa-flowfoot" },
+        h("span", null, h("b", null, closed ? Math.round(100 * f.won / closed) + "%" : "–"), " win rate" + (closed ? " (" + f.won + " of " + closed + " closed)" : "")),
+        h("span", null, h("b", null, Math.round(100 * f.won / f.total) + "%"), " of everything that entered has been " + f.won_label.toLowerCase()),
+        h("span", null, "Percentages are the share that reached the next stage.")));
   }
 
   // -- pipeline board ---------------------------------------------------------------------------
