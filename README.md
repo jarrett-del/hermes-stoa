@@ -37,9 +37,32 @@ Then, in any Hermes chat: *"Map the market for us"*, *"What's on my plate?"*, or
 In Slack the command is `!gtm` (Slack keeps the slash for its own commands), and
 `!gtm Dana Whitfield` or `!gtm map` posts the card or the map itself, buttons included.
 
-## See it at work
+## Talk to it, and watch the desk change
 
-Stoa adds a tab to the Hermes web dashboard (`hermes dashboard`). It refreshes every few
+In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
+
+![The desk beside the conversation](docs/desktop-pane.jpg)
+
+- **A pane beside the chat.** What needs you today, every stage, the first calls from your map.
+  Tell Hermes *"I spoke to Marcus, follow up Thursday"* and the pane redraws as the agent saves it.
+- **A click saves, then Hermes writes.** Press **Draft follow-up** or the stage button on a
+  record. The change is saved at once, one line goes into the open chat as if you had typed it,
+  and the draft comes back in the conversation.
+- **Cards in the conversation.** Ask *"show me Dana"* and the reply contains the live card, with
+  its buttons, not a description of it. *"Show me the market map"* draws the map the same way.
+- **A page of its own.** **Stoa** in the sidebar opens the pipeline board, the market map with
+  its reading, and the activity log.
+
+Switch it on once under **Capabilities → Plugins → Stoa**. It is drawn with the app's own theme
+variables, so it follows whatever theme you run.
+
+![The pipeline page](docs/desktop-pipeline.jpg)
+
+![The market map page](docs/desktop-market.jpg)
+
+## The web dashboard tab
+
+Stoa also adds a tab to the Hermes web dashboard (`hermes dashboard`). It refreshes every few
 seconds, so when someone taps a button in Slack you watch the card move. If the dashboard was
 already running when you installed Stoa, restart it once and the tab appears.
 
@@ -106,6 +129,7 @@ change are one database transaction, so it holds across Slack, the web tab and t
 | **8 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
+| **Desktop app and Webapp** | A live pane beside the chat, a Stoa page, and cards and maps drawn inside the conversation |
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
 | **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
 | **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
@@ -292,6 +316,12 @@ What the plugin does that you would want to know before installing it:
   or a web-tab request arrives outside any chat turn; on a gateway serving several profiles the
   plugin then installs its own profile's scope around the read, the way Hermes does for its own
   background work (`set_secret_scope(build_profile_secret_scope(home))`), and removes it after.
+- **Desktop app and Webapp.** `desktop/plugin.js` is one file with no build step. It imports only
+  the Hermes plugin SDK and React, calls only the plugin's own backend (`/api/plugins/stoa/`), and
+  after a click that calls for writing sends one line into the open chat through
+  `host.composer.submit`, the same as typing it. It does not touch the app's DOM, files, or other
+  plugins' storage, and it checks in with the backend every 30 seconds while open so the agent
+  knows a card can be drawn in the conversation.
 - **Web dashboard.** The tab's backend adds routes under `/api/plugins/stoa/`, behind the
   dashboard's own sign-in. They read and change the pipeline; they call no model and no outside
   service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
@@ -305,10 +335,12 @@ What the plugin does that you would want to know before installing it:
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.4
+## Limits in 0.5
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
-- The tab lives in the web dashboard. The Hermes Desktop app and Webapp do not show dashboard tabs.
+- In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
+  **Capabilities → Plugins**. A click there needs an open chat to send its line into; with none
+  open, the task waits on the record.
 - If your agent already keeps people somewhere else, it may look there first. Naming the desk ("on the Stoa
   desk") or using `!gtm <name>` settles it.
 - A map is as good as the research behind it. Fit scores are the agent's judgement against your
@@ -323,7 +355,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 98 tests, no network
+python3 -m unittest discover -s tests     # 101 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
@@ -339,7 +371,8 @@ hermes plugins doctor . --ci
 | `market.py` | Market maps: segments, requirements, what the map adds up to, and the step into the pipeline |
 | `page.py` | A market map as one self-contained web page |
 | `sources.py` | People Data Labs, Exa and meeting-note sources |
-| `dashboard/` | The web tab: `plugin_api.py` (routes), `dist/index.js` and `dist/style.css` (hand-written, no build step) |
+| `dashboard/` | The web tab: `plugin_api.py` (routes, shared with the app half), `dist/index.js` and `dist/style.css` (hand-written, no build step) |
+| `desktop/plugin.js` | The Desktop app and Webapp half: the pane, the page, and the card and map drawn in a conversation |
 
 ## License
 

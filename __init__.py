@@ -68,13 +68,26 @@ AWAY = {"ok": False, "error": "The Stoa desk is not available in this conversati
                                 "chats). Do not retry here; use your other tools."}
 
 
-def _tool(fn, desk=None):
+def _announce() -> None:
+    """Tell every open Desktop app or Webapp window that the desk changed, so its pane redraws at
+    once. A no-op where no window is connected (the CLI, a scheduled job)."""
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event
+        broadcast_plugin_event(PLUGIN, "changed", {})
+    except Exception:
+        log.debug("stoa: could not announce a change", exc_info=True)
+
+
+def _tool(fn, desk=None, quiet=False):
     """Tool handlers return JSON strings and never raise into the agent loop."""
     def handler(args: dict, **kwargs) -> str:
         try:
             if desk is not None and not desk.allowed(_session()):
                 return json.dumps(AWAY)
-            return json.dumps(fn(args or {}), ensure_ascii=False, default=str)
+            result = json.dumps(fn(args or {}), ensure_ascii=False, default=str)
+            if desk is not None and not quiet:
+                desk.announce()
+            return result
         except Exception as exc:
             log.error("stoa: %s failed: %s", getattr(fn, "__name__", "tool"), exc, exc_info=True)
             return json.dumps({"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)})
@@ -99,6 +112,7 @@ LIVE_DESKS: list = []  # desks of loaded plugin instances, newest last (the dash
 
 def register(ctx) -> None:
     desk = build_desk(ctx.get_config, ctx.set_config)
+    desk.announce = _announce
     LIVE_DESKS.append(desk)
     del LIVE_DESKS[:-4]
 
@@ -113,7 +127,8 @@ def register(ctx) -> None:
         (schemas.GTM_PLAYBOOK, desk.playbook_tool, "📜"),
         (schemas.GTM_EXPORT, desk.export, "📤"),
     ):
-        ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=_tool(fn, desk), emoji=emoji)
+        ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, emoji=emoji,
+                          handler=_tool(fn, desk, quiet=schema is schemas.GTM_PIPELINE))    # a read changes nothing
 
     # -- Slack cards and their buttons ----------------------------------------------------------
     from .slackdesk import ACTIONS, SlackDesk

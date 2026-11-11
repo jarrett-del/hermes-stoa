@@ -140,6 +140,7 @@ class SlackDesk:
         try:
             self.loop = asyncio.get_running_loop()
             await self._handle(body or {}, action or {})
+            self.desk.announce()
         except Exception as exc:  # a click must never take the gateway down
             log.error("stoa: click handling failed: %s", exc, exc_info=True)
 

@@ -585,6 +585,10 @@ class Markets:
         channel = str(args.get("channel") or "").strip()
         if not channel and session.get("platform") == "slack":
             channel = session.get("chat_id") or ""
+        if not channel and self.desk.desktop_open(session):
+            return {"ok": True, "posted": False, "directive": "::stoa-map{market=\"%s\"}" % market["id"],
+                    "note": "Show the map by writing that directive as a paragraph by itself, exactly as given. The app "
+                            "draws the live map there, with a button on each company. Then add your reading in a few lines."}
         if slack is None or not slack.available or not channel:
             return {"ok": True, "posted": False, "map": text, "note": "Slack is not available here, so show this map as text."}
         here = session.get("platform") == "slack" and channel == session.get("chat_id")

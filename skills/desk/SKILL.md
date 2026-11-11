@@ -48,6 +48,18 @@ repeat the card's contents. Outside Slack the tool returns the card as text: sho
 Cards redraw themselves when the record changes. Do not post a second card for a record just
 because it changed.
 
+## In the Hermes Desktop app and the Webapp
+
+There the team has the Stoa pane open beside this conversation, and it redraws whenever you
+change the desk. Two things follow:
+
+- When `gtm_card` or `gtm_market(action="post")` returns a `directive` (a line such as
+  `::stoa-card{id="..."}`), write that line as a paragraph by itself, exactly as given. The app
+  draws the live card or map there, with its buttons. Do not paste the record as text as well.
+- A message like "Dana Whitfield is now at Submitted on the Stoa desk. Open record ... and write
+  what is waiting on it." means someone pressed a button in the pane or on a card. Call
+  `gtm_deal(action="get")` for that record; the `pending_task` it returns is the writing to do.
+
 ## When a button was clicked
 
 A message that starts with `[Stoa desk]` means someone used a button on a card. The stage change

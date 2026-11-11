@@ -975,6 +975,18 @@ class RegisterTests(unittest.TestCase):
         self.assertIn("gtm", self.ctx.commands)
         self.assertEqual(stoa.LIVE_DESKS[-1].home, Path(self.tmp.name))
 
+    def test_a_tool_that_changes_the_desk_tells_an_open_window(self):
+        told = []
+        stoa.LIVE_DESKS[-1].announce = lambda: told.append(1)
+        self.session(platform="slack", chat_id="C1")
+        self.assertTrue(json.loads(self.ctx.tools["gtm_deal"]({"action": "add", "name": "Ada Quill"}))["ok"])
+        self.assertEqual(len(told), 1)
+        self.ctx.tools["gtm_pipeline"]({})                                                 # reading changes nothing
+        self.assertEqual(len(told), 1)
+        self.session(platform="slack", chat_id="C2")                                       # a chat the desk is not in
+        self.ctx.tools["gtm_deal"]({"action": "add", "name": "Nobody"})
+        self.assertEqual(len(told), 1)
+
     def test_the_desk_stays_out_of_chats_it_is_not_allowed_in(self):
         section, limit = self.ctx.sections["stoa.desk"]
         self.session(platform="slack", chat_id="C2")
@@ -1015,6 +1027,39 @@ class DashboardApiTests(unittest.TestCase):
         self.desk = make_desk(self.tmp.name)
         self.api.desk = lambda: self.desk
         demo.load(self.desk)
+
+    def test_a_click_in_the_app_saves_and_returns_the_line_to_send_into_chat(self):
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        told = []
+        self.desk.announce = lambda: told.append(1)
+        drafted = self.api.act(dana, {"verb": "draft"})
+        self.assertEqual((drafted["ok"], drafted["parked"]), (True, True))
+        self.assertIn("Write the follow-up for Dana Whitfield", drafted["ask"])
+        self.assertIn(dana, drafted["ask"])
+        self.assertIn("pending_task", self.desk.deal({"action": "get", "deal": dana}))     # the task itself waits on the record
+        moved = self.api.act(dana, {"verb": "advance", "extra": "screened"})
+        self.assertIn("Dana Whitfield is now at Submitted", moved["ask"])
+        self.assertEqual(self.api.act(dana, {"verb": "snooze7"})["ask"], "")               # nothing to write: nothing to say
+        target = self.desk.markets.target("Meridian Freight")
+        added = self.api.target(target["id"], "track")
+        self.assertIn("added to the Stoa desk from the market map", added["ask"])
+        self.assertIn(added["deal"], added["ask"])
+        self.assertEqual(len(told), 4)                                                     # every change reaches an open window
+
+    def test_cards_and_maps_are_drawn_in_the_conversation_only_while_the_app_is_open(self):
+        in_app = {"platform": "desktop", "chat_id": ""}
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        self.assertIn("card", self.desk.card({"deal": "dana"}, in_app))                    # nobody has the app open: text
+        self.assertTrue(self.api.hello()["ok"])                                            # the app's half checks in
+        shown = self.desk.card({"deal": "dana"}, in_app)
+        self.assertEqual(shown["directive"], '::stoa-card{id="%s"}' % dana)
+        self.assertNotIn("card", shown)
+        posted = self.desk.markets.post({"market": ""}, in_app)
+        self.assertEqual(posted["directive"], '::stoa-map{market="regional-freight-brokers-demo"}')
+        for elsewhere in ({"platform": "cli"}, {"platform": "telegram", "chat_id": "T1"}, {"platform": "slack", "chat_id": "C1"}, {}):
+            self.assertNotIn("directive", self.desk.card({"deal": "dana"}, elsewhere), elsewhere)
+        self.desk.desktop_seen = time.time() - 600                                         # the window was closed a while ago
+        self.assertIn("card", self.desk.card({"deal": "dana"}, in_app))
 
     def test_state_costs_the_same_however_many_records_there_are(self):
         self.desk.store.last_touch = lambda deal_id: self.fail("asked for one record's last touch during /state")

@@ -25,6 +25,7 @@ PDL_KEY = "PDL_API_KEY"
 GRANOLA_KEY = "GRANOLA_API_KEY"
 LOG_KINDS = ("note", "call", "email", "meeting", "task")
 HANDOFF_FRESH = 90  # seconds a "Drafting..." line is believed without news (a restart loses the watcher that clears it)
+DESKTOP_FRESH = 90  # seconds since the Desktop app or Webapp half last checked in for it to count as open
 
 
 def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
@@ -66,6 +67,8 @@ class Desk:
         self._stores: dict = {}
         self.home: Optional[Path] = None   # the Hermes profile this desk belongs to, when Hermes built it
         self.slack = None  # set by __init__ when the Slack half is wired
+        self.announce: Callable[[], None] = lambda: None   # tells an open Desktop app or Webapp that the desk changed
+        self.desktop_seen = 0.0     # when the Desktop/Webapp half last checked in (it does so while it is open)
         self.markets = Markets(self)
 
     # -- host services --------------------------------------------------------------------------
@@ -119,6 +122,11 @@ class Desk:
         if session.get("platform") == "cron":        # scheduled jobs have no chat: they are opted in by name
             return "cron" in allow
         return session.get("chat_id", "") in allow
+
+    def desktop_open(self, session: Optional[dict] = None) -> bool:
+        """Whether this conversation is in the Hermes Desktop app or Webapp with Stoa's half loaded,
+        where a card or a map can be drawn live in the conversation instead of pasted as text."""
+        return (session or {}).get("platform") in ("local", "desktop") and time.time() - self.desktop_seen <= DESKTOP_FRESH
 
     def can_enrich(self, playbook: Optional[Playbook] = None) -> bool:
         """Whether a record can be enriched: the key is set and the playbook has not switched it off."""
@@ -534,6 +542,10 @@ class Desk:
         if not channel and session.get("platform") == "slack":
             channel = session.get("chat_id") or ""
         text = self.text_card(deal)
+        if not channel and self.desktop_open(session):
+            return {"ok": True, "posted": False, "directive": "::stoa-card{id=\"%s\"}" % deal["id"],
+                    "note": "Show the card by writing that directive as a paragraph by itself, exactly as given. "
+                            "The app draws the live card with its buttons there. Do not also paste the record as text."}
         if self.slack is None or not self.slack.available or not channel:
             why = ("Slack is not connected in this session" if self.slack is None or not self.slack.available
                    else "no Slack channel was given")

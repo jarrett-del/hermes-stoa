@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -80,6 +81,29 @@ def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Opti
     return view
 
 
+def _ask(d, deal_id: str, verb: str) -> str:
+    """The line the Desktop app or Webapp half sends into the open chat after a click that calls
+    for writing. The task itself waits on the record; this just points the agent at it."""
+    record = d.store.get(deal_id) or {}
+    name = record.get("name") or deal_id
+    if verb == "draft":
+        return "Write the follow-up for %s on the Stoa desk. The task is waiting on record %s." % (name, deal_id)
+    if verb == "track":
+        return ("%s was just added to the Stoa desk from the market map. Open record %s and do the task waiting on it."
+                % (record.get("company") or name, deal_id))
+    return ("%s is now at %s on the Stoa desk. Open record %s and write what is waiting on it."
+            % (name, d.playbook().label(record.get("stage", "")), deal_id))
+
+
+@router.post("/hello")
+def hello() -> dict:
+    """The Desktop app or Webapp half checks in while it is open. That is how the desk knows a card
+    or a map can be drawn live in the conversation there."""
+    d = desk()
+    d.desktop_seen = time.time()
+    return {"ok": True, "playbook": d.playbook().name}
+
+
 @router.get("/state")
 def state() -> dict:
     d = desk()
@@ -149,33 +173,38 @@ def deal(deal_id: str) -> dict:
 
 @router.post("/deal")
 def add_deal(body: dict = Body(...)) -> dict:
-    result = desk().deal(dict(body or {}, action="add"))
+    d = desk()
+    result = d.deal(dict(body or {}, action="add"))
     if not result.get("ok"):
         raise HTTPException(400, result.get("error") or "could not add the record")
+    d.announce()
     return result
 
 
 @router.post("/deal/{deal_id}/act")
 def act(deal_id: str, body: dict = Body(...)) -> dict:
-    """advance | lost | reopen | snooze3 | snooze7 | enrich go through the same path as a Slack
-    button; log and update go through the same path as the agent's tool."""
+    """advance | draft | lost | reopen | snooze3 | snooze7 | enrich go through the same path as a
+    Slack button; log and update go through the same path as the agent's tool."""
     d = desk()
     verb = str((body or {}).get("verb") or "")
     if d.store.get(deal_id) is None:
         raise HTTPException(404, "no such record")
-    if verb in ("advance", "lost", "reopen", "snooze3", "snooze7", "enrich"):
+    if verb in ("advance", "draft", "lost", "reopen", "snooze3", "snooze7", "enrich"):
         result = d.click(verb, deal_id, str(body.get("extra") or ""), "dashboard")
         if result.get("followup"):  # the web cannot start an agent turn: leave the writing task on the record
             d.park_followup(deal_id, result["followup"])
         if result.get("deal"):
             d._changed(result["deal"])
-        return {"ok": True, "notice": result.get("notice") or "", "parked": bool(result.get("followup"))}
+        d.announce()
+        return {"ok": True, "notice": result.get("notice") or "", "parked": bool(result.get("followup")),
+                "ask": _ask(d, deal_id, verb) if result.get("followup") else ""}
     if verb in ("log", "update"):
         allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name")
         args = {k: body[k] for k in allowed if k in body}
         result = d.deal(dict(args, action=verb, deal=deal_id))
         if not result.get("ok"):
             raise HTTPException(400, result.get("error") or "could not save")
+        d.announce()
         return {"ok": True}
     raise HTTPException(400, "unknown action")
 
@@ -198,8 +227,10 @@ def target(target_id: str, verb: str, body: Optional[dict] = Body(None)) -> dict
         result = d.markets.click_track(target_id, "dashboard")
         if result.get("deal") and result.get("followup"):
             d.park_followup(result["deal"]["id"], result["followup"])
+        d.announce()
         return {"ok": bool(result.get("deal")), "notice": result.get("notice") or "",
-                "deal": (result.get("deal") or {}).get("id", "")}
+                "deal": (result.get("deal") or {}).get("id", ""),
+                "ask": _ask(d, result["deal"]["id"], "track") if result.get("deal") and result.get("followup") else ""}
     if verb == "dismiss":
         return d.markets.dismiss({"targets": [target_id], "reason": str((body or {}).get("reason") or "")})
     raise HTTPException(400, "unknown action")
