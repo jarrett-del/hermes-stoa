@@ -40,6 +40,43 @@ SALES = [
 ]
 
 
+MARKET = {
+    "name": "Regional freight brokers (demo)",
+    "brief": "Fictional sample map. Freight brokerages with 50 to 500 people in the US Midwest that still run "
+             "carrier scorecards in spreadsheets.",
+    "segments": [{"name": "Asset-light brokers", "description": "Pure brokerage, no trucks of their own"},
+                 {"name": "Hybrid carriers", "description": "Own fleet plus a brokerage arm"},
+                 {"name": "Digital-first", "description": "Venture-backed, app-led brokerages"}],
+}
+COMPANIES = [
+    {"company": "Meridian Freight", "website": "meridianfreight.example", "segment": "Asset-light brokers", "fit": 5,
+     "size": "220 people", "location": "Chicago, IL", "why": "Posted two carrier-compliance analyst roles this month.",
+     "signal": "Hiring for the problem we solve"},
+    {"company": "Tidewater Logistics", "website": "tidewater.example", "segment": "Asset-light brokers", "fit": 4,
+     "size": "140 people", "location": "Columbus, OH", "why": "COO spoke about carrier quality at a regional conference."},
+    {"company": "Halcyon Transport", "website": "halcyontransport.example", "segment": "Asset-light brokers", "fit": 3,
+     "size": "60 people", "location": "Des Moines, IA", "why": "Small ops team; likely still on spreadsheets."},
+    {"company": "Northwind Carriers", "website": "northwindcarriers.example", "segment": "Hybrid carriers", "fit": 4,
+     "size": "480 people", "location": "Indianapolis, IN", "why": "Opened a brokerage arm last year and is scaling it.",
+     "signal": "New business line"},
+    {"company": "Ostrava Lines", "website": "ostravalines.example", "segment": "Hybrid carriers", "fit": 2,
+     "size": "300 people", "location": "Omaha, NE", "why": "Mostly dedicated contract freight; brokerage is a sideline."},
+    {"company": "Brightside Freight", "website": "brightsidefreight.example", "segment": "Digital-first", "fit": 5,
+     "size": "90 people", "location": "Minneapolis, MN", "why": "Raised a Series A and named carrier vetting as a priority.",
+     "signal": "Fresh funding"},
+    {"company": "Quill Cargo", "website": "quillcargo.example", "segment": "Digital-first", "fit": 3,
+     "size": "55 people", "location": "Kansas City, MO", "why": "Building in-house tooling; may prefer to build."},
+]
+
+
+def load_market(desk) -> int:
+    markets = desk.markets
+    if markets._market(MARKET["name"]) is not None:
+        return 0
+    markets.define(dict(MARKET))
+    return len(markets.add({"market": MARKET["name"], "companies": COMPANIES})["added"])
+
+
 def _rows(playbook) -> list:
     return RECRUITING if playbook.name == "recruiting" else SALES
 
@@ -66,6 +103,7 @@ def load(desk) -> int:
                 conn.execute("UPDATE deals SET updated_at = ?, stage_at = ?, created_at = ? WHERE id = ?",
                              (stamp, stamp, stamp, deal["id"]))
         count += 1
+    load_market(desk)
     return count
 
 
@@ -74,4 +112,13 @@ def clear(desk) -> int:
     doomed = [d for d in store.list(status="all") if d["source"] == SOURCE]
     for deal in doomed:
         store.delete(deal["id"])
+    market = desk.markets._market(MARKET["name"])
+    if market is not None:
+        tracked = [t["deal_id"] for t in desk.markets.targets(market["id"]) if t["deal_id"]]
+        for deal_id in tracked:
+            store.delete(deal_id)
+        with store._conn() as conn:
+            conn.execute("DELETE FROM targets WHERE market_id = ?", (market["id"],))
+            conn.execute("DELETE FROM markets WHERE id = ?", (market["id"],))
+            conn.execute("DELETE FROM cards WHERE deal_id = ?", ("map:" + market["id"],))
     return len(doomed)

@@ -12,6 +12,8 @@ def setup(subparser) -> None:
     subs.add_parser("board", help="Print the pipeline board")
     subs.add_parser("brief", help="Print what needs attention today")
     subs.add_parser("playbooks", help="List playbooks")
+    market = subs.add_parser("map", help="Print a market map (or list the maps)")
+    market.add_argument("market", nargs="*", default=[])
     use = subs.add_parser("use", help="Switch the active playbook")
     use.add_argument("name")
     sample = subs.add_parser("demo", help="Load fictional sample records for the active playbook")
@@ -44,6 +46,14 @@ def run(desk, args) -> None:
         print(desk.slash("board"))
     elif command == "brief":
         print(desk.brief_text())
+    elif command == "map":
+        name = " ".join(args.market)
+        if not name and len(desk.markets.list_markets()) != 1:
+            maps = desk.markets.list_markets()
+            print("\n".join("%s — %d companies, %d in the pipeline" % (m["name"], m["companies"], m["in_pipeline"]) for m in maps)
+                  or "No market maps yet. Ask Hermes to map a market for you.")
+        else:
+            print(desk.slash("map " + name))
     elif command == "playbooks":
         print(desk.slash("playbooks"))
     elif command == "use":
@@ -55,8 +65,8 @@ def run(desk, args) -> None:
         if args.clear:
             print("Removed %d sample records." % demo.clear(desk))
         else:
-            print("Added %d sample records for the %s playbook. `hermes stoa demo --clear` removes them."
-                  % (demo.load(desk), desk.playbook().name))
+            print("Added %d sample records for the %s playbook and a sample market map. "
+                  "`hermes stoa demo --clear` removes them." % (demo.load(desk), desk.playbook().name))
     elif command == "export":
         result = desk.export({"action": "export", "path": args.path or None})
         print("Wrote %d records to %s" % (result["rows"], result["path"]) if result.get("ok") else result.get("error"))
@@ -70,4 +80,4 @@ def run(desk, args) -> None:
         else:
             print(result.get("error"))
     else:
-        print("Usage: hermes stoa <status|board|brief|playbooks|use|demo|export|import>")
+        print("Usage: hermes stoa <status|board|brief|map|playbooks|use|demo|export|import>")

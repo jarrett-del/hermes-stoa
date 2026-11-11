@@ -2,7 +2,7 @@
 
 Standard library only. Nothing here reads a credential: callers pass the key they got from
 Hermes's secret scope. Every network call in the plugin goes through ``http_json`` below, to
-exactly two hosts: api.peopledatalabs.com and public-api.granola.ai.
+exactly three hosts: api.peopledatalabs.com, public-api.granola.ai and api.exa.ai.
 """
 from __future__ import annotations
 
@@ -18,17 +18,24 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 PDL = "https://api.peopledatalabs.com/v5"
+EXA = "https://api.exa.ai"
 GRANOLA = "https://public-api.granola.ai/v1"
 NOTE_SUFFIXES = (".md", ".markdown", ".txt")
 NOTE_CHARS = 24000
 
 
-def http_json(url: str, *, headers: Optional[dict] = None, params: Optional[dict] = None, timeout: int = 30) -> tuple:
-    """GET a JSON document. Returns ``(status, body)``; never raises for an HTTP error status."""
+def http_json(url: str, *, headers: Optional[dict] = None, params: Optional[dict] = None, timeout: int = 30,
+              data: Optional[dict] = None) -> tuple:
+    """GET a JSON document, or POST ``data`` as JSON. Returns ``(status, body)``; never raises for an
+    HTTP error status."""
     if params:
         url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
-    request = urllib.request.Request(url, headers=dict({"Accept": "application/json",
-                                                        "User-Agent": "hermes-stoa"}, **(headers or {})))
+    base = {"Accept": "application/json", "User-Agent": "hermes-stoa"}
+    body = None
+    if data is not None:
+        body = json.dumps(data).encode("utf-8")
+        base["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=dict(base, **(headers or {})))
     for attempt in range(3):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -136,6 +143,53 @@ def _pdl_error(status: int, body: dict) -> str:
         return "People Data Labs rate limit reached; try again in a minute"
     message = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("error")
     return "People Data Labs request failed (%s)%s" % (status or "network", ": %s" % message if message else "")
+
+
+def _sql_text(value: str) -> str:
+    """A value safe to place inside single quotes in a PDL SQL query."""
+    return re.sub(r"[^a-z0-9 .&+/-]", "", (value or "").lower()).strip()[:80]
+
+
+def pdl_people(key: str, *, company: str = "", domain: str = "", titles: Optional[list] = None, limit: int = 3,
+               http: Callable = http_json) -> dict:
+    """People at one company whose title matches. Each person returned costs one PDL credit."""
+    company, domain = _sql_text(company), _sql_text(domain)
+    if not (company or domain):
+        return {"ok": False, "error": "need the company name or its website domain"}
+    where = ["job_company_website='%s'" % domain if domain else "job_company_name='%s'" % company]
+    wanted = [t for t in (_sql_text(t) for t in titles or []) if t][:6]
+    if wanted:
+        where.append("(" + " OR ".join("job_title LIKE '%%%s%%'" % t for t in wanted) + ")")
+    sql = "SELECT * FROM person WHERE " + " AND ".join(where)
+    status, body = http(PDL + "/person/search", headers={"X-Api-Key": key},
+                        data={"sql": sql, "size": max(1, min(int(limit), 5)), "titlecase": True})
+    if status == 200:
+        people = [summarize_person(p) for p in body.get("data") or []]
+        return {"ok": True, "people": people, "total_matching": body.get("total"), "credits_used": len(people)}
+    if status == 404:
+        return {"ok": True, "people": [], "total_matching": 0, "credits_used": 0}
+    return {"ok": False, "error": _pdl_error(status, body)}
+
+
+def exa_companies(key: str, query: str, limit: int = 8, http: Callable = http_json) -> dict:
+    """Company pages matching a plain-language description, via Exa search."""
+    status, body = http(EXA + "/search", headers={"x-api-key": key},
+                        data={"query": query[:400], "numResults": max(1, min(int(limit), 15)), "category": "company",
+                              "contents": {"text": {"maxCharacters": 500}}})
+    if status != 200:
+        problem = "Exa rejected the API key" if status in (401, 403) else "Exa search failed (%s)" % (status or "network")
+        return {"ok": False, "error": problem}
+    results = []
+    for item in body.get("results") or []:
+        url = item.get("url") or ""
+        results.append({"title": (item.get("title") or "")[:120], "url": url, "domain": domain_of(url),
+                        "text": " ".join((item.get("text") or "").split())[:500]})
+    return {"ok": True, "results": results}
+
+
+def domain_of(url: str) -> str:
+    host = urllib.parse.urlparse(url if "//" in url else "//" + url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 # -- Meeting notes ------------------------------------------------------------------------------

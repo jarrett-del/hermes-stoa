@@ -129,6 +129,55 @@ GTM_NOTES = {
     },
 }
 
+GTM_MARKET = {
+    "name": "gtm_market",
+    "description": (
+        "Map a market and turn it into leads. A market map is a named list of companies sorted into segments, each "
+        "with a fit score and the evidence for it. Actions: define (name the market, a brief saying who the team sells "
+        "to, and its segments), add (record companies you researched: company, website, segment, fit 1-5, size, "
+        "location, why it fits, a buying signal, source URL), show (the map), list, search (find candidate companies "
+        "through Exa, if connected; otherwise research with your own web tools), people (likely buyers at one company "
+        "through People Data Labs; each person returned costs a credit), track (turn companies into pipeline records), "
+        "dismiss, and post (put the map in Slack with an Add to pipeline button on each company). Use it when the user "
+        "asks who to sell to, wants leads in an industry, or wants to see a market."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["define", "list", "add", "show", "search", "people", "track", "dismiss", "post"]},
+            "market": {"type": "string", "description": "The market's name or id. May be omitted when there is only one."},
+            "name": {"type": "string", "description": "define: the market's name, e.g. 'Commercial solar installers, US Southwest'."},
+            "brief": {"type": "string", "description": "define: two or three sentences on who the team sells to and what makes a company a fit."},
+            "segments": {"type": "array", "description": "define: 3 to 6 segments, each {name, description}.",
+                         "items": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}}}},
+            "companies": {"type": "array", "description": "add: the companies to record.",
+                          "items": {"type": "object", "properties": {
+                              "company": {"type": "string"}, "website": {"type": "string"}, "segment": {"type": "string"},
+                              "fit": {"type": "integer", "description": "1 (weak) to 5 (ideal) against the brief."},
+                              "size": {"type": "string", "description": "Headcount or revenue band, as found."},
+                              "location": {"type": "string"},
+                              "why": {"type": "string", "description": "One sentence of evidence for the fit."},
+                              "signal": {"type": "string", "description": "A reason to reach out now: funding, hiring, a launch."},
+                              "source": {"type": "string", "description": "URL the evidence came from."}},
+                              "required": ["company"]}},
+            "segment": {"type": "string", "description": "show: only this segment."},
+            "status": {"type": "string", "enum": ["new", "tracked", "dismissed"], "description": "show: filter by status."},
+            "query": {"type": "string", "description": "search: a plain description of the kind of company to find."},
+            "target": {"type": "string", "description": "people: the company (map id or name)."},
+            "titles": {"type": "array", "items": {"type": "string"}, "description": "people: title fragments to match, e.g. ['vp operations', 'head of logistics']."},
+            "targets": {"type": "array", "items": {"type": "string"}, "description": "track/dismiss: map ids or company names."},
+            "contact": {"type": "string", "description": "track (one target): the person's name, if known."},
+            "title": {"type": "string", "description": "track: the contact's title."},
+            "email": {"type": "string"},
+            "linkedin": {"type": "string"},
+            "reason": {"type": "string", "description": "dismiss: why it is not a fit."},
+            "channel": {"type": "string", "description": "post: Slack channel id. Default: the current conversation."},
+            "limit": {"type": "integer", "description": "search: results (max 15). people: people (max 5, one credit each)."},
+        },
+        "required": ["action"],
+    },
+}
+
 GTM_PLAYBOOK = {
     "name": "gtm_playbook",
     "description": (

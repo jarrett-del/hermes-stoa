@@ -6,10 +6,15 @@
 
 > *στοά*: the covered walk beside the agora, where the day's business was done.
 
-A two-person sales team does not need a CRM with forty tabs. It needs the pipeline kept honest,
-the follow-ups written, and the calls turned into next steps, in the place the team already
-talks. Stoa gives Hermes a small pipeline of its own and puts it in Slack as cards with buttons:
+A two-person sales team does not need a CRM with forty tabs. It needs to know who to sell to,
+the pipeline kept honest, the follow-ups written, and the calls turned into next steps, in the
+places the team already works: Slack and Gmail. Stoa is that, in one plugin:
 
+**Map the market → find the leads → run the pipeline.**
+
+- **Map any market.** Tell Hermes what you sell. It segments the market, researches companies,
+  scores each against your brief with the evidence, and posts the map. One tap on a company puts
+  it in the pipeline and sets Hermes to finding the buyer and drafting the first note.
 - **Click a button, the stage changes at once.** No model in the loop, no waiting, no wrong stage.
 - **Then Hermes does the writing.** The same click hands the follow-up (the outreach note, the
   proposal email, the decline) to the agent, in the card's thread.
@@ -23,10 +28,10 @@ rebuilt as a plugin anyone can install.
 ```
 hermes plugins install stoa
 hermes plugins enable stoa
-hermes stoa demo          # optional: seven fictional records to try it on
+hermes stoa demo          # optional: fictional records and a sample market map to try it on
 ```
 
-Then, in any Hermes chat: *"What's on my plate?"* or `/gtm`.
+Then, in any Hermes chat: *"Map the market for us"*, *"What's on my plate?"*, or `/gtm`.
 
 ## What it looks like
 
@@ -58,13 +63,43 @@ Two people clicking the same button at once move the stage once, not twice.
 
 | | |
 |---|---|
-| **7 tools** | `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **8 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
 | **`/gtm`** | The board, the brief, or one record, on every surface Hermes runs on (Slack, Telegram, CLI, Desktop…) |
-| **`hermes stoa`** | Status, board, brief, sample data, CSV import and export from a terminal |
-| **3 automations** | Morning brief, meeting-notes sweep, Friday review, under `/blueprint` |
-| **2 skills** | `stoa:desk` (how the agent runs the desk) and `stoa:playbook-authoring` |
+| **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
+| **4 automations** | Morning brief, meeting-notes sweep, weekly market watch, Friday review, under `/blueprint` |
+| **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
 | **3 playbooks** | `b2b-sales`, `recruiting`, `agency`, plus any you or the agent write |
+
+### Market maps
+
+*"We sell carrier-scorecard software to freight brokers in the Midwest. Who should we go after?"*
+
+Hermes names the market, splits it into segments that would each get a different pitch, and
+researches companies for each one, with its own web search or with [Exa](https://exa.ai) if you
+add a key. Every company goes on the map with a fit score from 1 to 5, one sentence of evidence,
+a buying signal if there is one, and the source link:
+
+```
+Market map · Regional freight brokers
+7 companies · 1 in the pipeline
+
+Asset-light brokers (3)
+  ●●●●● Meridian Freight · 220 people · Chicago, IL  [in pipeline]
+        Posted two carrier-compliance analyst roles this month.
+  ●●●●○ Tidewater Logistics · 140 people · Columbus, OH
+        COO spoke about carrier quality at a regional conference.
+
+Digital-first (2)
+  ●●●●● Brightside Freight · 90 people · Minneapolis, MN
+        Raised a Series A and named carrier vetting as a priority.
+```
+
+In Slack each company has an **Add to pipeline** button. A tap creates the record at the first
+stage of your playbook, carries the evidence into its activity log, and asks Hermes to find the
+most likely buyer and draft a first-touch note. The *Market watch* automation re-checks a map
+every week and adds at most five new companies.
 
 ### The pipeline
 
@@ -119,6 +154,12 @@ With a [People Data Labs](https://www.peopledatalabs.com/) key, the **Enrich** b
 what a person typed, results are cached for 90 days, and a monthly cap (default 50 lookups)
 keeps the bill predictable.
 
+### Gmail
+
+Stoa writes drafts and never sends. When the Google Workspace skill (or any Gmail tool) is
+connected to Hermes, the agent saves what it drafts as a Gmail draft addressed to the record's
+email, ready for you to read and send. Without it, drafts arrive in the chat.
+
 ### Spreadsheets
 
 `gtm_export` writes the whole pipeline to a CSV that opens in Google Sheets or Excel, and reads
@@ -137,7 +178,8 @@ All optional. Set them in the Desktop app under **Settings → Plugins → Stoa*
 | `notes_dir` | empty | Folder of call notes to watch |
 | `notes_days` | `7` | How far back the notes inbox looks |
 | `pdl_monthly_cap` | `50` | Most paid lookups per calendar month (0 = no cap) |
-| `PDL_API_KEY` (secret) | empty | Turns on enrichment |
+| `PDL_API_KEY` (secret) | empty | Turns on enrichment and buyer lookup |
+| `EXA_API_KEY` (secret) | empty | Lets the market map search for companies directly |
 | `GRANOLA_API_KEY` (secret) | empty | Adds Granola notes to the inbox |
 
 One permission is worth granting. For a button click to start the agent's writing turn, Hermes
@@ -162,13 +204,17 @@ for your reply in its thread; the task is picked up the moment you answer.
 
 What the plugin does that you would want to know before installing it:
 
-- **Network calls.** Only when you add the matching key, and only to two hosts:
+- **Network calls.** Only when you add the matching key, and only to three hosts:
   `api.peopledatalabs.com` (the name, email, LinkedIn URL or company of the one record being
-  enriched) and `public-api.granola.ai` (reads your note list and note summaries; transcripts
-  are never requested). No telemetry, no usage reporting, no other outbound requests.
+  enriched, or a company name and job titles for a buyer lookup), `api.exa.ai` (the search
+  phrase for a market-map search) and `public-api.granola.ai` (reads your note list and note
+  summaries; transcripts are never requested). No telemetry, no usage reporting, no other
+  outbound requests. Research the agent does with its own web tools is Hermes's, not the plugin's.
+- **Paid lookups.** People Data Labs charges per result. Every lookup counts against
+  `pdl_monthly_cap`, and a buyer lookup returns at most five people.
 - **Slack.** Cards are posted and updated through the Slack app Hermes is already connected
   with. The plugin never reads, stores or sees the Slack token.
-- **Credentials.** `PDL_API_KEY` and `GRANOLA_API_KEY` are read through Hermes's secret scope
+- **Credentials.** `PDL_API_KEY`, `EXA_API_KEY` and `GRANOLA_API_KEY` are read through Hermes's secret scope
   (`agent.secret_scope.get_secret`). The plugin reads no `.env` or credential file.
 - **Files outside the plugin's own data.** It reads Markdown and text files in the folder you
   set as `notes_dir`, and a CSV at a path you (or the agent, on your request) pass to import.
@@ -179,9 +225,11 @@ What the plugin does that you would want to know before installing it:
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.1
+## Limits in 0.2
 
-- Buttons are Slack-only. Other platforms get the text card and `/gtm`.
+- Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
+- A map is as good as the research behind it. Fit scores are the agent's judgement against your
+  brief; the source link is there so you can check.
 - One Slack workspace per profile.
 - There is no direct Google Sheets sync yet; CSV is the bridge.
 - A team shares one desk. There are owners on records, but no per-person permissions.
@@ -191,7 +239,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 48 tests, no network
+python3 -m unittest discover -s tests     # 59 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
@@ -204,7 +252,8 @@ hermes plugins doctor . --ci
 | `playbook.py`, `playbooks/` | Playbook loading, validation, and the built-ins |
 | `cards.py` | Block Kit cards and their text twins |
 | `slackdesk.py` | Posting cards and answering button clicks |
-| `sources.py` | People Data Labs and meeting-note sources |
+| `market.py` | Market maps: segments, targets, and the step into the pipeline |
+| `sources.py` | People Data Labs, Exa and meeting-note sources |
 
 ## License
 

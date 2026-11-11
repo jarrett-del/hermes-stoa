@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 
 from . import cards, sources
 from . import store as st
+from .market import Markets
 from .playbook import DEFAULT, Library, Playbook, PlaybookError
 
 log = logging.getLogger("hermes.plugins.stoa")
@@ -39,6 +40,7 @@ class Desk:
         self.http = http
         self._stores: dict = {}
         self.slack = None  # set by __init__ when the Slack half is wired
+        self.markets = Markets(self)
 
     # -- host services --------------------------------------------------------------------------
     @property
@@ -385,6 +387,10 @@ class Desk:
                 "Reply here with the draft only. Do not send anything and do not change the record."
                 % (actor or "Someone", deal["name"], playbook.terms["deal"], where, happened, task, deal["id"]))
 
+    # -- gtm_market -----------------------------------------------------------------------------
+    def market(self, args: dict, session: Optional[dict] = None) -> dict:
+        return self.markets.run(args, session)
+
     # -- gtm_card -------------------------------------------------------------------------------
     def card(self, args: dict, session: Optional[dict] = None) -> dict:
         deal, error = self._resolve(args.get("deal"))
@@ -676,7 +682,14 @@ class Desk:
             return cards.board_text(playbook, self.store.list(status="open"))
         if word == "help":
             return ("/gtm — the pipeline board\n/gtm brief — what needs you today\n/gtm stale — records gone quiet\n"
-                    "/gtm due — next steps due\n/gtm <name> — one record's card\n/gtm playbooks — available playbooks")
+                    "/gtm due — next steps due\n/gtm map [market] — a market map\n/gtm <name> — one record's card\n"
+                    "/gtm playbooks — available playbooks")
+        if word == "map" or word.startswith("map "):
+            shown = self.markets.show({"market": raw[3:].strip()})
+            if shown.get("ok"):
+                return shown["map"]
+            names = shown.get("markets")
+            return shown["error"] + ("\n" + "\n".join("  " + n for n in names) if names else "")
         if word == "brief":
             return self.brief_text()
         if word in ("stale", "due"):
@@ -727,7 +740,7 @@ class Desk:
                 "You keep this team's pipeline with the gtm_* tools; the desk is the source of truth, so read it "
                 "before answering pipeline questions and write to it when something changes. %s "
                 "Say \"%s\" and \"%s\", not \"deal\" or \"group\", unless those are the words. "
-                "For how to run the desk, load the skill stoa:desk."
+"For how to run the desk, load the skill stoa:desk. To map a market or find new leads, load stoa:market-map."
                 % (playbook.describe(), playbook.terms["deal"], playbook.terms["group"]))
 
 

@@ -432,6 +432,135 @@ class CardTests(unittest.TestCase):
         self.assertIn("Dana Whitfield · Kestrel Labs", result["card"])
 
 
+class MarketTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.calls = []
+
+        def http(url, headers=None, params=None, timeout=30, data=None):
+            self.calls.append((url, headers, data))
+            if "exa.ai" in url:
+                return 200, {"results": [{"title": "Acme Freight", "url": "https://www.acmefreight.example/about", "text": "A  broker\nin Ohio"}]}
+            return 200, {"total": 12, "data": [{"full_name": "ada park", "job_title": "vp operations", "job_company_name": "meridian freight",
+                                                "linkedin_url": "linkedin.com/in/adapark"}]}
+        self.http = http
+        self.desk = make_desk(self.tmp.name, playbook="b2b-sales", http=http, config={"pdl_monthly_cap": 4})
+        self.market = self.desk.market
+
+    def define(self):
+        return self.market({"action": "define", "name": "Freight brokers, Midwest", "brief": "Brokers with 50-500 people.",
+                            "segments": ["Asset-light", {"name": "Hybrid", "description": "own trucks too"}]})
+
+    def add(self):
+        return self.market({"action": "add", "companies": [
+            {"company": "Meridian Freight, Inc.", "website": "https://www.meridian.example/x", "segment": "Asset-light", "fit": 5,
+             "why": "Hiring compliance analysts", "size": "220 people", "location": "Chicago"},
+            {"company": "Northwind Carriers", "segment": "hybrid", "fit": 9},
+            {"company": "Loose One"}, {"website": "nameless.example"}]})
+
+    def test_empty_states(self):
+        self.assertIn("define", self.market({"action": "show"})["error"])
+        self.assertEqual(self.market({"action": "list"})["markets"], [])
+        self.assertFalse(self.market({"action": "nonsense"})["ok"])
+        self.assertFalse(self.market({"action": "define"})["ok"])
+
+    def test_define_add_show(self):
+        self.assertEqual(self.define()["market"]["id"], "freight-brokers-midwest")
+        self.assertTrue(self.define()["updated"])
+        added = self.add()
+        self.assertEqual((len(added["added"]), added["total"], len(added["problems"])), (3, 3, 1))
+        again = self.market({"action": "add", "companies": [{"company": "meridian freight", "signal": "Raised a round"}]})
+        self.assertEqual((again["added"], again["updated"], again["total"]), ([], ["meridian freight"], 3))
+        shown = self.market({"action": "show"})
+        self.assertEqual([s["segment"] for s in shown["segments"]], ["Asset-light", "hybrid", "Unsorted"])
+        first = shown["segments"][0]["companies"][0]
+        self.assertEqual((first["domain"], first["fit"], first["signal"]), ("meridian.example", 5, "Raised a round"))
+        self.assertEqual(shown["segments"][1]["companies"][0]["fit"], 5)
+        self.assertIn("●●●●● Meridian Freight, Inc. · 220 people · Chicago", shown["map"])
+        self.assertIn("3 companies · 0 in the pipeline", self.desk.slash("map"))
+        self.assertEqual(self.market({"action": "list"})["markets"][0]["companies"], 3)
+        json.dumps(shown)
+
+    def test_track_creates_pipeline_records_once(self):
+        self.define(); self.add()
+        result = self.market({"action": "track", "targets": ["Meridian Freight, Inc.", "ghost co"]})
+        self.assertEqual(result["not_on_a_map"], ["ghost co"])
+        deal = self.desk.store.get(result["added_to_pipeline"][0]["deal"])
+        self.assertEqual((deal["stage"], deal["company"], deal["grp"], deal["next_step"]),
+                         ("lead", "Meridian Freight, Inc.", "Meridian Freight, Inc.", "Find the right contact"))
+        self.assertIn("market map: Freight brokers", deal["source"])
+        self.assertIn("Hiring compliance analysts", self.desk.store.activities(deal["id"])[0]["text"])
+        again = self.market({"action": "track", "targets": ["Meridian Freight, Inc."]})
+        self.assertEqual(again["already_in_pipeline"], ["Meridian Freight, Inc."])
+        self.assertEqual(self.desk.store.count(), 1)
+        self.assertIn("[in pipeline]", self.market({"action": "show"})["map"])
+        self.assertFalse(self.market({"action": "dismiss", "targets": ["Meridian Freight, Inc."]})["ok"])
+
+    def test_track_with_a_contact_and_recruiting_grouping(self):
+        self.define(); self.add()
+        one = self.market({"action": "track", "targets": ["Northwind Carriers"], "contact": "Ada Park", "title": "VP Ops",
+                           "email": "ada@northwind.example"})
+        deal = self.desk.store.get(one["added_to_pipeline"][0]["deal"])
+        self.assertEqual((deal["name"], deal["email"], deal["fields"]["title"], deal["next_step"]),
+                         ("Ada Park", "ada@northwind.example", "VP Ops", "First outreach"))
+        self.desk._set_config("playbook", "recruiting")
+        two = self.market({"action": "track", "targets": ["Loose One"]})
+        self.assertEqual(self.desk.store.get(two["added_to_pipeline"][0]["deal"])["grp"], "Freight brokers, Midwest")
+
+    def test_dismiss_hides_from_the_map(self):
+        self.define(); self.add()
+        self.assertEqual(self.market({"action": "dismiss", "targets": ["Loose One"], "reason": "Too small"})["dismissed"], ["Loose One"])
+        self.assertNotIn("Loose One", self.market({"action": "show"})["map"])
+        self.assertEqual(len(self.market({"action": "show", "status": "dismissed"})["segments"][0]["companies"]), 1)
+
+    def test_search_and_people_need_keys(self):
+        self.define(); self.add()
+        self.assertIn("web search", self.market({"action": "search", "query": "freight brokers"})["error"])
+        self.assertIn("web search", self.market({"action": "people", "target": "Northwind Carriers"})["error"])
+        self.assertEqual(self.calls, [])
+
+    def test_search_and_people_with_keys(self):
+        desk = make_desk(self.tmp.name, playbook="b2b-sales", http=self.http, config={"pdl_monthly_cap": 5},
+                         secrets={"EXA_API_KEY": "e", "PDL_API_KEY": "p"})
+        desk.market({"action": "define", "name": "Freight"})
+        desk.market({"action": "add", "companies": [{"company": "Meridian Freight", "website": "meridian.example"}]})
+        found = desk.market({"action": "search", "query": "freight brokers in Ohio"})
+        self.assertEqual(found["results"][0], {"title": "Acme Freight", "url": "https://www.acmefreight.example/about",
+                                               "domain": "acmefreight.example", "text": "A broker in Ohio"})
+        self.assertEqual((self.calls[0][1], self.calls[0][2]["category"]), ({"x-api-key": "e"}, "company"))
+        people = desk.market({"action": "people", "target": "Meridian Freight", "titles": ["VP Operations'; DROP", "logistics"], "limit": 9})
+        self.assertEqual((people["people"][0]["name"], people["credits_used"]), ("Ada Park", 1))
+        sql = self.calls[1][2]["sql"]
+        self.assertEqual(sql, "SELECT * FROM person WHERE job_company_website='meridian.example' AND "
+                              "(job_title LIKE '%vp operations drop%' OR job_title LIKE '%logistics%')")
+        self.assertEqual(self.calls[1][2]["size"], 5)
+        self.assertEqual(self.calls[1][1], {"X-Api-Key": "p"})
+        self.assertIn("cap", desk.market({"action": "people", "target": "Meridian Freight", "limit": 5})["error"])
+        self.assertEqual(len(self.calls), 2)
+
+    def test_map_blocks_fit_slack_limits(self):
+        self.define()
+        self.market({"action": "add", "companies": [
+            {"company": "Co %d <&>" % i, "segment": "Seg %d" % (i % 7), "fit": i % 5 + 1, "why": "w" * 390} for i in range(60)]})
+        blocks = self.desk.markets.blocks("freight-brokers-midwest")
+        self.assertLessEqual(len(blocks), 50)
+        for block in blocks:
+            if block["type"] == "section":
+                self.assertLessEqual(len(block["text"]["text"]), 3000)
+                if "accessory" in block:
+                    self.assertTrue(ACTIONS.match(block["accessory"]["action_id"]))
+        self.assertIn("more on the map", blocks[-1]["elements"][0]["text"])
+        self.assertIn("&lt;&amp;&gt;", json.dumps(blocks, ensure_ascii=False))
+
+    def test_demo_market_loads_and_clears(self):
+        demo.load(self.desk)
+        self.assertIn("7 companies", self.desk.slash("map"))
+        self.market({"action": "track", "targets": ["Brightside Freight"]})
+        demo.clear(self.desk)
+        self.assertEqual((self.desk.store.count(), self.market({"action": "list"})["markets"]), (0, []))
+
+
 class FakeClient:
     def __init__(self):
         self.posts, self.updates = [], []
@@ -550,6 +679,35 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.to_thread(self.slack.post_card, "C1", self.dana["id"])
         await asyncio.to_thread(self.desk.deal, {"action": "move", "deal": self.dana["id"], "stage": "next"})
         self.assertEqual(len(self.app.client.updates), 1)
+
+    async def test_map_post_and_add_to_pipeline_click(self):
+        session = {"platform": "slack", "chat_id": "C1", "thread_id": "1690000000.000100", "session_key": "ses_map"}
+        posted = await asyncio.to_thread(self.desk.market, {"action": "post"}, session)
+        self.assertTrue(posted["posted"])
+        post = self.app.client.posts[0]
+        self.assertEqual((post["thread_ts"], post["text"]), ("1690000000.000100", "Market map"))
+        button = [b["accessory"] for b in post["blocks"] if b.get("accessory")][0]
+        self.assertEqual(button["text"]["text"], "Add to pipeline")
+        body = self.body(ts="1700000000.000001", thread_ts="1690000000.000100")
+        await self.slack.on_action(self.ack, body, {"action_id": "stoa_track", "value": button["value"]})
+        deal = [d for d in self.desk.store.list() if d["source"].startswith("market map")][0]
+        self.assertEqual((deal["stage"], deal["company"]), ("sourced", "Meridian Freight"))
+        self.assertIn("in the pipeline", json.dumps(self.app.client.updates[-1]["blocks"]))
+        content, target = self.injected[-1]
+        self.assertEqual(target, "ses_map")
+        self.assertIn("most likely buyer", content)
+        self.assertIn(deal["id"], content)
+        await self.slack.on_action(self.ack, body, {"action_id": "stoa_track", "value": button["value"]})
+        self.assertIn("already in the pipeline", self.app.client.posts[-1]["text"])
+        self.assertEqual(len([d for d in self.desk.store.list() if d["source"].startswith("market map")]), 1)
+
+    async def test_map_click_parks_the_task_when_refused(self):
+        self.accept = False
+        target = self.desk.markets.target("Brightside Freight")
+        await self.slack.on_action(self.ack, self.body(), {"action_id": "stoa_track", "value": target["id"]})
+        deal = self.desk.store.find("Brightside Freight")
+        self.assertIn("Reply here", self.app.client.posts[-1]["text"])
+        self.assertIn("most likely buyer", self.desk.deal({"action": "get", "deal": deal["id"]})["pending_task"])
 
     async def test_bad_clicks_never_raise(self):
         await self.slack.on_action(self.ack, {}, {"action_id": "stoa_advance", "value": ""})

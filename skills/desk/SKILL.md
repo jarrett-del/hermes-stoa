@@ -35,6 +35,7 @@ playbook's words with the user. In tool arguments the fields are always `deal` a
 | "Who is this person?" | `gtm_enrich` only if they ask, or outreach is next and basics are missing |
 | "Anything from my calls?" | `gtm_notes(action="inbox")`, then read and file each one |
 | "We sell X to Y, set this up for us" | Load `stoa:playbook-authoring` |
+| "Who should we be selling to?" / "Find me leads in X" | Load `stoa:market-map` |
 
 One next step per record, phrased as an action with a date when you have one. If the user tells
 you what happened but not what comes next, ask once: "What's the next step?"
@@ -81,6 +82,12 @@ probably belongs to. For each one:
 For a morning brief, lead with what is due today, then what has gone quiet with one suggested
 nudge each, then a single line on the week. No greeting, no sign-off, under 200 words. If
 nothing is due and nothing is quiet, say so in one line.
+
+## Email
+
+You write drafts; people send them. If a Gmail tool or the Google Workspace skill is available
+in this session, save an email you drafted as a Gmail draft addressed to the record's email and
+say that it is in their drafts. Never send. Without one, give the draft in the chat.
 
 ## Enrichment costs money
 

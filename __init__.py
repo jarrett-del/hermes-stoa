@@ -2,7 +2,8 @@
 
     στοά, the covered walk beside the agora where the day's business was done.
 
-One SQLite ledger, playbooks that fit it to a niche, Slack cards whose buttons move the pipeline
+Map a market, find the leads, run the pipeline. Market maps that become leads with one click,
+one SQLite ledger, playbooks that fit it to a niche, Slack cards whose buttons move the pipeline
 at once and hand the writing to the agent, meeting notes that become next steps, and optional
 People Data Labs enrichment. ``register`` only wires things up; the work lives in ``desk``.
 """
@@ -73,6 +74,7 @@ def register(ctx) -> None:
         (schemas.GTM_PIPELINE, desk.pipeline, "🏛️"),
         (schemas.GTM_DEAL, desk.deal, "🏛️"),
         (schemas.GTM_CARD, lambda args: desk.card(args, _session()), "🏛️"),
+        (schemas.GTM_MARKET, lambda args: desk.market(args, _session()), "🗺️"),
         (schemas.GTM_ENRICH, desk.enrich, "🔎"),
         (schemas.GTM_NOTES, desk.notes, "📝"),
         (schemas.GTM_PLAYBOOK, desk.playbook_tool, "📜"),
@@ -136,6 +138,21 @@ def register(ctx) -> None:
                          "with exactly [SILENT]."),
         slots=[{"name": "hours", "type": "text", "label": "Which hours? (cron hour list)", "default": "11,14,17"}, deliver],
         tags=["gtm", "notes"],
+    )
+    ctx.register_automation_blueprint(
+        "market-watch",
+        title="Market watch",
+        description="Once a week: look for companies that newly fit one of your market maps and add the best few.",
+        category="work",
+        schedule_template="{minute} {hour} * * 1",
+        prompt_template=("Load the skill stoa:market-map. For the market map \"{market}\": call gtm_market(action=\"show\") to see "
+                         "what is already there, then research companies that fit its brief and are not on it yet, favouring "
+                         "ones with a fresh buying signal. Add at most five, each with its evidence and source URL. Report "
+                         "what you added and why in under 150 words. If you found nothing worth adding, reply with exactly "
+                         "[SILENT]."),
+        slots=[{"name": "market", "type": "text", "label": "Which market map?", "default": "my market"},
+               {"name": "time", "type": "time", "label": "What time on Mondays?", "default": "07:30"}, deliver],
+        tags=["gtm", "market", "weekly"],
     )
     ctx.register_automation_blueprint(
         "friday-review",

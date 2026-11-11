@@ -1,11 +1,12 @@
 name: stoa
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: >-
-  A go-to-market desk for small teams. One SQLite pipeline, playbooks that fit it to recruiting,
-  B2B sales or an agency, Slack cards whose buttons move a stage at once and hand the writing to
-  Hermes, meeting notes that become next steps, and optional People Data Labs enrichment.
+  A go-to-market desk for small teams: map a market, find the leads, run the pipeline. Market maps
+  that turn into leads with one click, a SQLite pipeline, playbooks that fit it to any niche, Slack
+  cards whose buttons move a stage at once and hand the writing to Hermes, and meeting notes that
+  become next steps.
 author: jarrett-del
 license: MIT
 homepage: https://github.com/jarrett-del/hermes-stoa
@@ -16,6 +17,7 @@ provides_tools:
   - gtm_pipeline
   - gtm_deal
   - gtm_card
+  - gtm_market
   - gtm_enrich
   - gtm_notes
   - gtm_playbook
@@ -52,6 +54,11 @@ config_schema:
     env: PDL_API_KEY
     label: People Data Labs API key
     description: "Optional. Turns on the Enrich button and gtm_enrich."
+  exa_api_key:
+    type: secret
+    env: EXA_API_KEY
+    label: Exa API key
+    description: "Optional. Lets the market map search for companies directly; without it the agent uses its own web search."
   granola_api_key:
     type: secret
     env: GRANOLA_API_KEY

@@ -19,7 +19,8 @@ from typing import Any, Callable, Optional
 from . import cards
 
 log = logging.getLogger("hermes.plugins.stoa")
-ACTIONS = re.compile(r"^%s(advance|draft|enrich|lost|more|reopen)$" % cards.PREFIX)
+ACTIONS = re.compile(r"^%s(advance|draft|enrich|lost|more|reopen|track)$" % cards.PREFIX)
+MAP = "map:"  # key under which a posted market map is remembered
 POST_TIMEOUT = 20
 
 
@@ -69,8 +70,11 @@ class SlackDesk:
             return {"ok": False, "error": _slack_error(exc)}
         return result or {"ok": True, "channel": channel}
 
+    def post_map(self, channel: str, market_id: str, thread_ts: str = "", session_key: str = "") -> dict:
+        return self.post_card(channel, MAP + market_id, thread_ts, session_key)
+
     def refresh(self, deal_id: str) -> None:
-        """Redraw every card already posted for a deal (best effort, never raises)."""
+        """Redraw every card already posted for a deal or a market map (best effort, never raises)."""
         if not self.available or not self.desk.store.cards(deal_id):
             return
         try:
@@ -79,12 +83,21 @@ class SlackDesk:
             log.debug("stoa: card refresh failed", exc_info=True)
 
     # -- coroutines on the gateway loop ---------------------------------------------------------
-    async def _post(self, channel: str, deal_id: str, thread_ts: str = "", session_key: str = "") -> dict:
-        deal = await asyncio.to_thread(self.desk.store.get, deal_id)
+    def _render(self, key: str) -> tuple:
+        """``(blocks, notification text)`` for a deal id or a ``map:<market id>`` key; ``(None, "")`` if gone."""
+        if key.startswith(MAP):
+            blocks = self.desk.markets.blocks(key[len(MAP):])
+            return (blocks, "Market map") if blocks else (None, "")
+        deal = self.desk.store.get(key)
         if deal is None:
+            return None, ""
+        return self.desk.blocks(deal), _fallback(deal)
+
+    async def _post(self, channel: str, deal_id: str, thread_ts: str = "", session_key: str = "") -> dict:
+        blocks, text = await asyncio.to_thread(self._render, deal_id)
+        if blocks is None:
             return {"ok": False, "error": "no such record"}
-        blocks = await asyncio.to_thread(self.desk.blocks, deal)
-        kwargs = {"channel": channel, "blocks": blocks, "text": _fallback(deal), "unfurl_links": False}
+        kwargs = {"channel": channel, "blocks": blocks, "text": text, "unfurl_links": False}
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         response = await self.client.chat_postMessage(**kwargs)
@@ -92,12 +105,11 @@ class SlackDesk:
         return {"ok": True, "channel": response["channel"], "ts": response["ts"]}
 
     async def _update(self, channel: str, ts: str, deal_id: str) -> None:
-        deal = await asyncio.to_thread(self.desk.store.get, deal_id)
-        if deal is None:
+        blocks, text = await asyncio.to_thread(self._render, deal_id)
+        if blocks is None:
             return
-        blocks = await asyncio.to_thread(self.desk.blocks, deal)
         try:
-            await self.client.chat_update(channel=channel, ts=ts, blocks=blocks, text=_fallback(deal))
+            await self.client.chat_update(channel=channel, ts=ts, blocks=blocks, text=text)
         except Exception as exc:
             if "message_not_found" in str(exc) or "channel_not_found" in str(exc):
                 await asyncio.to_thread(self.desk.store.forget_card, channel, ts)
@@ -135,6 +147,12 @@ class SlackDesk:
         team = (body.get("team") or {}).get("id", "")
         actor = user.get("name") or user.get("username") or user.get("id", "")
 
+        thread = message.get("thread_ts") or ts
+        if verb == "track":  # market map: "<target id>"
+            if value and channel and ts:
+                await self._track(value, channel, ts, thread, user.get("id", ""), actor, team)
+            return
+
         extra = ""
         if verb == "more":  # overflow menu: "<verb>|<deal id>"
             verb, _, deal_id = value.partition("|")
@@ -154,11 +172,26 @@ class SlackDesk:
         await self._update(channel, ts, deal_id)
         await self._refresh(deal_id, skip=(channel, ts))
 
-        thread = message.get("thread_ts") or ts
         if result.get("followup"):
             if not await self._hand_off(result["followup"], channel, ts, thread, user.get("id", ""), actor, team):
                 await asyncio.to_thread(self.desk.park_followup, deal_id, result["followup"])
                 await self._say(channel, thread, "Saved. Reply here (\"draft it\" is enough) and I'll write it up.")
+        elif result.get("notice"):
+            await self._say(channel, thread, result["notice"])
+
+    async def _track(self, target: str, channel: str, ts: str, thread: str, user_id: str, actor: str, team: str) -> None:
+        result = await asyncio.to_thread(self.desk.markets.click_track, target, actor)
+        log.info("stoa: %s added map target %s to the pipeline", actor, target)
+        if result.get("market_id"):
+            key = MAP + result["market_id"]
+            await asyncio.to_thread(self.desk.store.remember_card, key, channel, ts)
+            await self._update(channel, ts, key)
+            await self._refresh(key, skip=(channel, ts))
+        if result.get("followup") and result.get("deal"):
+            if not await self._hand_off(result["followup"], channel, ts, thread, user_id, actor, team):
+                await asyncio.to_thread(self.desk.park_followup, result["deal"]["id"], result["followup"])
+                await self._say(channel, thread, "Added %s to the pipeline. Reply here and I'll find the right contact "
+                                                 "and draft the first note." % result["deal"]["company"])
         elif result.get("notice"):
             await self._say(channel, thread, result["notice"])
 
