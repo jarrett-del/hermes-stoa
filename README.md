@@ -32,13 +32,33 @@ rebuilt as a plugin anyone can install.
 hermes plugins install stoa                        # from the Hermes plugin catalog
 hermes plugins install jarrett-del/hermes-stoa     # or straight from this repository
 hermes plugins enable stoa
-hermes stoa demo          # optional: fictional records and a sample market map to try it on
+hermes stoa demo saas     # optional: a worked example to try it on (or: hermes stoa demo recruiting)
 hermes gateway restart    # so the Slack buttons bind
 ```
 
 Then, in any Hermes chat: *"Map the market for us"*, *"What's on my plate?"*, or `/gtm`.
 In Slack the command is `!gtm` (Slack keeps the slash for its own commands), and
 `!gtm Dana Whitfield` or `!gtm map` posts the card or the map itself, buttons included.
+
+## Any pipeline, and two worked examples
+
+A playbook describes a pipeline: what a record is called, the stages it moves through, what the
+buttons say, and what Hermes drafts at each step. It can be any pipeline. Three playbooks ship
+(`b2b-sales`, `recruiting`, `agency`), and Hermes will write one for your business from a short
+conversation.
+
+The sample data shows two businesses at a realistic size. Everything in it is made up.
+
+| | A recruiting agency | A B2B software company selling a fraud prevention tool |
+|---|---|---|
+| **Load it** | `hermes stoa demo recruiting` | `hermes stoa demo saas` |
+| **A record is** | a candidate in a client's search | a deal with a buyer at an account |
+| **Stages** | Sourced → Contacted → Screened → Submitted → Client interview → Offer → Placed | Lead → Qualified → Discovery → Proposal → Negotiation → Closed won |
+| **On the desk** | 24 open candidates across 8 searches, **$1.2M** in fees, plus 3 placed and 5 passed | 28 open deals, **$2.5M**, plus 4 won and 6 lost |
+| **Its market map** | Where the candidates for one search work now: 10 companies, and adding one puts its named person in that search | Fintechs and marketplaces exposed to payment fraud: 14 companies, what each uses today, and who to call first |
+
+Loading one switches the desk to its playbook and replaces the other, so the board always reads
+as one business. `hermes stoa demo --clear` removes the sample data and leaves your own records.
 
 ## Talk to it, and watch the desk change
 
@@ -147,7 +167,7 @@ change are one database transaction, so it holds across Slack, the web tab and t
 
 ### Market maps
 
-*"We sell carrier-scorecard software to freight brokers in the Midwest. Who should we go after?"*
+*"We sell a fraud prevention tool to fintechs and marketplaces. Who should we go after?"*
 
 Hermes names the market, splits it into segments that would each get a different pitch, and
 agrees a short list of requirements with you: the things a fit company shows. Then it researches
@@ -160,18 +180,18 @@ key, and checks every one against those requirements. Each company goes on the m
 - the source link.
 
 ```
-Market map · Regional freight brokers
-7 companies · 1 in the pipeline
+Market map · Fintechs and marketplaces exposed to payment fraud
+14 companies · 1 in the pipeline · 5 with a signal
 
-Asset-light brokers (3)
-  ●●●●● Meridian Freight · 220 people · Chicago, IL  [in pipeline]
-        Posted two carrier-compliance analyst roles this month.
-  ●●●●○ Tidewater Logistics · 140 people · Columbus, OH
-        COO spoke about carrier quality at a regional conference.
+Lenders and BNPL (3)
+  ●●●●● Brio Credit · 190 people · Charlotte, NC  [in pipeline]
+        New head of risk, and synthetic identities called out on the last earnings call.
+  ●●●●○ Tallyup · 240 people · Salt Lake City, UT
+        Pay-later at checkout for mid-size retailers; fraud is the processor's default.
 
-Digital-first (2)
-  ●●●●● Brightside Freight · 90 people · Minneapolis, MN
-        Raised a Series A and named carrier vetting as a priority.
+Ticketing and travel (3)
+  ●●●●● Encore Tickets · 160 people · Los Angeles, CA
+        Bots and stolen cards on every big sale; chargebacks named in a customer notice.
 ```
 
 The map then reads itself back. This is the part a list of names never gives you:
@@ -179,11 +199,14 @@ The map then reads itself back. This is the part a list of names never gives you
 | | |
 |---|---|
 | **How rare each requirement is** | The share of checked companies that show each one. A scarce requirement is either too strict or the first question on every call. |
-| **Who holds this market today** | What the companies use now. If most run on spreadsheets, you are selling against the spreadsheet, not a competitor. |
+| **Who holds this market today** | What the companies use now. If most review by hand, you are selling against doing it by hand, not a competitor. |
 | **Where the segments meet** | Companies that could sit in two segments: the second pool when one runs thin. |
 | **Where they are, how big they are** | By region and headcount band. |
 | **First calls** | The few to approach first and why, chosen by Hermes or, failing that, the strongest fits spread across segments. |
 | **Reading the map** | Hermes's short interpretation and what to do about it, saved with the map. |
+
+A map does not have to be of customers. In the recruiting example it is a talent map: the
+companies where the candidates for one search work now, each with the people worth approaching.
 
 In Slack each company has an **Add to pipeline** button. A tap creates the record at the first
 stage of your playbook with the first known buyer as the contact, carries the evidence into its
@@ -399,7 +422,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 113 tests, no network
+python3 -m unittest discover -s tests     # 117 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

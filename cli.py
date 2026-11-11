@@ -18,7 +18,10 @@ def setup(subparser) -> None:
     market.add_argument("--share", action="store_true", help="With --export: leave out buyers and pipeline status")
     use = subs.add_parser("use", help="Switch the active playbook")
     use.add_argument("name")
-    sample = subs.add_parser("demo", help="Load fictional sample records for the active playbook")
+    sample = subs.add_parser("demo", help="Load a worked example: a recruiting agency, or a B2B software company")
+    sample.add_argument("which", nargs="?", default="", choices=["", "recruiting", "saas"],
+                        help="recruiting: an agency with about $1.2M in open fees. saas: a company selling a fraud prevention "
+                             "tool, about $2.5M of pipeline. Left out: the one that fits the active playbook")
     sample.add_argument("--clear", action="store_true", help="Remove the sample records instead")
     export = subs.add_parser("export", help="Write the pipeline to a CSV file")
     export.add_argument("path", nargs="?", default="")
@@ -69,9 +72,22 @@ def run(desk, args) -> None:
     elif command == "demo":
         if args.clear:
             print("Removed %d sample records." % demo.clear(desk))
-        else:
-            print("Added %d sample records for the %s playbook and a sample market map. "
-                  "`hermes stoa demo --clear` removes them." % (demo.load(desk), desk.playbook().name))
+            return
+        which = args.which or demo.which_for(desk.playbook())
+        example = demo.EXAMPLES[which]
+        if args.which and desk.playbook().name != example["playbook"]:      # asked for by name: the desk becomes that example
+            demo.clear(desk)
+            desk.playbook_tool({"action": "use", "name": example["playbook"]})
+        other = "saas" if which == "recruiting" else "recruiting"
+        if any(d["source"] == demo.SOURCE for d in desk.store.list(status="all")) and \
+                desk.markets._market(demo.EXAMPLES[other]["market"]["name"]) is not None:
+            demo.clear(desk)                                                # one example at a time, so the board reads as one business
+        added = demo.load(desk, which)
+        print("%s: %s, and a market map of %d companies." % (
+            "Loaded the example of " + example["title"] if added else "Already loaded, " + example["title"],
+            demo.summary(desk, which), len(example["companies"])))
+        print("Everything in it is made up. `hermes stoa demo %s` loads the other example; `hermes stoa demo --clear` "
+              "removes the sample data." % other)
     elif command == "export":
         result = desk.export({"action": "export", "path": args.path or None})
         print("Wrote %d records to %s" % (result["rows"], result["path"]) if result.get("ok") else result.get("error"))

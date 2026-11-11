@@ -29,6 +29,7 @@ def _load_package():
 
 
 stoa = _load_package()
+import fixture  # noqa: E402  (tests/fixture.py: the small desk most tests start from)
 from stoa import cards, demo, schemas, sources  # noqa: E402
 from stoa.desk import Desk  # noqa: E402
 from stoa.playbook import Library, Playbook, PlaybookError, validate  # noqa: E402
@@ -191,8 +192,8 @@ class DeskTests(unittest.TestCase):
 
     def test_board_brief_and_slash(self):
         self.assertIn("empty", self.desk.slash(""))
-        self.assertEqual(demo.load(self.desk), 7)
-        self.assertEqual(demo.load(self.desk), 0)
+        self.assertEqual(fixture.load(self.desk), 7)
+        self.assertEqual(fixture.load(self.desk), 0)
         board = self.desk.pipeline({})
         self.assertEqual(board["count"], 7)
         self.assertIn("Screened (1)", board["board"])
@@ -204,10 +205,10 @@ class DeskTests(unittest.TestCase):
         self.assertIn("Dana Whitfield", self.desk.slash("dana"))
         self.assertIn("● recruiting", self.desk.slash("playbooks"))
         self.assertEqual(self.desk.pipeline({"view": "list", "group": "halcyon"})["count"], 2)
-        self.assertEqual(demo.clear(self.desk), 7)
+        self.assertEqual(fixture.clear(self.desk), 7)
 
     def test_everything_tools_return_is_json(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         for result in (self.desk.pipeline({}), self.desk.brief(), self.desk.pipeline({"view": "activity"}),
                        self.desk.deal({"action": "get", "deal": "priya"}), self.desk.notes({}),
                        self.desk.playbook_tool({"action": "list"}), self.desk.playbook_tool({"action": "show"}),
@@ -256,7 +257,7 @@ class DeskTests(unittest.TestCase):
         self.assertEqual(closed["status"], "lost")
 
     def test_numbers_and_lists_of_the_wrong_shape_are_forgiven(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         for args in ({"limit": "x"}, {"limit": [1]}, {"view": "activity", "days": "99999999999999999999"}, {"view": "activity", "limit": 10 ** 30},
                      {"limit": None}, {"limit": -5}, {"limit": "12.0"}):
             self.assertTrue(self.desk.pipeline(args)["ok"], args)
@@ -284,7 +285,7 @@ class DeskTests(unittest.TestCase):
         self.assertEqual((result["deal"]["stage"], result["deal"]["status"]), ("placed", "won"))
 
     def test_flow_counts_how_far_each_record_got(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         self.desk.deal({"action": "close", "deal": "Wei-Lin Chao", "outcome": "won"})
         self.desk.deal({"action": "close", "deal": "Ingrid Solberg", "outcome": "lost", "reason": "Client passed"})
         self.desk.market({"action": "track", "targets": ["Brightside Freight"]})
@@ -312,7 +313,7 @@ class DeskTests(unittest.TestCase):
         self.assertEqual(self.desk.playbook().name, "dental-supply")
 
     def test_csv_round_trip(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         exported = self.desk.export({"action": "export"})
         self.assertEqual(exported["rows"], 7)
         self.assertIn("group", exported["columns"])
@@ -444,7 +445,7 @@ class CardTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.desk = make_desk(self.tmp.name)
-        demo.load(self.desk)
+        fixture.load(self.desk)
 
     def test_blocks_are_valid_block_kit(self):
         for deal in self.desk.store.list(status="all"):
@@ -598,7 +599,7 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
 
     def test_the_map_reads_itself_back(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         s = self.market({"action": "show"})
         self.assertEqual(s["numbers"], {"companies": 7, "segments": 3, "in_pipeline": 0, "with_signal": 3, "buyers_named": 4,
                                         "assessed": 7, "bridges": 2, "avg_fit": 3.7, "dismissed": 0})
@@ -710,7 +711,7 @@ class MarketTests(unittest.TestCase):
                          ("Sam Ito", "Sam Ito", "Ops Lead", "First outreach"))
 
     def test_export_writes_one_safe_page(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         self.market({"action": "add", "companies": [{"company": "<script>alert(1)</script> & Sons", "segment": "Digital-first",
                                                       "source": "javascript:alert(1)", "why": "\"quoted\" <b>bold</b>"}]})
         self.market({"action": "track", "targets": ["Meridian Freight"]})
@@ -770,11 +771,76 @@ class MarketTests(unittest.TestCase):
         self.assertIn("&lt;&amp;&gt;", json.dumps(blocks, ensure_ascii=False))
 
     def test_demo_market_loads_and_clears(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         self.assertIn("7 companies", self.desk.slash("map"))
         self.market({"action": "track", "targets": ["Brightside Freight"]})
-        demo.clear(self.desk)
+        fixture.clear(self.desk)
         self.assertEqual((self.desk.store.count(), self.market({"action": "list"})["markets"]), (0, []))
+
+
+class SampleDataTests(unittest.TestCase):
+    """The two worked examples people see: a recruiting agency and a company selling a fraud prevention tool."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def desk(self, playbook):
+        return make_desk(str(Path(self.tmp.name) / playbook), playbook=playbook)
+
+    def test_each_example_is_a_real_sized_pipeline(self):
+        for which, playbook, low, high, groups in (("recruiting", "recruiting", 1_150_000, 1_250_000, 8),
+                                                   ("saas", "b2b-sales", 2_450_000, 2_550_000, 20)):
+            Path(self.tmp.name, playbook).mkdir()
+            desk = self.desk(playbook)
+            added = demo.load(desk)                                                # no name: the one that fits the playbook
+            deals = desk.store.list(status="all")
+            live = [d for d in deals if d["status"] == "open"]
+            self.assertEqual(added, len(demo.EXAMPLES[which]["rows"]))
+            self.assertTrue(low <= sum(d["value"] for d in live) <= high, (which, sum(d["value"] for d in live)))
+            self.assertGreaterEqual(len(live), 24)
+            self.assertGreaterEqual(len({d["grp"] for d in live}), groups)
+            self.assertTrue(all(row["count"] for row in desk.brief()["by_stage"]), which)   # nothing looks empty
+            self.assertGreaterEqual(len([d for d in deals if d["status"] == "won"]), 3)
+            lost = [d for d in deals if d["status"] == "lost"]
+            self.assertGreaterEqual(len(lost), 5)
+            self.assertTrue(all(d["lost_reason"] in desk.playbook().lost["reasons"] for d in lost))
+            self.assertTrue(all(d["email"].endswith(".example") and d["source"] == "stoa-demo" for d in deals))
+            self.assertTrue(desk.brief()["due"] and desk.brief()["stale"])
+            self.assertEqual(demo.load(desk), 0)                                   # loading twice adds nothing
+
+    def test_each_example_has_its_own_map_with_a_reading_and_first_calls(self):
+        for which, playbook in (("recruiting", "recruiting"), ("saas", "b2b-sales")):
+            Path(self.tmp.name, playbook).mkdir()
+            desk = self.desk(playbook)
+            demo.load(desk)
+            maps = desk.markets.list_markets()
+            self.assertEqual([m["name"] for m in maps], [demo.EXAMPLES[which]["market"]["name"]])
+            summary = desk.markets.summary(maps[0]["id"], text=False)
+            self.assertGreaterEqual(summary["numbers"]["companies"], 10)
+            self.assertEqual(summary["numbers"]["assessed"], summary["numbers"]["companies"])
+            self.assertGreaterEqual(len(summary["first_calls"]), 4)
+            self.assertTrue(summary["market"]["reading"] and summary["bridges"])
+            self.assertTrue(all(0 < rate["rate"] <= 100 for rate in summary["requirements"]))
+
+    def test_a_person_from_the_talent_map_joins_that_search_as_a_candidate(self):
+        Path(self.tmp.name, "recruiting").mkdir()
+        desk = self.desk("recruiting")
+        demo.load(desk)
+        made = desk.markets.click_track(desk.markets.target("Lodestar Bank Platform")["id"], "maya")["deal"]
+        self.assertEqual((made["name"], made["company"], made["grp"], made["stage"]),
+                         ("Marisol Vega", "Lodestar Bank Platform", "Staff Backend · Northwind", "sourced"))
+        self.assertIn(made["id"], [d["id"] for d in desk.store.list(grp="Staff Backend · Northwind")])
+
+    def test_clear_takes_all_of_it_away_and_nothing_else(self):
+        Path(self.tmp.name, "b2b-sales").mkdir()
+        desk = self.desk("b2b-sales")
+        mine = desk.deal({"action": "add", "name": "A real deal", "value": 5000})["deal"]
+        demo.load(desk)
+        desk.markets.click_track(desk.markets.target("Brio Credit")["id"], "alex")
+        self.assertEqual(demo.clear(desk), len(demo.EXAMPLES["saas"]["rows"]))
+        self.assertEqual([d["id"] for d in desk.store.list(status="all")], [mine["id"]])
+        self.assertEqual(desk.markets.list_markets(), [])
 
 
 class HardeningTests(unittest.TestCase):
@@ -898,7 +964,7 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual((playbook.stale_days("a"), playbook.stale_days("b"), playbook.terms["deal"]), (3, 7, "deal"))
 
     def test_last_touch_for_every_record_in_one_query_matches_one_at_a_time(self):
-        demo.load(self.desk)
+        fixture.load(self.desk)
         store = self.desk.store
         some = store.list(status="all")[0]
         store.snooze(some["id"], 3)                     # bookkeeping: must not count as a touch
@@ -916,7 +982,7 @@ class IntakeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.desk = make_desk(self.tmp.name)
-        demo.load(self.desk)
+        fixture.load(self.desk)
         self.dana = self.desk.store.find("Dana Whitfield")
         self.rows = [
             {"name": "Ada Quill", "company": "Fathom Data", "group": "Staff Backend · Northwind", "email": "ada@fathom.example",
@@ -1193,7 +1259,7 @@ class DashboardApiTests(unittest.TestCase):
         spec.loader.exec_module(self.api)
         self.desk = make_desk(self.tmp.name)
         self.api.desk = lambda: self.desk
-        demo.load(self.desk)
+        fixture.load(self.desk)
 
     def test_a_click_in_the_app_saves_and_returns_the_line_to_send_into_chat(self):
         dana = self.desk.store.find("Dana Whitfield")["id"]
@@ -1340,7 +1406,7 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.desk = make_desk(self.tmp.name)
-        demo.load(self.desk)
+        fixture.load(self.desk)
         self.injected = []
         self.accept = True
         self.accept_session = True

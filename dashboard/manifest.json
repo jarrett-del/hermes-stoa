@@ -3,7 +3,7 @@
   "label": "Stoa",
   "description": "The go-to-market desk: market maps, the pipeline board and live activity.",
   "icon": "Globe",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "tab": { "path": "/stoa", "position": "after:sessions" },
   "entry": "dist/index.js",
   "css": "dist/style.css",
