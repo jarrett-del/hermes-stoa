@@ -393,7 +393,7 @@ const CSS = `
 .stoa-tabsrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
 .stoa-col { min-width: 0; border-radius: 10px; transition: opacity .2s ease, background .15s ease; }
 .stoa-col[data-dim="1"] { opacity: .38; }
-.stoa-col[data-over="1"] { background: var(--stoa-accent-soft); box-shadow: 0 0 0 5px var(--stoa-accent-soft), 0 0 0 6px var(--stoa-accent-line); }
+.stoa-col[data-over="1"] { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); }   /* inset: the board clips anything drawn outside a column */
 .stoa-weight { height: 2px; margin: 0 2px 9px; border-radius: 2px; background: var(--ui-stroke-tertiary); }
 .stoa-weight i { display: block; height: 100%; border-radius: 2px; background: var(--ui-text-tertiary); transition: width .4s ease; }
 .stoa-weight[data-won="1"] i { background: var(--stoa-accent); }
