@@ -1,0 +1,85 @@
+# Recruiting: the playbook this plugin grew out of. An agency desk where the thing being sold is a
+# candidate and the "account" is a client search.
+name: recruiting
+title: Recruiting desk
+summary: Agency or in-house recruiting. One candidate per record, grouped by the search they are in.
+terms:
+  deal: candidate
+  deals: candidates
+  group: search
+  groups: searches
+  company: Current company
+  value: Fee
+currency: USD
+stale_days: 5
+enrich: person
+
+stages:
+  - id: sourced
+    label: Sourced
+    stale_days: 4
+    advance: Reach out
+  - id: contacted
+    label: Contacted
+    stale_days: 5
+    advance: Phone screen done
+  - id: screened
+    label: Screened
+    stale_days: 3
+    advance: Submit to client
+  - id: submitted
+    label: Submitted
+    stale_days: 4
+    advance: Client interview
+  - id: interview
+    label: Client interview
+    stale_days: 5
+    advance: Offer out
+  - id: offer
+    label: Offer
+    stale_days: 3
+    advance: Mark placed
+
+won:
+  id: placed
+  label: Placed
+lost:
+  id: passed
+  label: Passed
+  reasons: [Not a fit, Not interested, Comp mismatch, Client passed, Took another offer, Timing]
+
+fields:
+  - {key: title, label: Current title}
+  - {key: location, label: Location}
+  - {key: comp, label: Comp expectation}
+  - {key: notice, label: Notice period}
+  - {key: resume, label: Resume link}
+
+drafts:
+  follow_up: >
+    Draft a short, warm follow-up to {name}. Reference the last thing in the activity log, give
+    one clear next step, and keep it under 80 words. No hype about the role.
+  on_enter:
+    contacted: >
+      Draft a first outreach message to {name} for the {group} search. Lead with why their
+      background at {company} is relevant, say what the role is in one line, and ask for a
+      15-minute call. Under 90 words.
+    screened: >
+      Write up the phone screen for {name} from the notes in the activity log: motivation, comp,
+      notice period, strengths against the search, and anything still to confirm. Then say
+      whether to submit.
+    submitted: >
+      Draft the submission note to the client for {name}: three bullet points on fit, comp and
+      availability, and one honest risk. Quote only what is in the notes.
+    interview: >
+      Draft an interview prep note for {name}: who they are meeting, what the client cares
+      about most, and two questions they should be ready for.
+    offer: >
+      Draft a short note to {name} walking through the offer and asking what would get them to
+      a yes. List anything in the notes that suggests a counter-offer risk.
+    placed: >
+      Draft a congratulations note to {name}, and a short note to the client confirming the
+      start date and next steps.
+  lost: >
+    Draft a kind, specific decline note to {name}. Two or three sentences, and leave the door
+    open for future searches. The reason we recorded: {reason}.

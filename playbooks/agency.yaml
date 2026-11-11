@@ -1,0 +1,73 @@
+# Agency new business: studios, consultancies and freelancers selling projects and retainers.
+name: agency
+title: Agency new-business desk
+summary: Studios, consultancies and freelancers. One opportunity per record, grouped by client.
+terms:
+  deal: opportunity
+  deals: opportunities
+  group: client
+  groups: clients
+  company: Client
+  value: Project value
+currency: USD
+stale_days: 7
+enrich: company
+
+stages:
+  - id: inbound
+    label: Inbound
+    stale_days: 2
+    advance: Book intro call
+  - id: intro
+    label: Intro call
+    stale_days: 5
+    advance: Scope it
+  - id: scoping
+    label: Scoping
+    stale_days: 6
+    advance: Send proposal
+  - id: proposal
+    label: Proposal sent
+    stale_days: 5
+    advance: Send contract
+  - id: contract
+    label: Contract out
+    stale_days: 4
+    advance: Mark signed
+
+won:
+  id: signed
+  label: Signed
+lost:
+  id: declined
+  label: Declined
+  reasons: [Budget, Went in-house, Chose another agency, Timing, Not our kind of work]
+
+fields:
+  - {key: project, label: Project}
+  - {key: budget, label: Stated budget}
+  - {key: start, label: Desired start}
+  - {key: referred_by, label: Referred by}
+
+drafts:
+  follow_up: >
+    Draft a short follow-up to {name} at {company}. Friendly, specific to the project, one next
+    step. Under 80 words.
+  on_enter:
+    intro: >
+      Draft a reply to {name} proposing two times for an intro call, and list what we should
+      learn on it: budget, timeline, who decides, and what success looks like.
+    scoping: >
+      Turn the call notes for {company} into a one-page scope outline: goals, deliverables,
+      what is out of scope, rough timeline, and the open questions.
+    proposal: >
+      Draft the cover email for the proposal to {name}: the problem in their words, the shape
+      of the engagement, the price, and a date for a decision call.
+    contract: >
+      Draft a short note to {name} that goes with the contract and names the start date and
+      first-week plan.
+    signed: >
+      Draft a kickoff email to {name} and an internal handoff summary for the delivery team.
+  lost: >
+    Draft a gracious close-out note to {name} that leaves the door open. The reason we
+    recorded: {reason}.

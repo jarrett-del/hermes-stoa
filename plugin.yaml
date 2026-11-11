@@ -1,0 +1,54 @@
+name: stoa
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >-
+  A go-to-market desk for small teams. One SQLite pipeline, playbooks that fit it to recruiting,
+  B2B sales or an agency, Slack cards whose buttons move a stage at once and hand the writing to
+  Hermes, meeting notes that become next steps, and optional People Data Labs enrichment.
+author: jarrett-del
+license: MIT
+homepage: https://github.com/jarrett-del/hermes-stoa
+requires_hermes: ">=0.23.0"
+tags: [gtm, sales, crm, recruiting, slack, pipeline]
+
+provides_tools:
+  - gtm_pipeline
+  - gtm_deal
+  - gtm_card
+  - gtm_enrich
+  - gtm_notes
+  - gtm_playbook
+  - gtm_export
+
+config_schema:
+  playbook:
+    type: str
+    default: b2b-sales
+    label: Playbook
+    description: "Which playbook the desk runs on: b2b-sales, recruiting, agency, or one you saved."
+  notes_dir:
+    type: str
+    default: ""
+    label: Meeting notes folder
+    description: "A folder of Markdown or text call notes to watch (an Obsidian folder, a recorder's export folder). Optional."
+  notes_days:
+    type: int
+    default: 7
+    label: Notes look-back (days)
+    description: "How far back the notes inbox looks."
+  pdl_monthly_cap:
+    type: int
+    default: 50
+    label: Enrichment cap per month
+    description: "Most People Data Labs lookups the desk will pay for in a calendar month. 0 means no cap."
+  pdl_api_key:
+    type: secret
+    env: PDL_API_KEY
+    label: People Data Labs API key
+    description: "Optional. Turns on the Enrich button and gtm_enrich."
+  granola_api_key:
+    type: secret
+    env: GRANOLA_API_KEY
+    label: Granola API key
+    description: "Optional. Adds your Granola call notes to the notes inbox."

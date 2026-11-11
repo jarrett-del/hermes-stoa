@@ -1,0 +1,74 @@
+# B2B sales: the default playbook. Copy it, rename it, and change the words to fit your business.
+name: b2b-sales
+title: B2B sales desk
+summary: Founder-led or small-team B2B sales. One deal per buyer, grouped by account.
+terms:
+  deal: deal
+  deals: deals
+  group: account
+  groups: accounts
+  company: Company
+  value: Deal size
+currency: USD
+stale_days: 7
+enrich: person
+
+stages:
+  - id: lead
+    label: Lead
+    stale_days: 5
+    advance: Qualify
+  - id: qualified
+    label: Qualified
+    stale_days: 7
+    advance: Book discovery
+  - id: discovery
+    label: Discovery
+    stale_days: 7
+    advance: Send proposal
+  - id: proposal
+    label: Proposal
+    stale_days: 5
+    advance: Start negotiation
+  - id: negotiation
+    label: Negotiation
+    stale_days: 4
+    advance: Mark won
+
+won:
+  id: won
+  label: Closed won
+lost:
+  id: lost
+  label: Closed lost
+  reasons: [No budget, Chose a competitor, Bad timing, Not a fit, Went quiet]
+
+fields:
+  - {key: title, label: Buyer title}
+  - {key: use_case, label: Use case}
+  - {key: competitor, label: Competing with}
+  - {key: decision_date, label: Decision date}
+
+drafts:
+  follow_up: >
+    Draft a short follow-up email to {name} at {company}. Two or three sentences, one clear ask
+    that moves the deal toward the next stage, and no filler. Use the activity log for context.
+  on_enter:
+    qualified: >
+      Draft a short note to {name} proposing two times for a discovery call, and list the three
+      questions we most need answered on that call.
+    discovery: >
+      Write a discovery call plan for {name} at {company}: what we know, what we need to learn,
+      and the one thing that would disqualify this deal.
+    proposal: >
+      Draft the email that goes with the proposal to {name}: restate their problem in their own
+      words from the notes, the price, and a specific next step with a date.
+    negotiation: >
+      List the open points in this negotiation from the activity log and draft a reply to {name}
+      that concedes nothing we have not already offered.
+    won: >
+      Draft a short kickoff note to {name} with next steps, and a one-paragraph internal summary
+      of why we won.
+  lost: >
+    Draft a gracious two-sentence close-out note to {name} that leaves the door open. The reason
+    we recorded: {reason}.
