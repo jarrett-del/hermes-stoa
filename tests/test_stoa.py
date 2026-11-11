@@ -28,7 +28,7 @@ def _load_package():
 
 
 stoa = _load_package()
-from stoa import cards, demo, sources  # noqa: E402
+from stoa import cards, demo, schemas, sources  # noqa: E402
 from stoa.desk import Desk  # noqa: E402
 from stoa.playbook import Library, Playbook, PlaybookError, validate  # noqa: E402
 from stoa.slackdesk import ACTIONS, SlackDesk  # noqa: E402
@@ -987,7 +987,13 @@ class RegisterTests(unittest.TestCase):
         self.session(platform="slack", chat_id="C1")
         text = section({})
         self.assertIn("Stoa GTM desk", text)
+        self.assertIn("before saying it cannot be found", text)        # an agent with other places to look still checks here
         self.assertLessEqual(len(text), limit)
+        for schema in (schemas.GTM_PIPELINE, schemas.GTM_DEAL, schemas.GTM_CARD, schemas.GTM_MARKET, schemas.GTM_ENRICH,
+                       schemas.GTM_NOTES, schemas.GTM_PLAYBOOK, schemas.GTM_EXPORT):
+            first = " ".join(schema["description"].split()).split(". ")[0]
+            self.assertLessEqual(len(first), 79, schema["name"])       # Hermes lists a deferred tool by this one line, cut at 80
+            self.assertTrue("Stoa desk" in first or "People Data Labs" in first, schema["name"])
         self.assertTrue(json.loads(self.ctx.tools["gtm_pipeline"]({}))["ok"])
         self.assertIn("Stoa GTM desk", section({"platform": "cli"}))
 
@@ -1141,6 +1147,29 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post["channel"], "C1")
         self.assertNotIn("thread_ts", post)
         self.assertEqual(self.desk.store.cards(self.dana["id"])[0]["channel"], "C1")
+
+    async def test_the_command_posts_the_real_card_in_slack_with_no_model(self):
+        here = {"platform": "slack", "chat_id": "D1", "thread_id": "1690000000.000100", "session_key": "sess-1"}
+        reply = await asyncio.to_thread(self.desk.slash, "dana whitfield", here)
+        self.assertEqual(reply, "")                                    # the card is the reply
+        post = self.app.client.posts[-1]
+        self.assertEqual((post["channel"], post["thread_ts"]), ("D1", "1690000000.000100"))
+        self.assertIn("stoa_advance", json.dumps(post["blocks"]))
+        self.assertEqual(self.desk.store.card_session("D1", "1700000000.000001"), "sess-1")
+        reply = await asyncio.to_thread(self.desk.slash, "map", here)
+        self.assertEqual(reply, "")
+        self.assertIn("stoa_track", json.dumps(self.app.client.posts[-1]["blocks"]))
+        self.assertEqual(len(self.app.client.posts), 2)
+        self.assertIn("no record matches", await asyncio.to_thread(self.desk.slash, "nobody at all", here))
+        self.assertIn("!gtm", self.desk.slash("help", here))
+
+    async def test_the_command_is_text_everywhere_else(self):
+        self.assertIn("Dana Whitfield", self.desk.slash("dana whitfield"))                         # a terminal
+        self.assertIn("Dana Whitfield", self.desk.slash("dana whitfield", {"platform": "telegram", "chat_id": "T1"}))
+        self.slack.app = None                                                                      # Slack not connected
+        self.assertIn("Dana Whitfield", self.desk.slash("dana whitfield", {"platform": "slack", "chat_id": "D1"}))
+        self.assertIn("Regional freight brokers", self.desk.slash("map", {"platform": "slack", "chat_id": "D1"}))
+        self.assertEqual(self.app.client.posts, [])
 
     async def test_advance_click_moves_updates_and_injects(self):
         await self.slack.on_action(self.ack, self.body(), {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})

@@ -124,10 +124,11 @@ def register(ctx) -> None:
 
     # -- /gtm on every surface, `hermes stoa` in a terminal -------------------------------------
     def slash(raw_args: str) -> str:
-        return desk.slash(raw_args) if desk.allowed(_session()) else "The Stoa desk is not available in this chat."
+        session = _session()
+        return desk.slash(raw_args, session) if desk.allowed(session) else "The Stoa desk is not available in this chat."
 
     ctx.register_command("gtm", handler=slash, description="Pipeline board, brief, or one record's card",
-                         args_hint="[brief|stale|due|playbooks|<name>]")
+                         args_hint="[brief|stale|due|map|playbooks|<name>]")
     from . import cli
     ctx.register_cli_command(name="stoa", help="Stoa GTM desk: status, sample data, CSV import and export",
                              setup_fn=cli.setup, handler_fn=lambda args: cli.run(desk, args))

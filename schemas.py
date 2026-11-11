@@ -5,7 +5,8 @@ _DEAL_REF = {"type": "string", "description": "The record's id, or a name or par
 GTM_PIPELINE = {
     "name": "gtm_pipeline",
     "description": (
-        "Read the team's go-to-market pipeline from the Stoa desk. Use it before answering any question about the "
+        "Read the team's pipeline from the Stoa desk: the board, the brief, due, quiet. "
+        "Use it before answering any question about the "
         "pipeline, who is at which stage, what is due, or what has gone quiet. view='board' gives every open record by "
         "stage; 'brief' gives what needs attention today (due next steps, records gone quiet, this week's movement); "
         "'stale' and 'due' filter to those; 'list' is a flat filtered list; 'activity' is the recent activity log."
@@ -28,7 +29,9 @@ GTM_PIPELINE = {
 GTM_DEAL = {
     "name": "gtm_deal",
     "description": (
-        "Read or change one record on the Stoa desk (a deal, candidate or opportunity, depending on the playbook). "
+        "Look up, add or change one person, company or deal on the Stoa desk. "
+        "Look here (action='get', by name) before telling anyone a person or company cannot be found, whatever else "
+        "you can search. A record is a deal, candidate or opportunity, depending on the playbook. "
         "Actions: get (full record plus activity log), add, update (fields, value, owner, next step), move (to a stage, "
         "or stage='next'), close (outcome won or lost, with a reason), reopen, log (record a note, call, email or "
         "meeting, optionally setting the next step), snooze (hide from the stale list for N days). Call this whenever "
@@ -67,7 +70,8 @@ GTM_DEAL = {
 GTM_CARD = {
     "name": "gtm_card",
     "description": (
-        "Show one record as a card. In Slack this posts an interactive card with buttons (advance to the next stage, "
+        "Show one Stoa desk record as a card, with buttons in Slack. "
+        "In Slack this posts an interactive card with buttons (advance to the next stage, "
         "draft a follow-up, enrich, close with a reason, snooze); a click changes the stage at once and asks you to "
         "write the follow-up in the card's thread. Outside Slack it returns the card as text to show the user. Use it "
         "after adding a record, when the user asks to see someone, or to bring a record into a channel."
@@ -86,8 +90,8 @@ GTM_CARD = {
 GTM_ENRICH = {
     "name": "gtm_enrich",
     "description": (
-        "Look up a person or a company in People Data Labs and, when `deal` is given, fill the record's blank fields "
-        "(never overwriting what a person entered). Each uncached lookup spends one paid credit and counts against "
+        "Look up a person or company in People Data Labs (paid, capped). "
+        "When `deal` is given it fills the record's blank fields, never overwriting what a person entered. Each uncached lookup spends one paid credit and counts against "
         "the monthly cap, so use it when the user asks or when a record headed for outreach lacks the basics. Results "
         "are cached for 90 days. Needs PDL_API_KEY."
     ),
@@ -108,7 +112,7 @@ GTM_ENRICH = {
 GTM_NOTES = {
     "name": "gtm_notes",
     "description": (
-        "Turn meeting notes into pipeline updates. action='inbox' lists recent call notes that have not been filed "
+        "Turn meeting notes into updates on the Stoa desk. action='inbox' lists recent call notes that have not been filed "
         "yet (from the team's notes folder and, if connected, Granola), each with the records it probably belongs to. "
         "'read' returns one note's text. 'file' attaches your short summary of a note to a record's activity log and "
         "can set the next step; 'skip' dismisses a note that is not about the pipeline. After a call, read the note, "
@@ -132,7 +136,7 @@ GTM_NOTES = {
 GTM_MARKET = {
     "name": "gtm_market",
     "description": (
-        "Map a market and turn it into leads. A market map is a named set of companies sorted into segments. Each "
+        "Map a market on the Stoa desk and turn its companies into leads. A market map is a named set of companies sorted into segments. Each "
         "company is checked against the market's requirements with the evidence, and carries a fit score, a buying "
         "signal, what it uses today, and its likely buyers. Actions: define (name, brief, segments, requirements), add "
         "(record or update companies you researched), show (the map read back: how rare each requirement is, who "
@@ -200,7 +204,8 @@ GTM_MARKET = {
 GTM_PLAYBOOK = {
     "name": "gtm_playbook",
     "description": (
-        "The playbook is what fits the desk to a business: what a record is called, the stages, the button labels, and "
+        "Show, switch or write the playbook that fits the Stoa desk to a business. "
+        "A playbook sets what a record is called, the stages, the button labels, and "
         "what you draft when a stage changes. Actions: list, show (the active one, or by name), use (switch), template "
         "(the default playbook's YAML plus the rules, as a starting point), save (validate and store YAML you wrote; "
         "activate=true switches to it). When a user describes their sales motion, interview them briefly, write a "
@@ -221,7 +226,7 @@ GTM_PLAYBOOK = {
 GTM_EXPORT = {
     "name": "gtm_export",
     "description": (
-        "Move the pipeline in or out as a CSV file. action='export' writes every record to a CSV (default: the "
+        "Move the Stoa desk's pipeline in or out as a CSV file. action='export' writes every record to a CSV (default: the "
         "plugin's exports folder) and returns the path; the file opens in Google Sheets or Excel as is. "
         "action='import' adds records from a CSV with a name column (company, group, stage, value, owner, email, "
         "linkedin, next_step, next_due and playbook fields are picked up when present); existing records are skipped. "

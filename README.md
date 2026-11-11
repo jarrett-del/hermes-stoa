@@ -26,17 +26,22 @@ It grew out of a setup a recruiting agency runs its searches on every day. This 
 rebuilt as a plugin anyone can install.
 
 ```
-hermes plugins install stoa
+hermes plugins install stoa                        # from the Hermes plugin catalog
+hermes plugins install jarrett-del/hermes-stoa     # or straight from this repository
 hermes plugins enable stoa
 hermes stoa demo          # optional: fictional records and a sample market map to try it on
+hermes gateway restart    # so the Slack buttons bind
 ```
 
 Then, in any Hermes chat: *"Map the market for us"*, *"What's on my plate?"*, or `/gtm`.
+In Slack the command is `!gtm` (Slack keeps the slash for its own commands), and
+`!gtm Dana Whitfield` or `!gtm map` posts the card or the map itself, buttons included.
 
 ## See it at work
 
-Stoa adds a tab to the Hermes web dashboard. It refreshes every few seconds, so when someone
-taps a button in Slack you watch the card move.
+Stoa adds a tab to the Hermes web dashboard (`hermes dashboard`). It refreshes every few
+seconds, so when someone taps a button in Slack you watch the card move. If the dashboard was
+already running when you installed Stoa, restart it once and the tab appears.
 
 ![The pipeline board](docs/dashboard-pipeline.jpg)
 
@@ -102,7 +107,7 @@ change are one database transaction, so it holds across Slack, the web tab and t
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
-| **`/gtm`** | The board, the brief, or one record, on every surface Hermes runs on (Slack, Telegram, CLI, Desktop…) |
+| **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
 | **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
 | **4 automations** | Morning brief, meeting-notes sweep, weekly market watch, Friday review, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
@@ -297,6 +302,9 @@ What the plugin does that you would want to know before installing it:
 ## Limits in 0.4
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
+- The tab lives in the web dashboard. The Hermes Desktop app and Webapp do not show dashboard tabs.
+- If your agent already keeps people somewhere else, it may look there first. Naming the desk ("on the Stoa
+  desk") or using `!gtm <name>` settles it.
 - A map is as good as the research behind it. Fit scores are the agent's judgement against your
   brief; the source link is there so you can check.
 - One Slack workspace per profile.
@@ -309,7 +317,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 90 tests, no network
+python3 -m unittest discover -s tests     # 92 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

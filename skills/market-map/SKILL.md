@@ -1,7 +1,7 @@
 ---
 name: market-map
 description: How to map a market and turn it into leads with the Stoa desk - define who the team sells to and what a fit looks like, research companies against those requirements with evidence, read the map back, name the first calls, and move the best ones into the pipeline. Load when the user asks who to sell to, wants leads, or wants a market mapped or shared.
-version: 0.4.0
+version: 0.4.1
 ---
 
 # Mapping a market

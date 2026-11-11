@@ -788,10 +788,13 @@ class Desk:
         return out
 
     # -- slash command and prompt section -------------------------------------------------------
-    def slash(self, raw: str) -> str:
+    def slash(self, raw: str, session: Optional[dict] = None) -> str:
+        """``/gtm`` on every surface. Typed in Slack, a record or a map is posted as the real thing,
+        buttons and all, with no model in between; everywhere else (and on failure) it is text."""
         raw = (raw or "").strip()
         playbook = self.playbook()
         word = raw.lower()
+        in_slack = bool(session) and session.get("platform") == "slack" and self.slack is not None and self.slack.available
         if word in ("", "board"):
             if not self.store.count():
                 return ("The desk is empty. Tell me about a %s to add it, or run `hermes stoa demo` for sample data."
@@ -800,8 +803,10 @@ class Desk:
         if word == "help":
             return ("/gtm — the pipeline board\n/gtm brief — what needs you today\n/gtm stale — records gone quiet\n"
                     "/gtm due — next steps due\n/gtm map [market] — a market map\n/gtm <name> — one record's card\n"
-                    "/gtm playbooks — available playbooks")
+                    "/gtm playbooks — available playbooks\nIn Slack, type !gtm: Slack keeps the slash for its own commands.")
         if word == "map" or word.startswith("map "):
+            if in_slack and self.markets.post({"market": raw[3:].strip()}, session).get("posted"):
+                return ""       # the map itself is the reply
             shown = self.markets.show({"market": raw[3:].strip()})
             if shown.get("ok"):
                 return shown["map"]
@@ -825,6 +830,8 @@ class Desk:
             if matches:
                 return error["error"] + ":\n" + "\n".join("  %s — %s" % (m["id"], m["name"]) for m in matches)
             return error["error"]
+        if in_slack and self.card({"deal": deal["id"]}, session).get("posted"):
+            return ""           # the card itself is the reply
         return self.text_card(deal)
 
     def brief_text(self) -> str:
@@ -855,9 +862,11 @@ class Desk:
             return ""
         return ("## Stoa GTM desk\n"
                 "You keep this team's pipeline with the gtm_* tools; the desk is the source of truth, so read it "
-                "before answering pipeline questions and write to it when something changes. %s "
+                "before answering pipeline questions and write to it when something changes. When someone names a "
+                "person, company or record, look it up with gtm_deal(action=\"get\") before saying it cannot be "
+                "found, whatever else you can search; to show one, use gtm_card. %s "
                 "Say \"%s\" and \"%s\", not \"deal\" or \"group\", unless those are the words. "
-"For how to run the desk, load the skill stoa:desk. To map a market or find new leads, load stoa:market-map."
+                "For how to run the desk, load the skill stoa:desk. To map a market or find new leads, load stoa:market-map."
                 % (playbook.describe(), playbook.terms["deal"], playbook.terms["group"]))
 
 
