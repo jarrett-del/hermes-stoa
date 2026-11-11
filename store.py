@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS meta (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS intakes (
+  id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  rows TEXT NOT NULL DEFAULT '[]',
+  result TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 # Columns added after the first release. A database made by an older version gains them when it is opened.
@@ -562,6 +570,45 @@ class Store:
             value = (int(row[0]) if row and str(row[0]).isdigit() else 0) + by
             conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?,?)", (key, str(value)))
         return value
+
+    # -- intakes: lists waiting for someone to approve them -------------------------------------
+    @staticmethod
+    def _intake(row) -> dict:
+        intake = dict(row)
+        for key, empty in (("rows", []), ("result", {})):
+            try:
+                intake[key] = json.loads(intake.get(key) or "null") or empty
+            except ValueError:
+                intake[key] = empty
+        return intake
+
+    def intake_put(self, intake_id: str, source: str, rows: list) -> None:
+        with self._conn() as conn:
+            conn.execute("INSERT INTO intakes (id, at, source, status, rows) VALUES (?,?,?,?,?)",
+                         (intake_id, now(), source, "open", json.dumps(rows)))
+
+    def intake_get(self, intake_id: str) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM intakes WHERE id = ?", (intake_id,)).fetchone()
+        return self._intake(row) if row else None
+
+    def intake_list(self, status: str = "open", limit: int = 10) -> list:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM intakes WHERE status = ? ORDER BY at DESC LIMIT ?", (status, int(limit))).fetchall()
+        return [self._intake(row) for row in rows]
+
+    def intake_claim(self, intake_id: str) -> bool:
+        """Take an open intake for applying. Only one caller ever gets it, so two clicks apply it once."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute("UPDATE intakes SET status = 'applying' WHERE id = ? AND status = 'open'", (intake_id,))
+        return cur.rowcount == 1
+
+    def intake_finish(self, intake_id: str, status: str, result: Optional[dict] = None, rows: Optional[list] = None) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE intakes SET status = ?, result = ? WHERE id = ?", (status, json.dumps(result or {}), intake_id))
+            if rows is not None:
+                conn.execute("UPDATE intakes SET rows = ? WHERE id = ?", (json.dumps(rows), intake_id))
 
     # -- CSV ------------------------------------------------------------------------------------
     def export_rows(self, field_keys: Iterable[str] = ()) -> tuple:

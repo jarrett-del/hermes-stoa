@@ -230,7 +230,8 @@ GTM_EXPORT = {
         "plugin's exports folder) and returns the path; the file opens in Google Sheets or Excel as is. "
         "action='import' adds records from a CSV with a name column (company, group, stage, value, owner, email, "
         "linkedin, next_step, next_due and playbook fields are picked up when present); existing records are skipped. "
-        "Use dry_run=true first to see what an import would add."
+        "Use dry_run=true first to see what an import would add. For a file someone sends, prefer gtm_intake: "
+        "it shows what would change, including updates to existing records, before anything is written."
     ),
     "parameters": {
         "type": "object",
@@ -238,6 +239,55 @@ GTM_EXPORT = {
             "action": {"type": "string", "enum": ["export", "import"]},
             "path": {"type": "string", "description": "import: the CSV to read. export: where to write (optional)."},
             "dry_run": {"type": "boolean", "description": "import: count what would be added without adding it."},
+        },
+        "required": ["action"],
+    },
+}
+
+GTM_INTAKE = {
+    "name": "gtm_intake",
+    "description": (
+        "Review a list of people or companies before it is saved to the Stoa desk. "
+        "Use it whenever someone sends or pastes more than a couple of records: a PDF, a spreadsheet, an export from "
+        "another tool, a photo of a sign-up sheet, a long message. Read the material yourself, then call "
+        "action='propose' with what you found as rows (or with the path of a CSV, which the desk reads itself). The desk "
+        "works out which rows are new, which would change a record already there, which are already there and which it "
+        "cannot place, and shows the person a review to approve. Nothing is written until they press Apply or tell you "
+        "to: then action='apply' (rows=[...] or skip=[...] by row number for part of it). action='show' reads a list "
+        "back, 'list' shows the ones waiting, 'discard' drops one. Never add a long list record by record instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["propose", "show", "apply", "discard", "list"]},
+            "source": {"type": "string", "description": "propose: where the list came from, in a few words (\"leads.pdf\", \"conference badge scans\")."},
+            "rows": {
+                "description": "propose: the records, at most 500. apply: the row numbers to apply (default: every new and changed row).",
+                "type": "array",
+                "items": {
+                    "anyOf": [{"type": "integer"}, {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "The person, or the company when the record is a company."},
+                            "company": {"type": "string"},
+                            "group": {"type": "string", "description": "The account, search or client it belongs to, if any."},
+                            "email": {"type": "string"},
+                            "linkedin": {"type": "string"},
+                            "stage": {"type": "string", "description": "Only when the material states it."},
+                            "value": {"type": "number"},
+                            "owner": {"type": "string"},
+                            "next_step": {"type": "string"},
+                            "next_due": {"type": "string", "description": "YYYY-MM-DD."},
+                            "note": {"type": "string", "description": "Anything worth keeping that has no field: logged on the record."},
+                            "fields": {"type": "object", "description": "The playbook's own fields, by key."},
+                            "record": {"type": "string", "description": "The id of the record this row is about, to settle an unclear match."},
+                        },
+                    }],
+                },
+            },
+            "path": {"type": "string", "description": "propose: a CSV file to read instead of rows."},
+            "id": {"type": "string", "description": "show/apply/discard: the list's id. May be left out when only one is waiting."},
+            "skip": {"type": "array", "items": {"type": "integer"}, "description": "apply: row numbers to leave out."},
         },
         "required": ["action"],
     },

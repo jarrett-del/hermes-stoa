@@ -2,19 +2,22 @@
 
 # Stoa
 
-**A go-to-market desk for small teams, inside [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
+**A lightweight CRM you talk to, inside [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
 
 > *στοά*: the covered walk beside the agora, where the day's business was done.
 
 A two-person sales team does not need a CRM with forty tabs. It needs to know who to sell to,
 the pipeline kept honest, the follow-ups written, and the calls turned into next steps, in the
-places the team already works: Slack and Gmail. Stoa is that, in one plugin:
+places the team already works. Tell it what happened, send it a list, or press a button, and it
+keeps the pipeline. Stoa is that, in one plugin:
 
 **Map the market → find the leads → run the pipeline.**
 
 - **Map any market.** Tell Hermes what you sell. It segments the market, researches companies,
   scores each against your brief with the evidence, and posts the map. One tap on a company puts
   it in the pipeline and sets Hermes to finding the buyer and drafting the first note.
+- **Send it anything.** A PDF of leads, a spreadsheet, a photo of a sign-up sheet. Hermes reads it,
+  Stoa shows what it would add and what it would change, and nothing is written until you press Apply.
 - **Click a button, the stage changes at once.** No model in the loop, no waiting, no wrong stage.
 - **Then Hermes does the writing.** The same click hands the follow-up (the outreach note, the
   proposal email, the decline) to the agent, in the card's thread.
@@ -52,6 +55,10 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   its buttons, not a description of it. *"Show me the market map"* draws the map the same way.
 - **A page of its own.** **Stoa** in the sidebar opens the pipeline board, the market map with
   its reading, and the activity log.
+- **Lists you send in.** Drop a file into the chat. The review appears in the conversation and in
+  the pane: a tick box per row, what each one would add or change, and one **Apply** button.
+
+![A list waiting for review](docs/desktop-intake.jpg)
 
 Switch it on once under **Capabilities → Plugins → Stoa**. It is drawn with the app's own theme
 variables, so it follows whatever theme you run.
@@ -126,7 +133,8 @@ change are one database transaction, so it holds across Slack, the web tab and t
 
 | | |
 |---|---|
-| **8 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **9 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **Intake** | Send a list in any form; review what is new and what would change; apply what you tick |
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
 | **Desktop app and Webapp** | A live pane beside the chat, a Stoa page, and cards and maps drawn inside the conversation |
@@ -185,6 +193,25 @@ The *Market watch* automation re-checks a map every week and adds at most five n
 **A page to send.** `gtm_market(action="export")`, or **Download page** in the web tab, writes the
 whole map as one self-contained web page: no scripts, no outside requests, nothing to host. The
 share version leaves out buyers' names and what is in your pipeline.
+
+### Intake
+
+*"Here's the attendee list from the conference."* (with a PDF attached)
+
+Hermes reads the file and hands Stoa the rows. Stoa then works out, with no model involved, what
+each row would do:
+
+| | |
+|---|---|
+| **New** | Nobody like this on the desk. It would be added at the first stage, or the stage the file gives. |
+| **Update** | Already on the desk, and the file knows something the record does not, or says something different. Every change is listed: `stage Contacted → Screened`, `LinkedIn added`. |
+| **Already there** | On the desk with nothing new. Left alone. |
+| **Unclear** | Could be more than one record. Stoa asks which. |
+
+A person is matched by email first, then LinkedIn, then name and company. The same person in a
+different account or search is a new record, not an update. Nothing is written until you press
+**Apply** in the app or in Slack, or say "apply all but 3". Two people pressing Apply write the
+list once. A CSV on disk is read by the desk itself, in Excel's encoding too.
 
 ### The pipeline
 
@@ -326,7 +353,7 @@ What the plugin does that you would want to know before installing it:
   dashboard's own sign-in. They read and change the pipeline; they call no model and no outside
   service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
 - **Files outside the plugin's own data.** It reads Markdown and text files in the folder you
-  set as `notes_dir`, and a CSV at a path you (or the agent, on your request) pass to import.
+  set as `notes_dir`, and a CSV at a path you (or the agent, on your request) pass to import or intake.
   Exports (the pipeline as CSV, a market map as a web page) are written to the plugin's
   `exports/` folder unless a CSV path is given.
 - **Messages to the agent.** With `allow_gateway_injection` granted, a button click queues one
@@ -355,7 +382,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 101 tests, no network
+python3 -m unittest discover -s tests     # 111 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
@@ -368,6 +395,7 @@ hermes plugins doctor . --ci
 | `playbook.py`, `playbooks/` | Playbook loading, validation, and the built-ins |
 | `cards.py` | Block Kit cards and their text twins |
 | `slackdesk.py` | Posting cards and answering button clicks |
+| `intake.py` | Lists sent in: matching rows to records, the review, and applying what was approved |
 | `market.py` | Market maps: segments, requirements, what the map adds up to, and the step into the pipeline |
 | `page.py` | A market map as one self-contained web page |
 | `sources.py` | People Data Labs, Exa and meeting-note sources |

@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 from . import cards
 
 log = logging.getLogger("hermes.plugins.stoa")
-ACTIONS = re.compile(r"^%s(advance|draft|enrich|lost|more|reopen|track)$" % cards.PREFIX)
+ACTIONS = re.compile(r"^%s(advance|draft|enrich|lost|more|reopen|track|intake|intake_discard)$" % cards.PREFIX)
 MAP = "map:"  # key under which a posted market map is remembered
 POST_TIMEOUT = 20
 HANDOFF_GRACE = 45  # seconds an accepted hand-off gets to open the record before the thread is told how to ask
@@ -76,6 +76,20 @@ class SlackDesk:
             log.warning("stoa: could not post a card to %s: %s", channel, exc)
             return {"ok": False, "error": _slack_error(exc)}
         return result or {"ok": True, "channel": channel}
+
+    def post_blocks(self, channel: str, blocks: list, text: str, thread_ts: str = "") -> dict:
+        """Post a ready-made message (an intake review). Never raises."""
+        if not self.available:
+            return {"ok": False, "error": "Slack is not connected"}
+        kwargs = {"channel": channel, "blocks": blocks, "text": text, "unfurl_links": False}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            response = self._run(self.client.chat_postMessage(**kwargs))
+        except Exception as exc:
+            log.warning("stoa: could not post to %s: %s", channel, exc)
+            return {"ok": False, "error": _slack_error(exc)}
+        return {"ok": True, "channel": channel, "ts": (response or {}).get("ts", "")}
 
     def post_map(self, channel: str, market_id: str, thread_ts: str = "", session_key: str = "") -> dict:
         return self.post_card(channel, MAP + market_id, thread_ts, session_key)
@@ -156,6 +170,21 @@ class SlackDesk:
         actor = user.get("name") or user.get("username") or user.get("id", "")
 
         thread = message.get("thread_ts") or ts
+        if verb in ("intake", "intake_discard"):  # an intake review: "apply|<id>" or "discard|<id>"
+            op, _, intake_id = value.partition("|")
+            if intake_id and channel and ts:
+                result = await asyncio.to_thread(self.desk.intake.click, op, intake_id, actor)
+                log.info("stoa: %s chose %s on intake %s", actor, op, intake_id)
+                intake = await asyncio.to_thread(self.desk.store.intake_get, intake_id)
+                if intake is not None:      # the review becomes its own receipt: what was done, and no buttons
+                    try:
+                        await self.client.chat_update(channel=channel, ts=ts, blocks=self.desk.intake.blocks(intake),
+                                                      text=self.desk.intake.headline(intake))
+                    except Exception as exc:
+                        log.warning("stoa: could not update the intake review: %s", exc)
+                if result.get("problems"):
+                    await self._say(channel, thread, "Some rows could not be written:\n" + "\n".join(result["problems"][:8]))
+            return
         if verb == "track":  # market map: "<target id>"
             if value and channel and ts:
                 await self._track(value, channel, ts, thread, user.get("id", ""), actor, team)

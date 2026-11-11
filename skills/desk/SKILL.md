@@ -48,13 +48,32 @@ repeat the card's contents. Outside Slack the tool returns the card as text: sho
 Cards redraw themselves when the record changes. Do not post a second card for a record just
 because it changed.
 
+## When someone sends a list or a file
+
+A PDF of leads, a spreadsheet, an export from another tool, a photo of a sign-up sheet, a long
+pasted message: anything with more than a couple of people or companies in it.
+
+1. Read it yourself and pull out the records. Use only what is there; leave blank what it does
+   not say. Put anything useful that has no field into `note`.
+2. Call `gtm_intake(action="propose", source="<what it is>", rows=[...])`. For a CSV on disk,
+   pass `path` instead and the desk reads it.
+3. Show the review the tool gives you (a directive, a Slack message it already posted, or text).
+   Say in one line what you found.
+4. Stop there. The person presses **Apply**, or tells you to apply ("apply all but 3"), and only
+   then do you call `gtm_intake(action="apply", ...)`.
+
+Do not add a list record by record with `gtm_deal`. The review is the point: it shows what is
+new, what would change on a record already there, and what is already there, before anything is
+written. If a row comes back `unclear`, ask which record it is and propose again with its id as
+`record`.
+
 ## In the Hermes Desktop app and the Webapp
 
 There the team has the Stoa pane open beside this conversation, and it redraws whenever you
 change the desk. Two things follow:
 
-- When `gtm_card` or `gtm_market(action="post")` returns a `directive` (a line such as
-  `::stoa-card{id="..."}`), write that line as a paragraph by itself, exactly as given. The app
+- When `gtm_card`, `gtm_market(action="post")` or `gtm_intake` returns a `directive` (a line such
+  as `::stoa-card{id="..."}`), write that line as a paragraph by itself, exactly as given. The app
   draws the live card or map there, with its buttons. Do not paste the record as text as well.
 - A message like "Dana Whitfield is now at Submitted on the Stoa desk. Open record ... and write
   what is waiting on it." means someone pressed a button in the pane or on a card. Call

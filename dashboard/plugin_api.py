@@ -139,6 +139,7 @@ def state() -> dict:
                      "fields": playbook.fields},
         "deals": [_card(d, deal, playbook, touches, pending) for deal in deals],
         "markets": markets,
+        "intakes": d.intake.waiting(),
         "activity": activity,
         "flow": d.flow(deals, playbook),
         "totals": {"open": len(open_deals), "open_value": sum(x["value"] for x in open_deals),
@@ -207,6 +208,29 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
         d.announce()
         return {"ok": True}
     raise HTTPException(400, "unknown action")
+
+
+@router.get("/intake/{intake_id}")
+def intake(intake_id: str) -> dict:
+    """A list waiting for approval (or already dealt with): what each row would do."""
+    view = desk().intake.view(intake_id)
+    if view is None:
+        raise HTTPException(404, "no such list")
+    return view
+
+
+@router.post("/intake/{intake_id}/{verb}")
+def intake_act(intake_id: str, verb: str, body: Optional[dict] = Body(None)) -> dict:
+    d = desk()
+    if verb == "apply":
+        result = d.intake.apply({"id": intake_id, "rows": (body or {}).get("rows")}, "app")
+    elif verb == "discard":
+        result = d.intake.discard(intake_id)
+    else:
+        raise HTTPException(400, "unknown action")
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error") or "no such list")
+    return result
 
 
 @router.get("/market/{market_id}/page")

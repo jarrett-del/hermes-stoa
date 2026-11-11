@@ -2,7 +2,8 @@
  * Stoa in the Hermes Desktop app and the Webapp.
  *
  * One file, no build step. It adds a Stoa page, a live pane that sits beside the conversation,
- * and two components the agent can draw inside a reply: a record card and a market map.
+ * and three components the agent can draw inside a reply: a record card, a market map, and the
+ * review of a list someone sent in.
  *
  * Everything here talks to the plugin's own backend (/api/plugins/stoa, the same routes the web
  * dashboard tab uses) through ctx.rest. A button saves at once, with no model involved; when the
@@ -177,6 +178,14 @@ const CSS = `
 .stoa-rate u i { display: block; height: 100%; background: var(--ui-text-primary); }
 .stoa-reading { max-width: 70ch; margin: 8px 0 0; color: var(--ui-text-secondary); white-space: pre-line; }
 .stoa-h2 { margin: 26px 0 8px; font-size: 15px; font-weight: 600; }
+.stoa-list { max-height: 340px; overflow-y: auto; margin-top: 10px; }
+.stoa-pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--ui-stroke-tertiary); cursor: pointer; }
+.stoa-pick:first-child { border-top: 0; }
+.stoa-pick input { flex: none; margin-top: 3px; accent-color: var(--ui-accent); }
+.stoa-pick[data-off="1"] .stoa-grow { opacity: .5; }
+.stoa-rest { margin-top: 10px; font-size: 12px; color: var(--ui-text-tertiary); }
+.stoa-rest summary { cursor: pointer; }
+.stoa-rest p { margin: 4px 0 0 14px; }
 `
 
 const Style = () => h('style', null, CSS)
@@ -240,6 +249,64 @@ function Record({ id, state, sessionId, close }) {
       h('p', { key: index }, entry.text, h('span', { className: 'stoa-sub' }, '  ' + ago(entry.at) + (entry.by ? ' · ' + entry.by : ''))))) : null)
 }
 
+// -- a list sent in: tick what to keep, then Apply ------------------------------------------------
+function changeText(change) {
+  if (change.field === 'Note') return 'note: ' + change.to
+  return change.from ? change.field + ': ' + change.from + ' → ' + change.to : change.field + ': ' + change.to
+}
+
+function Review({ id }) {
+  const query = useQuery({ queryKey: ['stoa', 'intake', id], queryFn: () => rest('/intake/' + encodeURIComponent(id)), staleTime: 1500 })
+  const [off, setOff] = useState({})
+  const [busy, setBusy] = useState(false)
+  const intake = query.data
+  if (query.error) return h('div', { className: 'stoa-box stoa-sub' }, 'That list is no longer here.')
+  if (!intake) return h('div', { className: 'stoa-box stoa-sub' }, 'Loading…')
+  const open = intake.status === 'open'
+  const usable = intake.rows.filter(row => row.kind === 'new' || row.kind === 'update')
+  const rest_ = intake.rows.filter(row => row.kind !== 'new' && row.kind !== 'update')
+  const chosen = usable.filter(row => !off[row.n])
+  const counts = intake.counts, result = intake.result || {}
+  const send = verb => {
+    setBusy(true)
+    rest('/intake/' + encodeURIComponent(id) + '/' + verb, { method: 'POST', body: verb === 'apply' ? { rows: chosen.map(row => row.n) } : {} })
+      .then(done => {
+        refresh()
+        if (verb === 'apply' && done.applied) host.notify({ kind: 'success', message: done.added + ' added, ' + done.updated + ' updated' })
+        else if (done.note) host.notify({ kind: 'info', message: done.note })
+        if (done.problems && done.problems.length) host.notify({ kind: 'warning', message: done.problems[0] })
+      })
+      .catch(error => host.notifyError(error, 'Stoa could not apply that list'))
+      .then(() => setBusy(false))
+  }
+  return h('div', { className: 'stoa-box' },
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' } },
+      h('span', { className: 'stoa-eyebrow' }, 'Intake · ' + intake.source),
+      open ? null : h(Chip, { tone: intake.status === 'applied' ? 'good' : '' }, intake.status)),
+    h('div', { className: 'stoa-name', style: { marginTop: 4 } },
+      [counts.new ? counts.new + ' new' : '', counts.update ? counts.update + ' to update' : '', counts.same ? counts.same + ' already there' : '',
+        counts.unclear ? counts.unclear + ' unclear' : '', counts.problem ? counts.problem + ' unusable' : ''].filter(Boolean).join(' · ') || 'Nothing to add'),
+    usable.length ? h('div', { className: 'stoa-list' }, usable.map(row => h('label', { key: row.n, className: 'stoa-pick', 'data-off': open && off[row.n] ? '1' : '0' },
+      open ? h('input', { type: 'checkbox', checked: !off[row.n], disabled: busy, onChange: () => setOff({ ...off, [row.n]: !off[row.n] }) })
+        : h('i', { className: 'stoa-dot', 'data-tone': row.applied ? 'good' : '' }),
+      h('span', { className: 'stoa-grow' },
+        h('span', { className: 'stoa-name' }, row.name),
+        h('span', { className: 'stoa-sub' }, '  ' + [row.company !== row.name ? row.company : '', row.group].filter(Boolean).join(' · ')),
+        h('span', { className: 'stoa-sub', style: { display: 'block' } },
+          row.kind === 'new' ? 'New' + (row.stage ? ' at ' + row.stage : '') : row.changes.map(changeText).join(' · ')),
+        (row.warnings || []).map((warning, index) => h('span', { key: index, className: 'stoa-sub', style: { display: 'block' } }, warning))),
+      h(Chip, { tone: row.kind === 'new' ? 'good' : '' }, row.kind === 'new' ? 'new' : 'update')))) : null,
+    rest_.length ? h('details', { className: 'stoa-rest' },
+      h('summary', null, plural(rest_.length, 'row', 'rows') + ' left out'),
+      rest_.map(row => h('p', { key: row.n }, (row.name || 'Row ' + row.n) + ': ' + row.why))) : null,
+    open ? h('div', { className: 'stoa-btns' },
+      h(Btn, { kind: 'primary', disabled: busy || !chosen.length, onClick: () => send('apply') }, 'Apply ' + chosen.length),
+      h(Btn, { kind: 'quiet', disabled: busy, onClick: () => send('discard') }, 'Discard'),
+      h('span', { className: 'stoa-sub', style: { alignSelf: 'center' } }, 'Nothing is written until you apply.'))
+      : intake.status === 'applied' ? h('div', { className: 'stoa-sub', style: { marginTop: 10 } },
+        (result.added || 0) + ' added · ' + (result.updated || 0) + ' updated' + (result.left ? ' · ' + result.left + ' left out' : '')) : null)
+}
+
 // -- the pane beside the conversation ------------------------------------------------------------
 function Row({ deal, sub, right, tone, open, onClick }) {
   return h('button', { type: 'button', className: 'stoa-row', 'data-open': open ? '1' : '0', onClick },
@@ -271,8 +338,11 @@ function Pane() {
         h('div', { className: 'stoa-sub' }, [plural(totals.open, 'open', 'open'), totals.due ? totals.due + ' due' : '', totals.stale ? totals.stale + ' quiet' : '']
           .filter(Boolean).join(' · ')),
         h('div', { className: 'stoa-rule' })),
+      (state.intakes || []).length ? h('div', { className: 'stoa-sec' },
+        h('div', { className: 'stoa-sechead' }, h('span', { className: 'stoa-eyebrow' }, 'Waiting for your review'), h('span', { className: 'stoa-num' }, state.intakes.length)),
+        state.intakes.map(item => h('div', { key: item.id, style: { marginBottom: 8 } }, h(Review, { id: item.id })))) : null,
       !state.deals.length ? h('p', { className: 'stoa-sub', style: { padding: '8px' } },
-        'Nothing on the desk yet. Tell Hermes about a ' + pb.terms.deal + ', or ask it to map a market.') : null,
+        'Nothing on the desk yet. Tell Hermes about a ' + pb.terms.deal + ', send it a list, or ask it to map a market.') : null,
       due.length || quiet.length ? h('div', { className: 'stoa-sec' },
         h('div', { className: 'stoa-sechead' }, h('span', { className: 'stoa-eyebrow' }, 'Needs you'), h('span', { className: 'stoa-num' }, due.length + quiet.length)),
         due.map(deal => listed(deal, 'due:' + deal.id, deal.next_step || deal.stage_label, dueLabel(deal), dueTone(deal))),
@@ -398,6 +468,9 @@ function Page() {
     h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open')),
     h('div', { className: 'stoa-rule' }),
     h('div', { className: 'stoa-stats' }, stats.map(pair => h('div', { key: pair[0] }, h('span', { className: 'stoa-eyebrow' }, pair[0]), h('b', null, String(pair[1]))))),
+    (state.intakes || []).length ? h('div', { style: { marginTop: 18, maxWidth: 720 } },
+      h('div', { className: 'stoa-eyebrow', style: { marginBottom: 6 } }, 'Waiting for your review'),
+      state.intakes.map(item => h('div', { key: item.id, style: { marginBottom: 10 } }, h(Review, { id: item.id })))) : null,
     h('div', { className: 'stoa-tabs' }, [['pipeline', 'Pipeline'], ['market', 'Market map'], ['activity', 'Activity']].map(pair =>
       h('button', { type: 'button', key: pair[0], className: 'stoa-tab', 'data-on': tab === pair[0] ? '1' : '0', onClick: () => setTab(pair[0]) }, pair[1]))),
     tab === 'pipeline' ? (state.deals.length
@@ -437,6 +510,12 @@ function MapInChat({ attrs, sessionId }) {
     h(Market, { market, sessionId: sessionId ?? null, compact: true }))
 }
 
+function ReviewInChat({ attrs }) {
+  const id = String((attrs && attrs.id) || '').trim()
+  if (!/^in-[0-9a-f]{8}$/.test(id)) return null
+  return h('div', { className: 'stoa', style: { margin: '6px 0', maxWidth: 620 } }, h(Style), h(Review, { id }))
+}
+
 export default {
   id: 'stoa',
   name: 'Stoa',
@@ -454,6 +533,7 @@ export default {
       { id: 'nav', area: 'sidebar.nav', data: { path: '/stoa', label: 'Stoa', codicon: 'graph' } },
       { id: 'card', area: 'transcript.directives', data: { name: 'stoa-card', render: props => h(CardInChat, props) } },
       { id: 'map', area: 'transcript.directives', data: { name: 'stoa-map', render: props => h(MapInChat, props) } },
+      { id: 'intake', area: 'transcript.directives', data: { name: 'stoa-intake', render: props => h(ReviewInChat, props) } },
       { id: 'open', area: 'palette', data: { id: 'stoa.open', label: 'Stoa: open the desk', keywords: ['pipeline', 'gtm', 'market map'], run: () => host.navigate('/stoa') } }
     ])
   }

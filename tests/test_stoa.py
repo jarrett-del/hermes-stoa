@@ -909,6 +909,136 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(store.meta_prefix("pending:"), {some["id"]: "write it"})
 
 
+class IntakeTests(unittest.TestCase):
+    """A list sent in from anywhere: reviewed first, and only what is approved gets written."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name)
+        demo.load(self.desk)
+        self.dana = self.desk.store.find("Dana Whitfield")
+        self.rows = [
+            {"name": "Ada Quill", "company": "Fathom Data", "group": "Staff Backend · Northwind", "email": "ada@fathom.example",
+             "Current title": "Staff Engineer", "note": "Met at the meetup", "favourite colour": "green"},
+            {"name": "Dana Whitfield", "email": "dana@example.com", "stage": "Submitted", "linkedin": "https://www.linkedin.com/in/danaw/",
+             "note": "Resume updated"},
+            {"name": "Priya Raman", "email": "priya@example.com"},                                # on the desk, nothing new
+            {"name": "ada quill", "company": "Fathom Data", "group": "Staff Backend · Northwind", "email": "ADA@fathom.example"},
+            {"company": "Kestrel Labs"},                                                          # a company with no person
+            {"email": "nobody@example.com"},                                                      # nothing to call it
+            {"name": "Ben Okoro", "next_due": "sometime soon", "stage": "Vibing"},
+        ]
+
+    def propose(self, **extra):
+        return self.desk.intake.run(dict({"action": "propose", "source": "meetup list", "rows": self.rows}, **extra))
+
+    def test_the_review_says_what_each_row_would_do_and_writes_nothing(self):
+        before = (self.desk.store.count(), len(self.desk.store.activities(limit=500)))
+        out = self.propose()
+        self.assertTrue(out["ok"])
+        self.assertEqual([row["kind"] for row in out["rows"]], ["new", "update", "same", "same", "new", "problem", "new"])
+        self.assertEqual(out["counts"], {"new": 3, "update": 1, "same": 2, "unclear": 0, "problem": 1, "rows": 7})
+        self.assertEqual(out["ignored_columns"], ["favourite colour"])
+        changes = {c["field"]: (c["from"], c["to"]) for c in out["rows"][1]["changes"]}
+        self.assertEqual(changes["Stage"], ("Screened", "Submitted"))
+        self.assertEqual(changes["LinkedIn"], ("", "https://www.linkedin.com/in/danaw/"))
+        self.assertIn("Note", changes)
+        self.assertNotIn("Email", changes)                                                 # the same email is not a change
+        self.assertIn("same as row 1", out["rows"][3]["why"])
+        self.assertIn("not understood", " ".join(out["rows"][6]["warnings"]))
+        self.assertIn("not in this playbook", " ".join(out["rows"][6]["warnings"]))
+        self.assertIn("3 new candidates, 1 to update", out["review"])
+        self.assertIn("stage Screened → Submitted", out["review"])
+        self.assertEqual((self.desk.store.count(), len(self.desk.store.activities(limit=500))), before)
+        self.assertEqual([w["id"] for w in self.desk.intake.waiting()], [out["id"]])
+
+    def test_apply_writes_what_was_reviewed_and_only_once(self):
+        out = self.propose()
+        done = self.desk.intake.run({"action": "apply"})                                   # only one waiting: no id needed
+        self.assertEqual((done["added"], done["updated"], done["left_out"], done["problems"]), (3, 1, 0, []))
+        ada = self.desk.store.find("Ada Quill")
+        self.assertEqual((ada["company"], ada["email"], ada["stage"], ada["fields"]["title"]),
+                         ("Fathom Data", "ada@fathom.example", "sourced", "Staff Engineer"))
+        self.assertEqual(ada["source"], "intake: meetup list")
+        self.assertIn("Met at the meetup", [a["text"] for a in self.desk.store.activities(ada["id"])])
+        dana = self.desk.store.get(self.dana["id"])
+        self.assertEqual((dana["stage"], dana["linkedin"]), ("submitted", "https://www.linkedin.com/in/danaw/"))
+        self.assertTrue(any("Resume updated" in a["text"] for a in self.desk.store.activities(dana["id"])))
+        self.assertEqual(self.desk.store.find("Kestrel Labs")["name"], "Kestrel Labs")     # a company row is its own record
+        self.assertEqual(self.desk.store.find("Ben Okoro")["next_due"], "")
+        again = self.desk.intake.run({"action": "apply", "id": out["id"]})
+        self.assertFalse(again["applied"])
+        self.assertIn("3 added, 1 updated", again["note"])
+        self.assertEqual(len(self.desk.store.list(status="all", query="Ada Quill")), 1)
+        self.assertEqual(self.desk.intake.waiting(), [])
+        self.assertEqual(self.desk.intake.view(out["id"])["status"], "applied")
+
+    def test_part_of_a_list_can_be_applied_and_the_rest_left(self):
+        out = self.propose()
+        done = self.desk.intake.run({"action": "apply", "id": out["id"], "skip": [1, "7"]})
+        self.assertEqual((done["added"], done["updated"], done["left_out"]), (1, 1, 2))
+        self.assertIsNone(self.desk.store.find("Ada Quill"))
+        second = self.propose()
+        done = self.desk.intake.run({"action": "apply", "id": second["id"], "rows": [1]})
+        self.assertEqual((done["added"], done["updated"]), (1, 0))
+        self.assertEqual(self.desk.store.get(self.dana["id"])["stage"], "submitted")
+
+    def test_discard_and_unknown_lists(self):
+        out = self.propose()
+        self.assertTrue(self.desk.intake.run({"action": "discard", "id": out["id"]})["discarded"])
+        self.assertFalse(self.desk.intake.run({"action": "apply", "id": out["id"]})["applied"])
+        self.assertIsNone(self.desk.store.find("Ada Quill"))
+        self.assertFalse(self.desk.intake.run({"action": "apply", "id": "in-nope"})["ok"])
+        self.assertFalse(self.desk.intake.run({"action": "propose", "rows": []})["ok"])
+        self.assertFalse(self.desk.intake.run({"action": "propose", "rows": [{"name": "x"}] * 501})["ok"])
+        nothing = self.desk.intake.run({"action": "propose", "rows": [{"name": "Priya Raman"}]})
+        self.assertIn("Nothing here would change the desk", nothing["note"])
+        self.assertEqual(self.desk.intake.waiting(), [])
+
+    def test_the_same_person_in_another_search_is_new_and_two_matches_are_unclear(self):
+        self.desk.deal({"action": "add", "name": "Dana Whitfield", "group": "Head of Platform · Lumen", "force": True})
+        out = self.desk.intake.run({"action": "propose", "rows": [
+            {"name": "Dana Whitfield", "group": "Data Lead · Tidewater"},
+            {"name": "Dana Whitfield", "owner": "Jo"},
+            {"name": "Dana Whitfield", "owner": "Jo", "record": self.dana["id"]}]})
+        first, second, third = out["rows"]
+        self.assertEqual((first["kind"], second["kind"], third["kind"]), ("new", "unclear", "update"))
+        self.assertIn("also on the desk under", first["why"])
+        self.assertIn("matches 2 records", second["why"])
+        self.assertEqual(third["deal"], self.dana["id"])
+
+    def test_a_csv_is_read_by_the_desk_and_other_files_are_the_agents_to_read(self):
+        path = Path(self.tmp.name) / "leads.csv"
+        path.write_bytes("Candidate,Company,Search,Due\nZo\u00eb Marsh,Acme,Staff Backend \u00b7 Northwind,12/05/2026\n,,,\n".encode("cp1252"))
+        out = self.desk.intake.run({"action": "propose", "path": str(path)})
+        self.assertEqual((out["source"], out["counts"]["new"], out["counts"]["rows"]), ("leads.csv", 1, 1))
+        self.desk.intake.run({"action": "apply", "id": out["id"]})
+        zoe = self.desk.store.find("Zo\u00eb Marsh")
+        self.assertEqual((zoe["grp"], zoe["next_due"]), ("Staff Backend \u00b7 Northwind", "2026-12-05"))
+        pdf = Path(self.tmp.name) / "leads.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        self.assertIn("read it yourself", self.desk.intake.run({"action": "propose", "path": str(pdf)})["error"])
+
+    def test_two_people_pressing_apply_write_the_list_once(self):
+        out = self.propose()
+        results = []
+        workers = [threading.Thread(target=lambda: results.append(self.desk.intake.apply({"id": out["id"]}, "u"))) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        self.assertEqual(len([r for r in results if r.get("applied")]), 1)
+        self.assertEqual(len(self.desk.store.list(status="all", query="Ada Quill")), 1)
+
+    def test_in_the_app_the_review_is_drawn_in_the_conversation(self):
+        self.desk.desktop_seen = time.time()
+        out = self.desk.intake.run({"action": "propose", "source": "x", "rows": self.rows}, {"platform": "desktop"})
+        self.assertEqual(out["directive"], '::stoa-intake{id="%s"}' % out["id"])
+        self.assertNotIn("rows", out)
+        self.assertNotIn("review", out)
+
+
 class FakeCtx:
     """The part of Hermes's plugin context that ``register`` uses, recording what it is given."""
 
@@ -968,7 +1098,7 @@ class RegisterTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_everything_the_manifest_promises_is_registered(self):
-        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_market",
+        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_intake", "gtm_market",
                                                   "gtm_notes", "gtm_pipeline", "gtm_playbook"])
         self.assertEqual(sorted(self.ctx.blueprints), ["friday-review", "market-watch", "morning-brief", "notes-sweep"])
         self.assertEqual(sorted(self.ctx.skills), ["desk", "market-map", "playbook-authoring"])
@@ -1003,7 +1133,7 @@ class RegisterTests(unittest.TestCase):
         self.assertIn("before saying it cannot be found", text)        # an agent with other places to look still checks here
         self.assertLessEqual(len(text), limit)
         for schema in (schemas.GTM_PIPELINE, schemas.GTM_DEAL, schemas.GTM_CARD, schemas.GTM_MARKET, schemas.GTM_ENRICH,
-                       schemas.GTM_NOTES, schemas.GTM_PLAYBOOK, schemas.GTM_EXPORT):
+                       schemas.GTM_NOTES, schemas.GTM_PLAYBOOK, schemas.GTM_EXPORT, schemas.GTM_INTAKE):
             first = " ".join(schema["description"].split()).split(". ")[0]
             self.assertLessEqual(len(first), 79, schema["name"])       # Hermes lists a deferred tool by this one line, cut at 80
             self.assertTrue("Stoa desk" in first or "People Data Labs" in first, schema["name"])
@@ -1060,6 +1190,19 @@ class DashboardApiTests(unittest.TestCase):
             self.assertNotIn("directive", self.desk.card({"deal": "dana"}, elsewhere), elsewhere)
         self.desk.desktop_seen = time.time() - 600                                         # the window was closed a while ago
         self.assertIn("card", self.desk.card({"deal": "dana"}, in_app))
+
+    def test_the_app_reads_a_waiting_list_and_applies_the_ticked_rows(self):
+        out = self.desk.intake.run({"action": "propose", "source": "leads.pdf", "rows": [
+            {"name": "Ada Quill", "company": "Fathom Data"}, {"name": "Ben Okoro"}, {"name": "Priya Raman"}]})
+        self.assertEqual([w["id"] for w in self.api.state()["intakes"]], [out["id"]])
+        view = json.loads(json.dumps(self.api.intake(out["id"])))
+        self.assertEqual([(row["n"], row["kind"]) for row in view["rows"]], [(1, "new"), (2, "new"), (3, "same")])
+        self.assertNotIn("row", view["rows"][0])                                            # raw values stay in the ledger
+        done = self.api.intake_act(out["id"], "apply", {"rows": [2]})
+        self.assertEqual((done["added"], done["left_out"]), (1, 1))
+        self.assertIsNone(self.desk.store.find("Ada Quill"))
+        self.assertEqual(self.api.intake(out["id"])["status"], "applied")
+        self.assertEqual(self.api.state()["intakes"], [])
 
     def test_state_costs_the_same_however_many_records_there_are(self):
         self.desk.store.last_touch = lambda deal_id: self.fail("asked for one record's last touch during /state")
@@ -1315,6 +1458,29 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.desk.store.delete(self.dana["id"])                             # and a deleted record leaves nothing behind
         self.assertEqual(self.desk.store.meta_prefix("pending:"), {})
         self.assertEqual(self.desk.store.meta_prefix("handoff:"), {})
+
+    async def test_an_intake_review_in_slack_applies_on_one_press(self):
+        here = {"platform": "slack", "chat_id": "C1", "thread_id": "1690000000.000100"}
+        rows = [{"name": "Ada Quill", "company": "Fathom Data"}, {"name": "Dana Whitfield", "owner": "Jo"}]
+        out = await asyncio.to_thread(self.desk.intake.run, {"action": "propose", "source": "badge scans", "rows": rows}, here)
+        self.assertTrue(out["posted"])
+        post = self.app.client.posts[-1]
+        self.assertEqual((post["channel"], post["thread_ts"]), ("C1", "1690000000.000100"))
+        text = json.dumps(post["blocks"], ensure_ascii=False)
+        self.assertIn("Ada Quill", text)
+        self.assertIn("owner you → Jo", text)
+        self.assertIn("Apply 2", text)
+        self.assertIsNone(self.desk.store.find("Ada Quill"))                                # nothing written yet
+        body = self.body(ts="1700000000.000001", thread_ts="1690000000.000100")
+        await self.slack.on_action(self.ack, body, {"action_id": "stoa_intake", "value": "apply|" + out["id"]})
+        self.assertEqual(self.desk.store.find("Ada Quill")["company"], "Fathom Data")
+        self.assertEqual(self.desk.store.get(self.dana["id"])["owner"], "Jo")
+        receipt = json.dumps(self.app.client.updates[-1]["blocks"], ensure_ascii=False)
+        self.assertIn("1 added, 1 updated", receipt)
+        self.assertNotIn("stoa_intake", receipt)                                            # the buttons are gone
+        await self.slack.on_action(self.ack, body, {"action_id": "stoa_intake", "value": "apply|" + out["id"]})
+        self.assertEqual(len(self.desk.store.list(status="all", query="Ada Quill")), 1)
+        self.assertTrue(ACTIONS.match("stoa_intake") and ACTIONS.match("stoa_intake_discard"))
 
     async def test_a_card_from_the_command_does_not_claim_a_session(self):
         here = {"platform": "slack", "chat_id": "D1", "thread_id": "1690000000.000100", "session_key": "no-such-session"}

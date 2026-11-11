@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional
 
 from . import cards, sources
 from . import store as st
+from .intake import Intake
 from .market import Markets
 from .playbook import DEFAULT, Library, Playbook, PlaybookError
 
@@ -70,6 +71,7 @@ class Desk:
         self.announce: Callable[[], None] = lambda: None   # tells an open Desktop app or Webapp that the desk changed
         self.desktop_seen = 0.0     # when the Desktop/Webapp half last checked in (it does so while it is open)
         self.markets = Markets(self)
+        self.intake = Intake(self)
 
     # -- host services --------------------------------------------------------------------------
     @property
