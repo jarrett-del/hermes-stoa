@@ -553,6 +553,125 @@ class MarketTests(unittest.TestCase):
         self.assertIn("cap", desk.market({"action": "people", "target": "Meridian Freight", "limit": 5})["error"])
         self.assertEqual(len(self.calls), 2)
 
+    def test_the_map_reads_itself_back(self):
+        demo.load(self.desk)
+        s = self.market({"action": "show"})
+        self.assertEqual(s["numbers"], {"companies": 7, "segments": 3, "in_pipeline": 0, "with_signal": 3, "buyers_named": 4,
+                                        "assessed": 7, "bridges": 2, "avg_fit": 3.7})
+        self.assertEqual([(r["label"], r["rate"], r["of"]) for r in s["requirements"]],
+                         [("50 to 500 people", 100, 7), ("Scorecards kept in spreadsheets", 43, 7),
+                          ("Own compliance team", 43, 7), ("Carrier base growing", 71, 7)])
+        self.assertEqual([(h["name"], h["count"], h["share"]) for h in s["holds"]],
+                         [("Spreadsheets", 4, 57), ("In-house tool", 2, 29), ("CarrierWatch", 1, 14)])
+        self.assertEqual(sorted(tuple(b["between"]) for b in s["bridges"]),
+                         [("Asset-light brokers", "Digital-first"), ("Asset-light brokers", "Hybrid carriers")])
+        self.assertEqual([(c["company"], c["buyer"]) for c in s["first_calls"]],
+                         [("Brightside Freight", "Tobias Lindqvist"), ("Meridian Freight", "Renata Okafor"),
+                          ("Northwind Carriers", "Dalia Reyes-Moore")])
+        self.assertEqual({r["name"] for r in s["regions"]}, {"IL", "OH", "IA", "IN", "NE", "MN", "MO"})
+        self.assertEqual([(z["band"], z["count"]) for z in s["sizes"]], [("50\u2013199", 4), ("200\u2013999", 3)])
+        self.assertIn("only one has bought a tool", s["market"]["reading"])
+        self.assertEqual(len(s["market"]["implications"]), 3)
+        meridian = s["segments"][0]["companies"][0]
+        self.assertEqual(meridian["uses"], "Spreadsheets")
+        self.assertEqual([r["shown"] for r in meridian["requirements"]], [True, True, True, True])
+        self.assertEqual(meridian["requirements"][1]["evidence"], "Job ad asks for advanced Excel for carrier scoring")
+        for heading in ("How rare each requirement is (of 7 checked)", "Who holds this market today", "Where the segments meet",
+                        "First calls", " 57%  Spreadsheets (4)", "1. Brightside Freight \u2014 Fresh funding"):
+            self.assertIn(heading, s["map"])
+        json.dumps(s)
+
+    def test_requirements_set_the_fit_and_unknown_ones_are_reported(self):
+        self.market({"action": "define", "name": "Solar", "requirements": ["Owns the roof", "Over 50 staff", "Has a facilities lead", "Bills over 10k"]})
+        added = self.market({"action": "add", "companies": [
+            {"company": "Two Of Four", "requirements": {"Owns the roof": "Deed on file", "over 50 staff": "120 people", "Has a facilities lead": ""}},
+            {"company": "None Shown", "requirements": {"Owns the roof": "", "Wears a hat": "yes"}},
+            {"company": "Scored By Hand", "fit": 5, "requirements": {"Owns the roof": ""}}]})
+        self.assertEqual(added["problems"], ["None Shown: 'Wears a hat' is not one of this market's requirements"])
+        fits = {c["company"]: c["fit"] for seg in self.market({"action": "show"})["segments"] for c in seg["companies"]}
+        self.assertEqual(fits, {"Two Of Four": 3, "None Shown": 1, "Scored By Hand": 5})
+        self.market({"action": "add", "companies": [{"company": "Two Of Four", "requirements": {"Bills over 10k": "Tariff sheet"}}]})
+        rates = {r["label"]: (r["shown"], r["of"]) for r in self.market({"action": "show"})["requirements"]}
+        self.assertEqual(rates, {"Owns the roof": (1, 3), "Over 50 staff": (1, 3), "Has a facilities lead": (0, 3), "Bills over 10k": (1, 3)})
+
+    def test_first_calls_fall_back_to_the_strongest_fits(self):
+        self.define()
+        self.market({"action": "add", "companies": [
+            {"company": "A1", "segment": "Asset-light", "fit": 5, "signal": "Raised"}, {"company": "A2", "segment": "Asset-light", "fit": 5},
+            {"company": "A3", "segment": "Asset-light", "fit": 5}, {"company": "H1", "segment": "Hybrid", "fit": 4},
+            {"company": "Weak", "segment": "Hybrid", "fit": 2}]})
+        self.market({"action": "track", "targets": ["A2"]})
+        calls = self.market({"action": "show"})["first_calls"]
+        self.assertEqual([c["company"] for c in calls], ["A1", "A3", "H1"])
+        saved = self.market({"action": "reading", "reading": "Thin market.", "implications": ["Go wide"],
+                             "first_calls": [{"target": "H1", "why": "Knows us"}, {"target": "Nobody"}]})
+        self.assertEqual((saved["saved"], saved["not_on_the_map"]), (["reading", "implications", "first_calls"], ["Nobody"]))
+        shown = self.market({"action": "show"})
+        self.assertEqual([(c["company"], c["why"]) for c in shown["first_calls"]], [("H1", "Knows us")])
+        self.assertEqual((shown["market"]["reading"], shown["market"]["implications"]), ("Thin market.", ["Go wide"]))
+
+    def test_buyers_found_are_kept_and_used(self):
+        desk = make_desk(self.tmp.name, playbook="b2b-sales", http=self.http, secrets={"PDL_API_KEY": "p"})
+        desk.market({"action": "define", "name": "Freight"})
+        desk.market({"action": "add", "companies": [{"company": "Meridian Freight", "website": "meridian.example",
+                                                      "people": ["Sam Ito - Ops Lead"]}]})
+        found = desk.market({"action": "people", "target": "Meridian Freight", "titles": ["vp operations"], "limit": "x"})
+        self.assertTrue(found["saved_to_map"])
+        people = desk.market({"action": "show"})["segments"][0]["companies"][0]["people"]
+        self.assertEqual([(p["name"], p.get("title")) for p in people], [("Sam Ito", "Ops Lead"), ("Ada Park", "vp operations")])
+        desk.market({"action": "people", "target": "Meridian Freight"})
+        self.assertEqual(len(desk.market({"action": "show"})["segments"][0]["companies"][0]["people"]), 2)
+        tracked = desk.market({"action": "track", "targets": ["Meridian Freight"]})["added_to_pipeline"][0]
+        deal = desk.store.get(tracked["deal"])
+        self.assertEqual((tracked["contact"], deal["name"], deal["fields"]["title"], deal["next_step"]),
+                         ("Sam Ito", "Sam Ito", "Ops Lead", "First outreach"))
+
+    def test_export_writes_one_safe_page(self):
+        demo.load(self.desk)
+        self.market({"action": "add", "companies": [{"company": "<script>alert(1)</script> & Sons", "segment": "Digital-first",
+                                                      "source": "javascript:alert(1)", "why": "\"quoted\" <b>bold</b>"}]})
+        self.market({"action": "track", "targets": ["Meridian Freight"]})
+        full = self.market({"action": "export"})
+        html = Path(full["path"]).read_text(encoding="utf-8")
+        self.assertTrue(full["path"].endswith(".html") and full["bytes"] > 5000)
+        for must in ("Regional freight brokers (demo)", "How rare each requirement is", "Who holds this market today",
+                     "Where the segments meet", "First calls", "Renata Okafor", "In the pipeline", "&lt;script&gt;alert(1)&lt;/script&gt; &amp; Sons"):
+            self.assertIn(must, html)
+        for never in ("<script", "href=\"javascript", " src=", "@import", "<b>bold</b>"):
+            self.assertNotIn(never, html)
+        shared = Path(self.market({"action": "export", "share": True})["path"]).read_text(encoding="utf-8")
+        for hidden in ("Renata Okafor", "Tobias Lindqvist", "In the pipeline", "Buyers named"):
+            self.assertNotIn(hidden, shared)
+        self.assertIn("Meridian Freight", shared)
+
+    def test_an_older_database_is_upgraded_in_place(self):
+        import sqlite3
+        path = Path(self.tmp.name) / "desk.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            "CREATE TABLE markets (id TEXT PRIMARY KEY, name TEXT NOT NULL, brief TEXT NOT NULL DEFAULT '', segments TEXT NOT NULL DEFAULT '[]', "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+            "CREATE TABLE targets (id TEXT PRIMARY KEY, market_id TEXT NOT NULL, company TEXT NOT NULL, domain TEXT NOT NULL DEFAULT '', "
+            "segment TEXT NOT NULL DEFAULT '', fit INTEGER NOT NULL DEFAULT 3, size TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', "
+            "why TEXT NOT NULL DEFAULT '', signal TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new', "
+            "deal_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+            "INSERT INTO markets VALUES ('old', 'Old map', '', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');"
+            "INSERT INTO targets VALUES ('t1', 'old', 'Acme', '', 'A', 4, '80 people', 'Leeds, UK', 'w', '', '', 'new', '', "
+            "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');")
+        conn.commit()
+        conn.close()
+        shown = self.market({"action": "show", "market": "old"})
+        self.assertEqual((shown["numbers"]["companies"], shown["regions"], shown["requirements"]), (1, [{"name": "UK", "count": 1}], []))
+        self.market({"action": "add", "market": "old", "companies": [{"company": "Acme", "uses": "Spreadsheets"}]})
+        self.assertEqual(self.market({"action": "show", "market": "old"})["holds"][0]["name"], "Spreadsheets")
+
+    def test_places_and_sizes(self):
+        from stoa.market import region_of, size_band
+        self.assertEqual([region_of(x) for x in ("Chicago, IL", "Denver, CO (DTC area, mobile)", "Remote", "", "Lyon, France")],
+                         ["IL", "CO", "Remote", "", "France"])
+        self.assertEqual([size_band(x) for x in ("220 people", "1,200 employees", "55", "50-200 staff", "2 locations", "", "1.5k people")],
+                         ["200\u2013999", "1,000+", "50\u2013199", "50\u2013199", "", "", "1,000+"])
+
     def test_map_blocks_fit_slack_limits(self):
         self.define()
         self.market({"action": "add", "companies": [
@@ -636,10 +755,17 @@ class DashboardApiTests(unittest.TestCase):
         target = self.desk.markets.target("Brightside Freight")
         tracked = self.api.target(target["id"], "track", None)
         self.assertTrue(tracked["ok"])
-        self.assertIn("most likely buyer", self.api.deal(tracked["deal"])["pending_task"])
+        self.assertIn("likely buyer", self.api.deal(tracked["deal"])["pending_task"])
         self.assertFalse(self.api.target(target["id"], "track", None)["ok"])
         other = self.desk.markets.target("Quill Cargo")
         self.assertEqual(self.api.target(other["id"], "dismiss", {"reason": "Builds in-house"})["dismissed"], ["Quill Cargo"])
+        market = self.api.state()["markets"][0]
+        self.assertEqual((market["rates"][0]["rate"], market["holds"][0]["name"], market["first_calls"][0]["company"]),
+                         (100, "Spreadsheets", "Brightside Freight"))
+        page = self.api.market_page(market["id"], 1)
+        self.assertEqual(page["filename"], "regional-freight-brokers-demo-share.html")
+        self.assertIn("Meridian Freight", page["html"])
+        self.assertNotIn("Renata Okafor", page["html"])
         counts = self.api.state()["markets"][0]["counts"]
         self.assertEqual((counts["mapped"], counts["tracked"], counts["dismissed"]), (6, 1, 1))
 
@@ -778,7 +904,8 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("in the pipeline", json.dumps(self.app.client.updates[-1]["blocks"]))
         content, target = self.injected[-1]
         self.assertEqual(target, "ses_map")
-        self.assertIn("most likely buyer", content)
+        self.assertIn("Renata Okafor as the likely buyer", content)
+        self.assertEqual((deal["name"], deal["fields"].get("title")), ("Renata Okafor", "Director of Carrier Compliance"))
         self.assertIn(deal["id"], content)
         await self.slack.on_action(self.ack, body, {"action_id": "stoa_track", "value": button["value"]})
         self.assertIn("already in the pipeline", self.app.client.posts[-1]["text"])
@@ -790,7 +917,7 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         await self.slack.on_action(self.ack, self.body(), {"action_id": "stoa_track", "value": target["id"]})
         deal = self.desk.store.find("Brightside Freight")
         self.assertIn("Reply here", self.app.client.posts[-1]["text"])
-        self.assertIn("most likely buyer", self.desk.deal({"action": "get", "deal": deal["id"]})["pending_task"])
+        self.assertIn("likely buyer", self.desk.deal({"action": "get", "deal": deal["id"]})["pending_task"])
 
     async def test_bad_clicks_never_raise(self):
         await self.slack.on_action(self.ack, {}, {"action_id": "stoa_advance", "value": ""})

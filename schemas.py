@@ -132,46 +132,65 @@ GTM_NOTES = {
 GTM_MARKET = {
     "name": "gtm_market",
     "description": (
-        "Map a market and turn it into leads. A market map is a named list of companies sorted into segments, each "
-        "with a fit score and the evidence for it. Actions: define (name the market, a brief saying who the team sells "
-        "to, and its segments), add (record companies you researched: company, website, segment, fit 1-5, size, "
-        "location, why it fits, a buying signal, source URL), show (the map), list, search (find candidate companies "
-        "through Exa, if connected; otherwise research with your own web tools), people (likely buyers at one company "
-        "through People Data Labs; each person returned costs a credit), track (turn companies into pipeline records), "
-        "dismiss, and post (put the map in Slack with an Add to pipeline button on each company). Use it when the user "
-        "asks who to sell to, wants leads in an industry, or wants to see a market."
+        "Map a market and turn it into leads. A market map is a named set of companies sorted into segments. Each "
+        "company is checked against the market's requirements with the evidence, and carries a fit score, a buying "
+        "signal, what it uses today, and its likely buyers. Actions: define (name, brief, segments, requirements), add "
+        "(record or update companies you researched), show (the map read back: how rare each requirement is, who "
+        "holds the market, where segments meet, first calls), reading (save your interpretation and the first calls), "
+        "list, search (candidate companies through Exa, if connected; otherwise use your own web tools), people (likely "
+        "buyers at one company through People Data Labs; each person returned costs a credit), track (turn companies "
+        "into pipeline records), dismiss, post (put the map in Slack with an Add to pipeline button on each company), "
+        "and export (write the map as one self-contained web page). Use it when the user asks who to sell to, wants "
+        "leads in an industry, or wants to see or share a market."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["define", "list", "add", "show", "search", "people", "track", "dismiss", "post"]},
+            "action": {"type": "string", "enum": ["define", "list", "add", "show", "reading", "search", "people", "track",
+                                                  "dismiss", "post", "export"]},
             "market": {"type": "string", "description": "The market's name or id. May be omitted when there is only one."},
             "name": {"type": "string", "description": "define: the market's name, e.g. 'Commercial solar installers, US Southwest'."},
             "brief": {"type": "string", "description": "define: two or three sentences on who the team sells to and what makes a company a fit."},
             "segments": {"type": "array", "description": "define: 3 to 6 segments, each {name, description}.",
                          "items": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}}}},
-            "companies": {"type": "array", "description": "add: the companies to record.",
+            "requirements": {"type": "array", "items": {"type": "string"},
+                             "description": "define: 3 to 6 things a fit company shows, each checkable from public information, "
+                                            "e.g. '50 to 500 people', 'Runs its own warehouse'."},
+            "companies": {"type": "array", "description": "add: the companies to record. Adding one already on the map updates it.",
                           "items": {"type": "object", "properties": {
                               "company": {"type": "string"}, "website": {"type": "string"}, "segment": {"type": "string"},
-                              "fit": {"type": "integer", "description": "1 (weak) to 5 (ideal) against the brief."},
-                              "size": {"type": "string", "description": "Headcount or revenue band, as found."},
-                              "location": {"type": "string"},
+                              "fit": {"type": "integer", "description": "1 (weak) to 5 (ideal) against the brief. Left out, it is read off the requirements."},
+                              "size": {"type": "string", "description": "Headcount as found, e.g. '220 people'."},
+                              "location": {"type": "string", "description": "'City, State' or 'City, Country'."},
                               "why": {"type": "string", "description": "One sentence of evidence for the fit."},
                               "signal": {"type": "string", "description": "A reason to reach out now: funding, hiring, a launch."},
-                              "source": {"type": "string", "description": "URL the evidence came from."}},
+                              "source": {"type": "string", "description": "URL the evidence came from."},
+                              "uses": {"type": "string", "description": "What it uses today for this job: a vendor's name, 'Spreadsheets', 'In-house tool'."},
+                              "also": {"type": "string", "description": "A second segment it could just as well sit in, if any."},
+                              "requirements": {"type": "object", "description": "Each requirement you checked, keyed by its text: the "
+                                               "evidence as a string if the company shows it, an empty string if it does not."},
+                              "people": {"type": "array", "description": "Likely buyers you found.",
+                                         "items": {"type": "object", "properties": {
+                                             "name": {"type": "string"}, "title": {"type": "string"}, "linkedin": {"type": "string"},
+                                             "email": {"type": "string"}, "why": {"type": "string"}}}}},
                               "required": ["company"]}},
+            "reading": {"type": "string", "description": "reading: one or two short paragraphs on what the map shows. Only what the map supports."},
+            "implications": {"type": "array", "items": {"type": "string"}, "description": "reading: up to four things to do about it."},
+            "first_calls": {"type": "array", "description": "reading: up to seven companies to approach first, each {target, why}.",
+                            "items": {"type": "object", "properties": {"target": {"type": "string"}, "why": {"type": "string"}}}},
             "segment": {"type": "string", "description": "show: only this segment."},
             "status": {"type": "string", "enum": ["new", "tracked", "dismissed"], "description": "show: filter by status."},
             "query": {"type": "string", "description": "search: a plain description of the kind of company to find."},
             "target": {"type": "string", "description": "people: the company (map id or name)."},
             "titles": {"type": "array", "items": {"type": "string"}, "description": "people: title fragments to match, e.g. ['vp operations', 'head of logistics']."},
             "targets": {"type": "array", "items": {"type": "string"}, "description": "track/dismiss: map ids or company names."},
-            "contact": {"type": "string", "description": "track (one target): the person's name, if known."},
+            "contact": {"type": "string", "description": "track (one target): the person's name, if not already on the map."},
             "title": {"type": "string", "description": "track: the contact's title."},
             "email": {"type": "string"},
             "linkedin": {"type": "string"},
             "reason": {"type": "string", "description": "dismiss: why it is not a fit."},
             "channel": {"type": "string", "description": "post: Slack channel id. Default: the current conversation."},
+            "share": {"type": "boolean", "description": "export: leave out buyers' names and pipeline status, for sending outside the team."},
             "limit": {"type": "integer", "description": "search: results (max 15). people: people (max 5, one credit each)."},
         },
         "required": ["action"],

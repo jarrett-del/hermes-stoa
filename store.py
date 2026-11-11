@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS markets (
   name TEXT NOT NULL,
   brief TEXT NOT NULL DEFAULT '',
   segments TEXT NOT NULL DEFAULT '[]',
+  detail TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS targets (
   source TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'new',
   deal_id TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -93,6 +95,13 @@ CREATE TABLE IF NOT EXISTS meta (
   v TEXT NOT NULL
 );
 """
+
+# Columns added after the first release. A database made by an older version gains them when it is opened.
+ADDED_COLUMNS = {
+    "markets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
+    "targets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
+    "cards": {"session_key": "TEXT NOT NULL DEFAULT ''"},
+}
 
 EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source")
 CSV_COLUMNS = ("id", "name", "company", "grp", "email", "linkedin", "stage", "status", "value", "owner",
@@ -145,6 +154,11 @@ class Store:
             self._memory.row_factory = sqlite3.Row
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            for table, columns in ADDED_COLUMNS.items():
+                have = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+                for column, declaration in columns.items():
+                    if column not in have:
+                        conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, declaration))
 
     # -- connection -----------------------------------------------------------------------------
     class _Session:

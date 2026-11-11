@@ -47,26 +47,60 @@ MARKET = {
     "segments": [{"name": "Asset-light brokers", "description": "Pure brokerage, no trucks of their own"},
                  {"name": "Hybrid carriers", "description": "Own fleet plus a brokerage arm"},
                  {"name": "Digital-first", "description": "Venture-backed, app-led brokerages"}],
+    "requirements": ["50 to 500 people", "Scorecards kept in spreadsheets", "Own compliance team", "Carrier base growing"],
 }
 COMPANIES = [
     {"company": "Meridian Freight", "website": "meridianfreight.example", "segment": "Asset-light brokers", "fit": 5,
      "size": "220 people", "location": "Chicago, IL", "why": "Posted two carrier-compliance analyst roles this month.",
-     "signal": "Hiring for the problem we solve"},
+     "signal": "Hiring for the problem we solve", "uses": "Spreadsheets",
+     "requirements": {"50 to 500 people": "220 on its careers page", "Scorecards kept in spreadsheets": "Job ad asks for advanced Excel for carrier scoring",
+                      "Own compliance team": "Two compliance analyst roles open", "Carrier base growing": True},
+     "people": [{"name": "Renata Okafor", "title": "Director of Carrier Compliance", "why": "Owns the scorecards the job ads describe"}]},
     {"company": "Tidewater Logistics", "website": "tidewater.example", "segment": "Asset-light brokers", "fit": 4,
-     "size": "140 people", "location": "Columbus, OH", "why": "COO spoke about carrier quality at a regional conference."},
+     "size": "140 people", "location": "Columbus, OH", "why": "COO spoke about carrier quality at a regional conference.",
+     "uses": "Spreadsheets",
+     "requirements": {"50 to 500 people": "140 people", "Scorecards kept in spreadsheets": "COO: 'we still live in spreadsheets'",
+                      "Own compliance team": "", "Carrier base growing": True},
+     "people": [{"name": "Miles Brandt", "title": "Chief Operating Officer"}]},
     {"company": "Halcyon Transport", "website": "halcyontransport.example", "segment": "Asset-light brokers", "fit": 3,
-     "size": "60 people", "location": "Des Moines, IA", "why": "Small ops team; likely still on spreadsheets."},
+     "size": "60 people", "location": "Des Moines, IA", "why": "Small ops team; likely still on spreadsheets.", "uses": "Spreadsheets",
+     "requirements": {"50 to 500 people": "60 people", "Scorecards kept in spreadsheets": "", "Own compliance team": "",
+                      "Carrier base growing": ""}},
     {"company": "Northwind Carriers", "website": "northwindcarriers.example", "segment": "Hybrid carriers", "fit": 4,
      "size": "480 people", "location": "Indianapolis, IN", "why": "Opened a brokerage arm last year and is scaling it.",
-     "signal": "New business line"},
+     "signal": "New business line", "uses": "CarrierWatch", "also": "Asset-light brokers",
+     "requirements": {"50 to 500 people": "480 people", "Scorecards kept in spreadsheets": "", "Own compliance team": "Compliance lead named on site",
+                      "Carrier base growing": "Brokerage arm added 300 carriers in a year"},
+     "people": [{"name": "Dalia Reyes-Moore", "title": "VP Brokerage"}]},
     {"company": "Ostrava Lines", "website": "ostravalines.example", "segment": "Hybrid carriers", "fit": 2,
-     "size": "300 people", "location": "Omaha, NE", "why": "Mostly dedicated contract freight; brokerage is a sideline."},
+     "size": "300 people", "location": "Omaha, NE", "why": "Mostly dedicated contract freight; brokerage is a sideline.",
+     "uses": "In-house tool",
+     "requirements": {"50 to 500 people": "300 people", "Scorecards kept in spreadsheets": "", "Own compliance team": "",
+                      "Carrier base growing": ""}},
     {"company": "Brightside Freight", "website": "brightsidefreight.example", "segment": "Digital-first", "fit": 5,
      "size": "90 people", "location": "Minneapolis, MN", "why": "Raised a Series A and named carrier vetting as a priority.",
-     "signal": "Fresh funding"},
+     "signal": "Fresh funding", "uses": "Spreadsheets",
+     "requirements": {"50 to 500 people": "90 people", "Scorecards kept in spreadsheets": "Founder post: 'vetting is a Google Sheet'",
+                      "Own compliance team": "Hiring its first compliance manager", "Carrier base growing": "Doubling carriers this year"},
+     "people": [{"name": "Tobias Lindqvist", "title": "Head of Carrier Operations"}]},
     {"company": "Quill Cargo", "website": "quillcargo.example", "segment": "Digital-first", "fit": 3,
-     "size": "55 people", "location": "Kansas City, MO", "why": "Building in-house tooling; may prefer to build."},
+     "size": "55 people", "location": "Kansas City, MO", "why": "Building in-house tooling; may prefer to build.",
+     "uses": "In-house tool", "also": "Asset-light brokers",
+     "requirements": {"50 to 500 people": "55 people", "Scorecards kept in spreadsheets": "", "Own compliance team": "",
+                      "Carrier base growing": True}},
 ]
+READING = {
+    "reading": "Most of this market still scores carriers by hand: five of seven companies run on spreadsheets or something "
+               "home-built, and only one has bought a tool. The strongest fits are growing brokerages that have just hired, or "
+               "are hiring, their first compliance people.\nHybrid carriers are the harder sell. Their brokerage arms are young, and "
+               "the one that has bought software bought it for the fleet side.",
+    "implications": ["Lead with the two companies that are hiring for compliance now; the pain is already budgeted.",
+                     "Pitch against the spreadsheet, not against a competitor: only one company uses one.",
+                     "A compliance team is the rarest requirement, so sell to operations where there is none."],
+    "first_calls": [{"target": "Brightside Freight", "why": "Fresh funding, and hiring its first compliance manager."},
+                    {"target": "Meridian Freight", "why": "Two compliance roles open this month."},
+                    {"target": "Northwind Carriers", "why": "A year-old brokerage arm adding carriers fast."}],
+}
 
 
 def load_market(desk) -> int:
@@ -74,7 +108,9 @@ def load_market(desk) -> int:
     if markets._market(MARKET["name"]) is not None:
         return 0
     markets.define(dict(MARKET))
-    return len(markets.add({"market": MARKET["name"], "companies": COMPANIES})["added"])
+    added = len(markets.add({"market": MARKET["name"], "companies": COMPANIES})["added"])
+    markets.reading(dict(READING, market=MARKET["name"]))
+    return added
 
 
 def _rows(playbook) -> list:

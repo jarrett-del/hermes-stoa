@@ -61,8 +61,8 @@ def desk():
 
 
 def _mod(name: str):
-    live = desk()
-    return sys.modules[type(live).__module__.rsplit(".", 1)[0] + "." + name]
+    """One of the plugin's own modules, from whichever copy of the plugin the desk in use belongs to."""
+    return importlib.import_module(type(desk()).__module__.rsplit(".", 1)[0] + "." + name)
 
 
 def _card(d, deal: dict, playbook) -> dict:
@@ -86,18 +86,18 @@ def state() -> dict:
     week_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     markets = []
     for market in d.markets.list_markets():
-        full = d.markets._market(market["id"])
-        rows = d.markets.targets(market["id"])
-        market_mod = _mod("market")
+        summary = d.markets.summary(market["id"])
         markets.append({
             "id": market["id"], "name": market["name"], "brief": market["brief"],
-            "segments": [{"name": name, "description": next((s.get("description", "") for s in full["segments"]
-                                                             if s["name"].lower() == name.lower()), ""),
-                          "companies": [dict(market_mod._view(r), segment=name) for r in group]}
-                         for name, group in market_mod.by_segment(full, [r for r in rows if r["status"] != "dismissed"])],
-            "counts": {"mapped": len([r for r in rows if r["status"] != "dismissed"]),
-                       "tracked": len([r for r in rows if r["status"] == "tracked"]),
-                       "dismissed": len([r for r in rows if r["status"] == "dismissed"])}})
+            "requirements": summary["market"]["requirements"], "reading": summary["market"]["reading"],
+            "implications": summary["market"]["implications"], "numbers": summary["numbers"],
+            "segments": [{"name": seg["segment"], "description": seg["description"], "count": seg["count"], "share": seg["share"],
+                          "avg_fit": seg["avg_fit"], "companies": seg["companies"]} for seg in summary["segments"]],
+            "rates": summary["requirements"], "holds": summary["holds"], "holds_of": summary["holds_of"],
+            "regions": summary["regions"], "sizes": summary["sizes"], "bridges": summary["bridges"],
+            "first_calls": summary["first_calls"],
+            "counts": {"mapped": summary["numbers"]["companies"], "tracked": summary["numbers"]["in_pipeline"],
+                       "dismissed": len(d.markets.targets(market["id"], "dismissed"))}})
     activity = [{"id": a["id"], "deal": a["deal_id"], "name": names.get(a["deal_id"], a["deal_id"]), "at": a["at"],
                  "kind": a["kind"], "text": a["text"], "by": a["actor"]} for a in d.store.activities(limit=40)]
     open_deals = [x for x in deals if x["status"] == "open"]
@@ -173,6 +173,17 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
             raise HTTPException(400, result.get("error") or "could not save")
         return {"ok": True}
     raise HTTPException(400, "unknown action")
+
+
+@router.get("/market/{market_id}/page")
+def market_page(market_id: str, share: int = 0) -> dict:
+    """The market map as one self-contained web page, for the tab to hand to the browser as a download."""
+    d = desk()
+    market = d.markets._market(market_id)
+    if market is None:
+        raise HTTPException(404, "no such market map")
+    html = _mod("page").render(d.markets.summary(market["id"]), d.playbook().terms, share=bool(share))
+    return {"filename": "%s%s.html" % (market["id"], "-share" if share else ""), "html": html}
 
 
 @router.post("/target/{target_id}/{verb}")

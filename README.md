@@ -47,7 +47,10 @@ taps a button in Slack you watch the card move.
 - **Pipeline board:** a column per playbook stage. Open a card to see its log, set the next
   step, log a call, advance it, close it with a reason, or snooze it.
 - **Market map:** every segment as a cluster, each company sized by fit and filled in once it
-  is in the pipeline. Open one for the evidence and source, then **Add to pipeline**.
+  is in the pipeline, with the map's reading beneath it: requirement rarity, who holds the
+  market, first calls, where segments meet, and a second Sankey from segment to what each
+  company uses today. Open a company for its requirements checklist, buyers and source, then
+  **Add to pipeline**. **Download page** saves the map as a web page.
 - **Activity:** everything that happened, from Slack clicks, the agent and the web alike.
 - **Paper and ink.** Neutral in light and dark, with one thin line of colour. A switch picks
   the mode, whatever dashboard theme you run.
@@ -107,9 +110,14 @@ Two people clicking the same button at once move the stage once, not twice.
 *"We sell carrier-scorecard software to freight brokers in the Midwest. Who should we go after?"*
 
 Hermes names the market, splits it into segments that would each get a different pitch, and
-researches companies for each one, with its own web search or with [Exa](https://exa.ai) if you
-add a key. Every company goes on the map with a fit score from 1 to 5, one sentence of evidence,
-a buying signal if there is one, and the source link:
+agrees a short list of requirements with you: the things a fit company shows. Then it researches
+companies for each segment, with its own web search or with [Exa](https://exa.ai) if you add a
+key, and checks every one against those requirements. Each company goes on the map with:
+
+- a fit score from 1 to 5, read off the requirements unless Hermes has reason to set it;
+- the evidence for each requirement it shows, and the ones it does not;
+- a buying signal, what it uses today, and the likely buyers;
+- the source link.
 
 ```
 Market map · Regional freight brokers
@@ -126,10 +134,25 @@ Digital-first (2)
         Raised a Series A and named carrier vetting as a priority.
 ```
 
+The map then reads itself back. This is the part a list of names never gives you:
+
+| | |
+|---|---|
+| **How rare each requirement is** | The share of checked companies that show each one. A scarce requirement is either too strict or the first question on every call. |
+| **Who holds this market today** | What the companies use now. If most run on spreadsheets, you are selling against the spreadsheet, not a competitor. |
+| **Where the segments meet** | Companies that could sit in two segments: the second pool when one runs thin. |
+| **Where they are, how big they are** | By region and headcount band. |
+| **First calls** | The few to approach first and why, chosen by Hermes or, failing that, the strongest fits spread across segments. |
+| **Reading the map** | Hermes's short interpretation and what to do about it, saved with the map. |
+
 In Slack each company has an **Add to pipeline** button. A tap creates the record at the first
-stage of your playbook, carries the evidence into its activity log, and asks Hermes to find the
-most likely buyer and draft a first-touch note. The *Market watch* automation re-checks a map
-every week and adds at most five new companies.
+stage of your playbook with the first known buyer as the contact, carries the evidence into its
+activity log, and asks Hermes to confirm the buyer (or find one) and draft a first-touch note.
+The *Market watch* automation re-checks a map every week and adds at most five new companies.
+
+**A page to send.** `gtm_market(action="export")`, or **Download page** in the web tab, writes the
+whole map as one self-contained web page: no scripts, no outside requests, nothing to host. The
+share version leaves out buyers' names and what is in your pipeline.
 
 ### The pipeline
 
@@ -251,14 +274,15 @@ What the plugin does that you would want to know before installing it:
   service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
 - **Files outside the plugin's own data.** It reads Markdown and text files in the folder you
   set as `notes_dir`, and a CSV at a path you (or the agent, on your request) pass to import.
-  Export writes a CSV to the plugin's `exports/` folder unless a path is given.
+  Exports (the pipeline as CSV, a market map as a web page) are written to the plugin's
+  `exports/` folder unless a CSV path is given.
 - **Messages to the agent.** With `allow_gateway_injection` granted, a button click queues one
   instruction for the agent in the card's thread. The agent drafts; it is told not to send.
 - **Stored data.** Names, emails, notes and enrichment results for the people in your pipeline
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.3
+## Limits in 0.4
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - A map is as good as the research behind it. Fit scores are the agent's judgement against your
@@ -273,7 +297,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 64 tests, no network
+python3 -m unittest discover -s tests     # 71 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
@@ -286,7 +310,8 @@ hermes plugins doctor . --ci
 | `playbook.py`, `playbooks/` | Playbook loading, validation, and the built-ins |
 | `cards.py` | Block Kit cards and their text twins |
 | `slackdesk.py` | Posting cards and answering button clicks |
-| `market.py` | Market maps: segments, targets, and the step into the pipeline |
+| `market.py` | Market maps: segments, requirements, what the map adds up to, and the step into the pipeline |
+| `page.py` | A market map as one self-contained web page |
 | `sources.py` | People Data Labs, Exa and meeting-note sources |
 | `dashboard/` | The web tab: `plugin_api.py` (routes), `dist/index.js` and `dist/style.css` (hand-written, no build step) |
 

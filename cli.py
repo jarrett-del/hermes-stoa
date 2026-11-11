@@ -14,6 +14,8 @@ def setup(subparser) -> None:
     subs.add_parser("playbooks", help="List playbooks")
     market = subs.add_parser("map", help="Print a market map (or list the maps)")
     market.add_argument("market", nargs="*", default=[])
+    market.add_argument("--export", action="store_true", help="Write the map as a web page and print its path")
+    market.add_argument("--share", action="store_true", help="With --export: leave out buyers and pipeline status")
     use = subs.add_parser("use", help="Switch the active playbook")
     use.add_argument("name")
     sample = subs.add_parser("demo", help="Load fictional sample records for the active playbook")
@@ -48,7 +50,10 @@ def run(desk, args) -> None:
         print(desk.brief_text())
     elif command == "map":
         name = " ".join(args.market)
-        if not name and len(desk.markets.list_markets()) != 1:
+        if args.export:
+            result = desk.market({"action": "export", "market": name, "share": args.share})
+            print(result.get("path") or result.get("error"))
+        elif not name and len(desk.markets.list_markets()) != 1:
             maps = desk.markets.list_markets()
             print("\n".join("%s — %d companies, %d in the pipeline" % (m["name"], m["companies"], m["in_pipeline"]) for m in maps)
                   or "No market maps yet. Ask Hermes to map a market for you.")
