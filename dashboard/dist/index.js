@@ -113,6 +113,48 @@
         }, "No moves yet.")));
   }
 
+  // -- flow (Sankey) ---------------------------------------------------------------------------
+  function ribbon(x0, y0, x1, y1, h0, h1) {
+    var m = (x0 + x1) / 2;
+    return "M" + x0 + "," + y0 + " C" + m + "," + y0 + " " + m + "," + y1 + " " + x1 + "," + y1 +
+      " L" + x1 + "," + (y1 + h1) + " C" + m + "," + (y1 + h1) + " " + m + "," + (y0 + h0) + " " + x0 + "," + (y0 + h0) + " Z";
+  }
+  function Flow(props) {
+    var f = props.state.flow, cur = props.state.playbook.currency;
+    if (!f || !f.total) return null;
+    var st = f.stages, n = st.length, W = 1000, top = 34, main = 104, rail = 186, H = 214, bar = 5;
+    var u = main / f.total, x = function (i) { return 96 + i * ((W - 96 - 70) / n); };
+    var parts = [];
+    // where records come from
+    var mapH = f.from_map * u, dirH = (f.total - f.from_map) * u;
+    if (f.from_map) parts.push(h("path", { key: "sm", className: "stoa-flow-in", d: ribbon(0, top, x(0), top, mapH, mapH) }));
+    if (f.total - f.from_map) parts.push(h("path", { key: "sd", className: "stoa-flow-in", d: ribbon(0, top + mapH + (f.from_map ? 10 : 0), x(0), top + mapH, dirH, dirH) }));
+    if (f.from_map) parts.push(h("text", { key: "tm", className: "stoa-flow-src", x: 0, y: top - 8 }, "MAP " + f.from_map));
+    if (f.total - f.from_map) parts.push(h("text", { key: "td", className: "stoa-flow-src", x: 0, y: top + mapH + dirH + (f.from_map ? 10 : 0) + 14 }, "DIRECT " + (f.total - f.from_map)));
+    st.forEach(function (s, i) {
+      var hgt = s.reached * u, onward = (i + 1 < n ? st[i + 1].reached : f.won) * u, stay = s.here * u, drop = s.lost * u;
+      var nx = i + 1 < n ? x(i + 1) : W - 70 + 0;
+      if (onward > 0) parts.push(h("path", { key: "o" + i, className: i + 1 < n ? "stoa-flow-on" : "stoa-flow-won", d: ribbon(x(i) + bar, top, nx, top, onward, onward) }));
+      if (stay > 0) parts.push(h("rect", { key: "h" + i, className: "stoa-flow-here", x: x(i) + bar, y: top + onward, width: 26, height: stay }));
+      if (drop > 0) parts.push(h("path", { key: "l" + i, className: "stoa-flow-lost", d: ribbon(x(i) + bar, top + onward + stay, x(i) + 64, rail - drop, drop, drop) }));
+      parts.push(h("rect", { key: "n" + i, className: "stoa-flow-node", x: x(i), y: top, width: bar, height: Math.max(hgt, 1) }));
+      parts.push(h("text", { key: "t" + i, className: "stoa-flow-label", x: x(i), y: 12 }, s.label.toUpperCase()));
+      parts.push(h("text", { key: "c" + i, className: "stoa-flow-count", x: x(i), y: 25 }, s.reached + (s.here ? "  ·  " + s.here + " here" : "") + (s.value ? "  ·  " + money(s.value, cur) : "")));
+    });
+    var wonH = Math.max(f.won * u, 1);
+    parts.push(h("rect", { key: "w", className: "stoa-flow-end", x: W - 70, y: top, width: bar, height: wonH }));
+    parts.push(h("text", { key: "wl", className: "stoa-flow-label", x: W - 70, y: 12 }, f.won_label.toUpperCase()));
+    parts.push(h("text", { key: "wc", className: "stoa-flow-count", x: W - 70, y: 25 }, f.won + (f.won_value ? "  ·  " + money(f.won_value, cur) : "")));
+    parts.push(h("line", { key: "r", className: "stoa-flow-rail", x1: x(0), x2: W - 70 + bar, y1: rail, y2: rail }));
+    parts.push(h("text", { key: "rl", className: "stoa-flow-src", x: x(0), y: rail + 16 }, f.lost_label.toUpperCase() + " " + f.lost));
+    return h("div", { className: "stoa-flowwrap" },
+      h("svg", { className: "stoa-flow", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "How records flow through the stages" },
+        h("defs", null, h("linearGradient", { id: "stoa-spec", x1: "0", y1: "0", x2: "1", y2: "0" },
+          h("stop", { offset: "0", stopColor: "#2f56e8" }), h("stop", { offset: "0.38", stopColor: "#6a3fd6" }),
+          h("stop", { offset: "0.72", stopColor: "#d6413f" }), h("stop", { offset: "1", stopColor: "#e6b93a" }))),
+        parts));
+  }
+
   // -- pipeline board ---------------------------------------------------------------------------
   function DealCard(props) {
     var d = props.deal, cur = props.currency;
@@ -140,6 +182,7 @@
         h("p", null, "Tell Hermes about a " + s.playbook.terms.deal + ", or try ", h("code", null, "hermes stoa demo"), "."));
     }
     return h("div", null,
+      h(Flow, { state: s }),
       h("div", { className: "stoa-board" }, s.playbook.stages.map(function (stage) {
         var here = open.filter(function (d) { return d.stage === stage.id; });
         var value = here.reduce(function (a, d) { return a + (d.value || 0); }, 0);

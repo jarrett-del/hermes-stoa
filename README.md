@@ -42,6 +42,8 @@ taps a button in Slack you watch the card move.
 
 - **The number that matters, live:** what is in play, beside mapped → leads → in play → won,
   with what is due and what has gone quiet underneath.
+- **Flow:** a Sankey diagram of how far records get: what moves on, what sits in each stage,
+  what is lost and where, and what is won.
 - **Pipeline board:** a column per playbook stage. Open a card to see its log, set the next
   step, log a call, advance it, close it with a reason, or snooze it.
 - **Market map:** every segment as a cluster, each company sized by fit and filled in once it
@@ -271,7 +273,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 63 tests, no network
+python3 -m unittest discover -s tests     # 64 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

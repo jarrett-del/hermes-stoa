@@ -115,6 +115,21 @@
 .stoa-btn[data-kind="ghost"]:hover { color: var(--st-ink); border-color: transparent; background: var(--st-wash); }
 .stoa-btn[disabled] { opacity: 0.4; pointer-events: none; }
 
+/* flow: a Sankey of how far records get */
+.stoa-flowwrap { margin: 2px 0 26px; padding: 18px 20px 8px; background: var(--st-card); border: 1px solid var(--st-line); border-radius: 10px; }
+.stoa-flow { width: 100%; height: auto; display: block; overflow: visible; }
+.stoa-flow path, .stoa-flow rect { transition: d 0.6s ease, height 0.6s ease, y 0.6s ease; }
+.stoa-flow-on { fill: var(--st-ink); opacity: 0.16; }
+.stoa-flow-in { fill: var(--st-ink); opacity: 0.07; }
+.stoa-flow-won { fill: url(#stoa-spec); opacity: 0.85; }
+.stoa-flow-here { fill: var(--st-ink); opacity: 0.34; }
+.stoa-flow-lost { fill: var(--st-mute); opacity: 0.22; }
+.stoa-flow-node, .stoa-flow-end { fill: var(--st-ink); }
+.stoa-flow-rail { stroke: var(--st-line); stroke-width: 1; stroke-dasharray: 2 5; }
+.stoa-flow text { font-family: var(--st-mono); }
+.stoa-flow-label { font-size: 9.5px; letter-spacing: 0.12em; fill: var(--st-ink); }
+.stoa-flow-count, .stoa-flow-src { font-size: 9px; letter-spacing: 0.08em; fill: var(--st-mute); }
+
 /* board: every stage is a column, with a capital */
 .stoa-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(224px, 1fr); gap: 14px; overflow-x: auto; padding: 2px 0 14px; }
 .stoa-col { display: flex; flex-direction: column; gap: 8px; min-height: 280px; }

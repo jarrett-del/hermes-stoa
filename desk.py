@@ -218,6 +218,42 @@ class Desk:
             "notes_waiting": len(notes.get("notes") or []),
         }
 
+    def flow(self) -> dict:
+        """How records have moved through the playbook, for a Sankey diagram.
+
+        A record is counted as having reached every stage up to the furthest one it got to: its
+        current stage if open, every stage if won, the stage it was closed from if lost.
+        """
+        playbook = self.playbook()
+        stages = playbook.stages
+        count = len(stages)
+        reached, here, lost = [0] * count, [0] * count, [0] * count
+        value = [0.0] * count
+        won = from_map = 0
+        won_value = 0.0
+        for deal in self.store.list(status="all"):
+            if deal["status"] == "open":
+                far = playbook.position(deal["stage"])
+                if far < 0:
+                    continue
+                here[far] += 1
+                value[far] += deal["value"]
+            elif deal["status"] == "won":
+                far = count - 1
+                won += 1
+                won_value += deal["value"]
+            else:
+                far = max(0, playbook.position(str(deal["fields"].get("_prev_stage") or "")))
+                lost[far] += 1
+            if deal["source"].startswith("market map"):
+                from_map += 1
+            for index in range(far + 1):
+                reached[index] += 1
+        return {"stages": [{"id": s["id"], "label": s["label"], "reached": reached[i], "here": here[i], "lost": lost[i],
+                            "value": value[i]} for i, s in enumerate(stages)],
+                "won": won, "won_value": won_value, "won_label": playbook.won["label"], "lost": sum(lost),
+                "lost_label": playbook.lost["label"], "from_map": from_map, "total": reached[0] if reached else 0}
+
     # -- gtm_deal -------------------------------------------------------------------------------
     def deal(self, args: dict) -> dict:
         action = str(args.get("action") or "get").lower()

@@ -111,6 +111,7 @@ def state() -> dict:
         "deals": [_card(d, deal, playbook) for deal in deals],
         "markets": markets,
         "activity": activity,
+        "flow": d.flow(),
         "totals": {"open": len(open_deals), "open_value": sum(x["value"] for x in open_deals),
                    "won": len([x for x in deals if x["status"] == "won"]),
                    "won_value": sum(x["value"] for x in deals if x["status"] == "won"),

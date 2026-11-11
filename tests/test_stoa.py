@@ -239,6 +239,20 @@ class DeskTests(unittest.TestCase):
         result = self.desk.click("advance", deal["id"], "offer", "jo")
         self.assertEqual((result["deal"]["stage"], result["deal"]["status"]), ("placed", "won"))
 
+    def test_flow_counts_how_far_each_record_got(self):
+        demo.load(self.desk)
+        self.desk.deal({"action": "close", "deal": "Wei-Lin Chao", "outcome": "won"})
+        self.desk.deal({"action": "close", "deal": "Ingrid Solberg", "outcome": "lost", "reason": "Client passed"})
+        self.desk.market({"action": "track", "targets": ["Brightside Freight"]})
+        flow = self.desk.flow()
+        self.assertEqual([s["reached"] for s in flow["stages"]], [8, 6, 4, 3, 2, 1])
+        self.assertEqual([s["here"] for s in flow["stages"]], [2, 2, 1, 0, 1, 0])
+        self.assertEqual([s["lost"] for s in flow["stages"]], [0, 0, 0, 1, 0, 0])
+        self.assertEqual((flow["won"], flow["lost"], flow["from_map"], flow["total"]), (1, 1, 1, 8))
+        for i, stage in enumerate(flow["stages"]):  # what arrives either stays, is lost, or moves on
+            onward = flow["stages"][i + 1]["reached"] if i + 1 < len(flow["stages"]) else flow["won"]
+            self.assertEqual(stage["reached"], stage["here"] + stage["lost"] + onward)
+
     def test_switching_playbooks_keeps_records(self):
         self.add()
         result = self.desk.playbook_tool({"action": "use", "name": "b2b-sales"})
@@ -587,6 +601,7 @@ class DashboardApiTests(unittest.TestCase):
         dana = [d for d in state["deals"] if d["name"] == "Dana Whitfield"][0]
         self.assertEqual((dana["position"], dana["advance"], dana["pending"]), (2, "Submit to client", False))
         self.assertTrue(state["activity"])
+        self.assertEqual(state["flow"]["total"], 7)
 
     def test_advance_parks_the_draft_and_is_idempotent(self):
         dana = self.desk.store.find("Dana Whitfield")
