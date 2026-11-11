@@ -23,6 +23,7 @@ ACTIONS = re.compile(r"^%s(advance|draft|enrich|lost|more|reopen|track)$" % card
 MAP = "map:"  # key under which a posted market map is remembered
 POST_TIMEOUT = 20
 HANDOFF_GRACE = 45  # seconds an accepted hand-off gets to open the record before the thread is told how to ask
+HANDOFF_SETTLE = 8  # seconds between the agent opening the record and its draft landing in the thread
 
 
 class SlackDesk:
@@ -32,6 +33,7 @@ class SlackDesk:
         self.app: Any = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.grace = HANDOFF_GRACE
+        self.settle = HANDOFF_SETTLE
         self._watching: set = set()
 
     # -- wiring ---------------------------------------------------------------------------------
@@ -59,7 +61,9 @@ class SlackDesk:
         except RuntimeError:
             running = None
         if running is self.loop:  # already on the loop: cannot block on it
-            self.loop.create_task(coro)
+            task = self.loop.create_task(coro)
+            self._watching.add(task)        # keep a reference, or the loop may drop the task half way
+            task.add_done_callback(self._watching.discard)
             return None
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(POST_TIMEOUT)
 
@@ -172,12 +176,14 @@ class SlackDesk:
             await self._say(channel, thread, result.get("notice") or "That record is no longer on the desk.")
             return
         await asyncio.to_thread(self.desk.store.remember_card, deal_id, channel, ts)
-        await self._update(channel, ts, deal_id)
+        followup = result.get("followup") or ""
+        state = await self._begin(deal_id, followup, channel, ts, thread, user.get("id", ""), actor, team) if followup else ""
+        await self._update(channel, ts, deal_id)        # one redraw: the new stage, and where the draft stands
         await self._refresh(deal_id, skip=(channel, ts))
 
-        if result.get("followup"):
+        if followup:
             hint = "Saved %s. Reply here (\"draft it\" is enough) and I'll write it up." % result["deal"]["name"]
-            await self._hand_over(deal_id, result["followup"], hint, channel, ts, thread, user.get("id", ""), actor, team)
+            await self._follow(state, deal_id, followup, hint, channel, thread)
         elif result.get("notice"):
             await self._say(channel, thread, result["notice"])
 
@@ -192,34 +198,58 @@ class SlackDesk:
         if result.get("followup") and result.get("deal"):
             hint = ("Added %s to the pipeline. Reply here and I'll find the right contact and draft the first note."
                     % result["deal"]["company"])
-            await self._hand_over(result["deal"]["id"], result["followup"], hint, channel, ts, thread, user_id, actor, team)
+            state = await self._begin(result["deal"]["id"], result["followup"], channel, ts, thread, user_id, actor, team)
+            await self._follow(state, result["deal"]["id"], result["followup"], hint, channel, thread)
         elif result.get("notice"):
             await self._say(channel, thread, result["notice"])
 
-    async def _hand_over(self, deal_id: str, followup: str, hint: str, channel: str, ts: str, thread: str,
-                         user_id: str, actor: str, team: str) -> None:
-        """Give the writing task to the agent without ever losing it.
+    async def _begin(self, deal_id: str, followup: str, channel: str, ts: str, thread: str,
+                     user_id: str, actor: str, team: str) -> str:
+        """Give the writing task to the agent without ever losing it. Returns where it stands:
+        ``drafting`` (handed over), ``waiting`` (Hermes would not start a turn), or ``same`` (this
+        very task is already being drafted: a second press of the button, which changes nothing).
 
         The task is parked on the record first. The agent's first step in any turn about the record
-        is ``gtm_deal(get)``, which hands the task over and clears it. Hermes says yes to a hand-off
-        before it has routed it, and a turn that never starts makes no sound; so the thread is told
-        how to ask when Hermes refuses outright, and also when the task is still parked after a
-        grace period.
+        is ``gtm_deal(get)``, which hands the task over and clears it.
         """
+        if await asyncio.to_thread(self.desk.handoff_same, deal_id, followup):
+            return "same"
         await asyncio.to_thread(self.desk.park_followup, deal_id, followup)
-        if not await self._hand_off(followup, channel, ts, thread, user_id, actor, team):
+        await asyncio.to_thread(self.desk.set_handoff, deal_id, "drafting", followup)
+        if await self._hand_off(followup, channel, ts, thread, user_id, actor, team):
+            return "drafting"
+        await asyncio.to_thread(self.desk.set_handoff, deal_id, "waiting", followup)
+        return "waiting"
+
+    async def _follow(self, state: str, deal_id: str, followup: str, hint: str, channel: str, thread: str) -> None:
+        """After the card is redrawn: say how to ask when Hermes refused, and keep an eye on a
+        hand-off it accepted. Hermes says yes before it has routed the turn, and a turn that never
+        starts makes no sound."""
+        if state == "waiting":
             await self._say(channel, thread, hint)
-            return
-        watch = asyncio.get_running_loop().create_task(self._check_started(deal_id, followup, channel, thread, hint))
-        self._watching.add(watch)
-        watch.add_done_callback(self._watching.discard)
+        elif state == "drafting":
+            watch = asyncio.get_running_loop().create_task(self._check_started(deal_id, followup, channel, thread, hint))
+            self._watching.add(watch)
+            watch.add_done_callback(self._watching.discard)
 
     async def _check_started(self, deal_id: str, followup: str, channel: str, thread: str, hint: str) -> None:
+        """Watch an accepted hand-off. Once the agent has opened the record, give the draft time to
+        land and take "Drafting" off the card. If it never does, the card and the thread say so."""
         try:
-            await asyncio.sleep(self.grace)
-            if await asyncio.to_thread(self.desk.store.meta_get, "pending:" + deal_id) == followup:
-                log.info("stoa: no agent turn picked up the task for %s; telling the thread how to ask", deal_id)
-                await self._say(channel, thread, hint)
+            step = min(2.0, max(self.grace / 10.0, 0.005))
+            waited = 0.0
+            while waited < self.grace:
+                await asyncio.sleep(step)
+                waited += step
+                if await asyncio.to_thread(self.desk.store.meta_get, "pending:" + deal_id) != followup:
+                    await asyncio.sleep(self.settle)
+                    await asyncio.to_thread(self.desk.clear_handoff, deal_id, followup)
+                    await self._refresh(deal_id)
+                    return
+            log.info("stoa: no agent turn picked up the task for %s; telling the thread how to ask", deal_id)
+            await asyncio.to_thread(self.desk.set_handoff, deal_id, "waiting", followup)
+            await self._refresh(deal_id)
+            await self._say(channel, thread, hint)
         except Exception:
             log.debug("stoa: hand-off check failed", exc_info=True)
 

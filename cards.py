@@ -116,9 +116,18 @@ def _escape(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+DRAFT_LINES = {"drafting": ":writing_hand: Drafting\u2026",
+               "waiting": ":speech_balloon: Draft waiting. Reply \"draft it\" in this thread."}
+
+
 def card_blocks(playbook, deal: dict, activities: Optional[list] = None, last_touch: str = "",
-                can_enrich: bool = False) -> list:
-    """Block Kit for one deal. Every interactive element carries the deal id in its value."""
+                can_enrich: bool = False, draft: str = "") -> list:
+    """Block Kit for one deal. Every interactive element carries the deal id in its value.
+
+    ``draft`` is where a requested piece of writing stands (``drafting``, ``waiting`` or nothing);
+    it shows as one line under the buttons, where the person who clicked is looking.
+    """
+    status = [{"type": "context", "elements": [{"type": "mrkdwn", "text": DRAFT_LINES[draft]}]}] if draft in DRAFT_LINES else []
     deal_id = deal["id"]
     title = "*%s*" % _escape(deal["name"])
     if deal.get("company"):
@@ -149,7 +158,7 @@ def card_blocks(playbook, deal: dict, activities: Optional[list] = None, last_to
     if deal["status"] != "open":
         blocks.append({"type": "actions", "block_id": PREFIX + "actions", "elements": [
             {"type": "button", "action_id": ACTION_REOPEN, "value": deal_id, "text": {"type": "plain_text", "text": "Reopen"}}]})
-        return blocks
+        return blocks + status
 
     elements = []
     nxt = playbook.next_stage(deal["stage"])
@@ -178,7 +187,7 @@ def card_blocks(playbook, deal: dict, activities: Optional[list] = None, last_to
         {"text": {"type": "plain_text", "text": "Snooze 1 week"}, "value": "snooze7|" + deal_id},
         {"text": {"type": "plain_text", "text": "Refresh card"}, "value": "refresh|" + deal_id}]})
     blocks.append({"type": "actions", "block_id": PREFIX + "actions", "elements": elements})
-    return blocks
+    return blocks + status
 
 
 def board_text(playbook, deals: list, title: str = "") -> str:

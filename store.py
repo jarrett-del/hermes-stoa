@@ -417,6 +417,7 @@ class Store:
             cur = conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
             conn.execute("DELETE FROM activities WHERE deal_id = ?", (deal_id,))
             conn.execute("DELETE FROM cards WHERE deal_id = ?", (deal_id,))
+            conn.execute("DELETE FROM meta WHERE k IN (?, ?)", ("pending:" + deal_id, "handoff:" + deal_id))
         return cur.rowcount > 0
 
     def list(self, *, status: Optional[str] = "open", stage: str = "", grp: str = "", owner: str = "",

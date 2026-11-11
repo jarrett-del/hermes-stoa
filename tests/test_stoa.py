@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -1126,11 +1127,18 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
             return self.accept
         self.slack = SlackDesk(self.desk, inject)
         self.slack.grace = 0.05
+        self.slack.settle = 0.02
         self.desk.slack = self.slack
         self.app = FakeApp()
         self.slack.wire(self.app, None)
         self.dana = self.desk.store.find("Dana Whitfield")
         self.acks = 0
+
+    async def asyncTearDown(self):
+        # card redraws and hand-off watchers run on after a click returns: let them finish before the ledger's folder goes
+        others = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        if others:
+            await asyncio.wait(others, timeout=5)
 
     async def ack(self):
         self.acks += 1
@@ -1200,7 +1208,68 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hint["thread_ts"], "1699999999.000001")
         self.assertIn("Saved Dana Whitfield. Reply here", hint["text"])
         self.assertEqual(len(self.app.client.posts), 1)
+        self.assertIn("Drafting", self.card_text(0))                         # what the card said at first
+        self.assertIn("Draft waiting", self.card_text())                     # and what it says once no turn came
         self.assertIn("submission note", self.desk.deal({"action": "get", "deal": self.dana["id"]})["pending_task"])
+
+    def card_text(self, index=-1):
+        return json.dumps(self.app.client.updates[index]["blocks"], ensure_ascii=False)
+
+    async def test_the_card_says_drafting_until_the_draft_has_landed(self):
+        click = {"action_id": "stoa_draft", "value": self.dana["id"]}
+        await self.slack.on_action(self.ack, self.body(), click)
+        self.assertEqual(len(self.app.client.updates), 1)                   # one redraw, already carrying the line
+        self.assertIn("Drafting", self.card_text())
+        self.assertNotIn("Draft waiting", self.card_text())
+        self.assertEqual(self.card_text().count("stoa_draft"), 1)           # the line sits with the buttons, not instead of them
+        self.desk.deal({"action": "get", "deal": self.dana["id"]})          # the agent's turn opens the record
+        await asyncio.sleep(0.2)
+        self.assertNotIn("Drafting", self.card_text())                      # the draft has had time to land
+        self.assertNotIn("Draft waiting", self.card_text())
+        self.assertEqual(self.app.client.posts, [])
+        self.assertEqual(self.desk.handoff(self.dana["id"]), "")
+
+    async def test_a_second_press_of_the_same_button_does_not_start_a_second_draft(self):
+        self.slack.settle = 0.5                                             # the draft takes a moment to land
+        click = {"action_id": "stoa_draft", "value": self.dana["id"]}
+        await self.slack.on_action(self.ack, self.body(), click)
+        await self.slack.on_action(self.ack, self.body(), click)            # impatient: nothing has arrived yet
+        self.desk.deal({"action": "get", "deal": self.dana["id"]})          # the agent picks the task up...
+        await self.slack.on_action(self.ack, self.body(), click)            # ...and is still writing
+        self.assertEqual(len(self.injected), 1)
+        self.assertEqual(self.app.client.posts, [])
+        # a different piece of writing for the same record is not swallowed
+        await self.slack.on_action(self.ack, self.body(), {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})
+        self.assertEqual(len(self.injected), 2)
+        self.assertIn("submission note", self.injected[1][0])
+        self.desk.deal({"action": "get", "deal": self.dana["id"]})
+        await asyncio.sleep(1.0)
+        self.assertEqual(self.desk.handoff(self.dana["id"]), "")
+        await self.slack.on_action(self.ack, self.body(), click)            # once that draft is in, asking again works
+        self.assertEqual(len(self.injected), 3)
+
+    async def test_the_card_says_draft_waiting_until_someone_replies(self):
+        self.accept = False
+        await self.slack.on_action(self.ack, self.body(thread_ts="1699999999.000001"),
+                                   {"action_id": "stoa_draft", "value": self.dana["id"]})
+        self.assertIn("Draft waiting", self.card_text())
+        self.assertIn("Saved Dana Whitfield. Reply here", self.app.client.posts[-1]["text"])
+        before = len(self.app.client.updates)
+        got = self.desk.deal({"action": "get", "deal": self.dana["id"]})    # the reply's turn opens the record
+        self.assertIn("pending_task", got)
+        await asyncio.sleep(0.1)
+        self.assertGreater(len(self.app.client.updates), before)            # the card is redrawn without the line
+        self.assertNotIn("Draft waiting", self.card_text())
+        self.assertNotIn("Drafting", self.card_text())
+
+    async def test_a_stale_drafting_line_does_not_outlive_a_restart(self):
+        self.desk.park_followup(self.dana["id"], "write it")
+        self.desk.store.meta_set("handoff:" + self.dana["id"], "drafting|%d|abc" % (time.time() - 600))
+        self.assertEqual(self.desk.handoff(self.dana["id"]), "waiting")     # the watcher died with the old process
+        self.assertFalse(self.desk.handoff_same(self.dana["id"], "write it"))
+        self.desk.store.delete(self.dana["id"])                             # and a deleted record leaves nothing behind
+        self.assertEqual(self.desk.store.meta_prefix("pending:"), {})
+        self.assertEqual(self.desk.store.meta_prefix("handoff:"), {})
 
     async def test_a_card_from_the_command_does_not_claim_a_session(self):
         here = {"platform": "slack", "chat_id": "D1", "thread_id": "1690000000.000100", "session_key": "no-such-session"}

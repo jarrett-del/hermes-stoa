@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import io
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -22,6 +24,7 @@ log = logging.getLogger("hermes.plugins.stoa")
 PDL_KEY = "PDL_API_KEY"
 GRANOLA_KEY = "GRANOLA_API_KEY"
 LOG_KINDS = ("note", "call", "email", "meeting", "task")
+HANDOFF_FRESH = 90  # seconds a "Drafting..." line is believed without news (a restart loses the watcher that clears it)
 
 
 def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
@@ -164,7 +167,8 @@ class Desk:
 
     def blocks(self, deal: dict) -> list:
         return cards.card_blocks(self.playbook(), deal, self.store.activities(deal["id"], limit=2),
-                                 self.store.last_touch(deal["id"]), can_enrich=self.can_enrich())
+                                 self.store.last_touch(deal["id"]), can_enrich=self.can_enrich(),
+                                 draft=self.handoff(deal["id"]))
 
     def _changed(self, deal: dict) -> None:
         """A record changed: bring any card already posted for it up to date."""
@@ -303,8 +307,11 @@ class Desk:
             out = {"ok": True, "deal": self.view(deal, playbook, activities=_int(args.get("activities") or 12, 12, 0, 100)),
                    "card": self.text_card(deal)}
             pending = self.store.meta_pop("pending:" + deal["id"])
-            if pending:  # a button was clicked but the agent's turn could not be started at the time
+            if pending:  # a button asked for some writing; this read is the agent picking it up
                 out["pending_task"] = pending
+                if self.handoff(deal["id"]) != "drafting":      # it was waiting for a reply: the card can stop saying so
+                    self.clear_handoff(deal["id"])
+                    self._changed(deal)
             return out
         if action == "update":
             values = {k: args.get(a) for k, a in (("name", "name"), ("company", "company"), ("grp", "group"), ("email", "email"),
@@ -463,6 +470,40 @@ class Desk:
     def park_followup(self, deal_id: str, followup: str) -> None:
         """Keep a writing task on the record; the next gtm_deal(get) hands it over and clears it."""
         self.store.meta_set("pending:" + deal_id, followup)
+
+    # Where a requested draft stands, for the line on the card: "drafting" once the agent has been
+    # handed the task, "waiting" when it is parked until someone replies, nothing otherwise.
+    @staticmethod
+    def _task_token(followup: str) -> str:
+        return hashlib.sha1(followup.encode("utf-8")).hexdigest()[:12]
+
+    def _handoff_raw(self, deal_id: str) -> tuple:
+        state, _, rest = self.store.meta_get("handoff:" + deal_id).partition("|")
+        stamp, _, token = rest.partition("|")
+        try:
+            age = time.time() - float(stamp)
+        except ValueError:
+            age = float("inf")
+        return state, age, token
+
+    def set_handoff(self, deal_id: str, state: str, followup: str) -> None:
+        self.store.meta_set("handoff:" + deal_id, "%s|%d|%s" % (state, time.time(), self._task_token(followup)))
+
+    def clear_handoff(self, deal_id: str, followup: str = "") -> None:
+        """Forget the state. With ``followup``, only if it is still that task's (a later click may own it now)."""
+        if not followup or self._handoff_raw(deal_id)[2] == self._task_token(followup):
+            self.store.meta_pop("handoff:" + deal_id)
+
+    def handoff(self, deal_id: str) -> str:
+        state, age, _token = self._handoff_raw(deal_id)
+        if state == "drafting" and age <= HANDOFF_FRESH:
+            return "drafting"
+        return "waiting" if self.store.meta_get("pending:" + deal_id) else ""
+
+    def handoff_same(self, deal_id: str, followup: str) -> bool:
+        """True while this very task is already being drafted: a second press of the same button."""
+        state, age, token = self._handoff_raw(deal_id)
+        return state == "drafting" and age <= HANDOFF_FRESH and token == self._task_token(followup)
 
     def _followup(self, playbook: Playbook, deal: dict, actor: str, task: str, happened: str, reason: str = "") -> str:
         words = _Blank(name=deal["name"], company=deal["company"] or "their company", group=deal["grp"] or "this",

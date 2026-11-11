@@ -267,9 +267,11 @@ asked the agent for hands its drafts straight back to that conversation. A card 
 another way (from `!gtm`, or a scheduled job) waits for your reply in its thread; the task is
 picked up the moment you answer.
 
-A writing task is never lost. It is saved on the record before the hand-off, and cleared when
-the agent opens the record to do it. If no draft turn has started within 45 seconds, the thread
-is told how to ask, so a click never ends in silence.
+A click is answered at once and a writing task is never lost. The card says **Drafting…** under
+its buttons the moment you press one, and pressing the same button again while that draft is
+being written changes nothing. The task is saved on the record before the hand-off and cleared
+when the agent opens the record to do it. If no draft turn has started within 45 seconds, the
+card changes to **Draft waiting** and the thread is told how to ask.
 
 ## Disclosure
 
@@ -321,7 +323,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 94 tests, no network
+python3 -m unittest discover -s tests     # 98 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
