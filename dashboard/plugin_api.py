@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, HTTPException
 router = APIRouter()
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 PACKAGE = "stoa_dashboard_pkg"
-_own_desk = None
+_own_desks: dict = {}
 
 
 def _package():
@@ -42,22 +42,25 @@ def _settings(key: str, default: Any = None) -> Any:
 
 
 def desk():
-    """Prefer the desk of the plugin instance running in this process: it is the one wired to
-    Slack, so a change made here redraws the cards there. Otherwise build a read/write desk."""
-    global _own_desk
+    """The desk for the profile this request is for.
+
+    Prefer the one the running plugin built for that profile: it is wired to Slack, so a change made
+    here redraws the cards there. Otherwise (the dashboard runs on its own, or in a plugin host) build one.
+    """
+    package = _package()
+    home = package._home()
     init = str(PLUGIN_DIR / "__init__.py")
     for module in list(sys.modules.values()):
         try:
-            if getattr(module, "__file__", None) == init and getattr(module, "LIVE_DESKS", None):
-                return module.LIVE_DESKS[-1]
+            if getattr(module, "__file__", None) == init:
+                for live in reversed(getattr(module, "LIVE_DESKS", None) or []):
+                    if getattr(live, "home", None) == home:
+                        return live
         except Exception:
             continue
-    if _own_desk is None:
-        package = _package()
-        Desk = importlib.import_module(PACKAGE + ".desk").Desk
-        _own_desk = Desk(data_dir=package._data_dir, get_config=_settings, set_config=lambda key, value: None,
-                         get_secret=package._secret, actor=lambda: "dashboard")
-    return _own_desk
+    if str(home) not in _own_desks:
+        _own_desks[str(home)] = package.build_desk(_settings, lambda key, value: None)
+    return _own_desks[str(home)]
 
 
 def _mod(name: str):
@@ -65,13 +68,15 @@ def _mod(name: str):
     return importlib.import_module(type(desk()).__module__.rsplit(".", 1)[0] + "." + name)
 
 
-def _card(d, deal: dict, playbook) -> dict:
-    view = d.view(deal, playbook)
+def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Optional[dict] = None) -> dict:
+    """One record for the page. ``touches`` and ``pending`` are passed when many are built at once,
+    so the whole board costs two queries instead of two per record."""
+    view = d.view(deal, playbook, touches=touches)
     view["position"] = playbook.position(deal["stage"])
     view["stage_at"] = deal["stage_at"]
     view["updated_at"] = deal["updated_at"]
     view["advance"] = playbook.advance_label(deal["stage"]) if deal["status"] == "open" and playbook.next_stage(deal["stage"]) else ""
-    view["pending"] = bool(d.store.meta_get("pending:" + deal["id"]))
+    view["pending"] = bool(pending.get(deal["id"]) if pending is not None else d.store.meta_get("pending:" + deal["id"]))
     return view
 
 
@@ -81,6 +86,7 @@ def state() -> dict:
     playbook = d.playbook()
     deals = d.store.list(status="all")
     names = {deal["id"]: deal["name"] for deal in deals}
+    touches, pending = d.store.touches(), d.store.meta_prefix("pending:")
     cards = _mod("cards")
     import datetime as _dt
     week_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -107,11 +113,10 @@ def state() -> dict:
                      "won": playbook.won, "lost": {"id": playbook.lost["id"], "label": playbook.lost["label"],
                                                   "reasons": playbook.lost["reasons"]},
                      "fields": playbook.fields},
-        "playbooks": [p["name"] for p in d.library.catalog() if not p.get("error")],
-        "deals": [_card(d, deal, playbook) for deal in deals],
+        "deals": [_card(d, deal, playbook, touches, pending) for deal in deals],
         "markets": markets,
         "activity": activity,
-        "flow": d.flow(),
+        "flow": d.flow(deals, playbook),
         "totals": {"open": len(open_deals), "open_value": sum(x["value"] for x in open_deals),
                    "won": len([x for x in deals if x["status"] == "won"]),
                    "won_value": sum(x["value"] for x in deals if x["status"] == "won"),
@@ -120,10 +125,10 @@ def state() -> dict:
                    "tracked": sum(m["counts"]["tracked"] for m in markets),
                    "due": len([x for x in open_deals if cards.is_due(x)]),
                    "stale": len([x for x in open_deals if not cards.is_due(x)
-                                 and cards.is_stale(playbook, x, d.store.last_touch(x["id"]))]),
+                                 and cards.is_stale(playbook, x, touches.get(x["id"], ""))]),
                    "moves_week": len([a for a in d.store.activities(limit=400, since=week_ago) if a["kind"] == "stage"]),
                    "new_week": len([x for x in open_deals if x["created_at"] >= week_ago])},
-        "integrations": {"enrich": d.can_enrich(), "slack": bool(d.slack is not None and d.slack.available)},
+        "integrations": {"enrich": d.can_enrich(playbook), "slack": bool(d.slack is not None and d.slack.available)},
         "stamp": (activity[0]["id"] if activity else 0),
     }
 

@@ -63,8 +63,15 @@ def is_stale(playbook, deal: dict, last_touch: str = "") -> bool:
     return days is not None and days > playbook.stale_days(deal["stage"])
 
 
+def due_date(deal: dict) -> str:
+    """The record's due date as YYYY-MM-DD ("" if none, or if an old free-text value cannot be read)."""
+    due = deal.get("next_due") or ""
+    return due if st.ISO_DATE.match(due) else (st.parse_due(due) or "")
+
+
 def is_due(deal: dict) -> bool:
-    return deal["status"] == "open" and bool(deal.get("next_due")) and deal["next_due"] <= st.today()
+    due = due_date(deal)
+    return deal["status"] == "open" and bool(due) and due <= st.today()
 
 
 def facts(playbook, deal: dict) -> list:
@@ -94,7 +101,7 @@ def text_card(playbook, deal: dict, activities: Optional[list] = None, last_touc
     for label, value in facts(playbook, deal):
         lines.append("%s: %s" % (label, value))
     if deal.get("next_step"):
-        due = " (due %s%s)" % (deal["next_due"], ", overdue" if is_due(deal) and deal["next_due"] < st.today() else "") \
+        due = " (due %s%s)" % (deal["next_due"], ", overdue" if is_due(deal) and due_date(deal) < st.today() else "") \
             if deal.get("next_due") else ""
         lines.append("Next: %s%s" % (deal["next_step"], due))
     if is_stale(playbook, deal, last_touch):
@@ -153,7 +160,7 @@ def card_blocks(playbook, deal: dict, activities: Optional[list] = None, last_to
                          "text": {"type": "plain_text", "text": playbook.advance_label(deal["stage"])[:70]}})
     elements.append({"type": "button", "action_id": ACTION_DRAFT, "value": deal_id,
                      "text": {"type": "plain_text", "text": "Draft follow-up"}})
-    if can_enrich and not deal["fields"].get("enriched"):
+    if can_enrich and playbook.enrich != "none" and not deal["fields"].get("enriched"):
         elements.append({"type": "button", "action_id": ACTION_ENRICH, "value": deal_id,
                          "text": {"type": "plain_text", "text": "Enrich"}})
     elements.append({

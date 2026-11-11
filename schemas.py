@@ -50,7 +50,7 @@ GTM_DEAL = {
             "linkedin": {"type": "string"},
             "source": {"type": "string", "description": "Where the record came from (referral, inbound, event…)."},
             "next_step": {"type": "string", "description": "The single next action. Pass an empty string to clear it."},
-            "next_due": {"type": "string", "description": "Due date for the next step, YYYY-MM-DD."},
+            "next_due": {"type": "string", "description": "Due date for the next step: YYYY-MM-DD (tomorrow, friday and +3d also work; '' clears it)."},
             "fields": {"type": "object", "description": "Extra facts keyed by the playbook's field keys; an empty value removes a key."},
             "note": {"type": "string", "description": "add: an opening note for the activity log."},
             "kind": {"type": "string", "enum": ["note", "call", "email", "meeting", "task"], "description": "log: what happened."},

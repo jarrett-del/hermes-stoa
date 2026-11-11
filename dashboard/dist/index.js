@@ -163,7 +163,8 @@
       h("p", null, [d.company, d.group && d.group !== d.company ? d.group : ""].filter(Boolean).join(" · ") || " "),
       d.next_step ? h("div", { className: "stoa-next" }, h("i", { className: "stoa-dot", style: { marginTop: 5 }, "data-tone": d.due ? (d.next_due < today() ? "bad" : "warn") : "" }),
         h("span", null, d.next_step)) : null,
-      (d.due || d.stale || d.pending || d.snoozed_until || d.owner) ? h("div", { className: "stoa-chips" },
+      (props.tag || d.due || d.stale || d.pending || d.snoozed_until || d.owner) ? h("div", { className: "stoa-chips" },
+        props.tag ? h(Chip, null, props.tag) : null,
         d.due ? h(Chip, { tone: d.next_due < today() ? "bad" : "warn" }, d.next_due < today() ? "overdue" : "due today") : null,
         d.stale && !d.due ? h(Chip, { tone: "warn" }, "quiet " + ago(d.last_touch || d.updated_at).replace(" ago", "")) : null,
         d.pending ? h(Chip, { tone: "grad" }, "draft waiting") : null,
@@ -177,20 +178,23 @@
     var open = s.deals.filter(function (d) { return d.status === "open" && match(d); });
     var max = Math.max.apply(null, s.playbook.stages.map(function (st) { return open.filter(function (d) { return d.stage === st.id; }).length; }).concat([1]));
     var closed = s.deals.filter(function (d) { return d.status !== "open" && match(d); }).sort(function (a, b) { return a.stage_at < b.stage_at ? 1 : -1; });
+    var known = {}; s.playbook.stages.forEach(function (st) { known[st.id] = 1; });
+    var strays = open.filter(function (d) { return !known[d.stage]; });
+    var columns = s.playbook.stages.concat(strays.length ? [{ id: "~other", label: "Other stages", other: true }] : []);
     if (!s.deals.length) {
       return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "Empty desk"),
         h("p", null, "Tell Hermes about a " + s.playbook.terms.deal + ", or try ", h("code", null, "hermes stoa demo"), "."));
     }
     return h("div", null,
       h(Flow, { state: s }),
-      h("div", { className: "stoa-board" }, s.playbook.stages.map(function (stage) {
-        var here = open.filter(function (d) { return d.stage === stage.id; });
+      h("div", { className: "stoa-board" }, columns.map(function (stage) {
+        var here = stage.other ? strays : open.filter(function (d) { return d.stage === stage.id; });
         var value = here.reduce(function (a, d) { return a + (d.value || 0); }, 0);
         return h("div", { className: "stoa-col", key: stage.id },
           h("div", { className: "stoa-colhead" },
             h("div", null, h("h4", null, stage.label), h("em", null, here.length + (value ? " · " + money(value, cur) : ""))),
             h("u", { style: { "--fill": Math.round(100 * here.length / max) + "%" } })),
-          here.length ? here.map(function (d) { return h(DealCard, { key: d.id, deal: d, currency: cur, open: props.open, moved: props.moved[d.id] }); })
+          here.length ? here.map(function (d) { return h(DealCard, { key: d.id, deal: d, currency: cur, open: props.open, moved: props.moved[d.id], tag: stage.other ? d.stage_label : "" }); })
             : h("div", { className: "stoa-colempty" }, "—"));
       })),
       closed.length ? h("div", { className: "stoa-closed" }, closed.slice(0, 12).map(function (d) {
@@ -400,11 +404,13 @@
     var _d = useState(null), deal = _d[0], setDeal = _d[1];
     var _n = useState(""), note = _n[0], setNote = _n[1];
     var _k = useState("note"), kind = _k[0], setKind = _k[1];
-    var _s = useState(""), step = _s[0], setStep = _s[1];
-    var _u = useState(""), due = _u[0], setDue = _u[1];
+    // null means "not edited": the field shows the saved value and follows it. Once someone types,
+    // their text stays put however often the page refreshes underneath, until they save.
+    var _s = useState(null), stepEdit = _s[0], setStep = _s[1];
+    var _u = useState(null), dueEdit = _u[0], setDue = _u[1];
     var _b = useState(false), busy = _b[0], setBusy = _b[1];
     var load = useCallback(function () {
-      return get("/deal/" + encodeURIComponent(props.id)).then(function (d) { setDeal(d); setStep(d.next_step || ""); setDue(d.next_due || ""); })
+      return get("/deal/" + encodeURIComponent(props.id)).then(function (d) { setDeal(d); })
         .catch(function () { props.say("That record is no longer on the desk."); props.close(); });
     }, [props.id]);
     useEffect(function () { load(); }, [props.id, props.stamp]);
@@ -413,12 +419,13 @@
       post("/deal/" + encodeURIComponent(props.id) + "/act", body).then(function (r) {
         if (r && r.notice) props.say(r.notice);
         else if (r && r.parked) props.say("Saved. Draft waiting for Hermes.");
-        if (done) done();
-        return props.refresh().then(load);
+        return props.refresh().then(load).catch(function () {}).then(function () { if (done) done(); });
       }).catch(function (e) { props.say(String(e && e.message || e)); }).then(function () { setBusy(false); });
     }
     if (!deal) return h(Shell, { close: props.close, label: "Record" }, h("header", null, h("p", null, "Loading…")));
     var open = deal.status === "open";
+    var step = stepEdit === null ? (deal.next_step || "") : stepEdit, due = dueEdit === null ? (deal.next_due || "") : dueEdit;
+    var stray = open && deal.position < 0;
     var facts = [[cap(pb.terms.group), deal.group], [pb.terms.value, money(deal.value, pb.currency)], [cap(pb.terms.owner), deal.owner]]
       .concat(pb.fields.map(function (f) { return [f.label, (deal.fields || {})[f.key]]; }))
       .concat([["Email", deal.email], ["LinkedIn", deal.linkedin], ["Source", deal.source]]).filter(function (p) { return p[1]; });
@@ -432,6 +439,7 @@
           h("span", null, open && deal.position >= 0 ? (deal.position + 1) + " of " + pb.stages.length : "in stage " + ago(deal.stage_at).replace(" ago", "")))),
       h("div", { className: "stoa-body" },
         deal.pending_task ? h("div", { className: "stoa-note" }, h("b", null, "Draft waiting. "), "Ask Hermes: “show me " + deal.name.split(" ")[0] + "”.") : null,
+        stray ? h("div", { className: "stoa-note" }, h("b", null, "Stage from another playbook. "), "Ask Hermes to move it to one of this playbook’s stages.") : null,
         facts.length ? h("div", { className: "stoa-facts" }, facts.map(function (p) {
           var v = String(p[1]);
           return h("div", { key: p[0] }, h("small", null, p[0]),
@@ -441,7 +449,7 @@
           h("div", { className: "stoa-line" },
             h("input", { className: "stoa-input", value: step, placeholder: "Next action", onChange: function (e) { setStep(e.target.value); } }),
             h("input", { className: "stoa-input", type: "date", style: { flex: "none", width: 150 }, value: due, onChange: function (e) { setDue(e.target.value); } }),
-            h(Btn, { disabled: busy || (step === (deal.next_step || "") && due === (deal.next_due || "")), onClick: function () { act({ verb: "update", next_step: step, next_due: due }); } }, "Save"))) : null,
+            h(Btn, { disabled: busy || (step === (deal.next_step || "") && due === (deal.next_due || "")), onClick: function () { act({ verb: "update", next_step: step, next_due: due }, function () { setStep(null); setDue(null); }); } }, "Save"))) : null,
         h("div", { className: "stoa-sec" }, h("label", null, "Log"),
           h("textarea", { className: "stoa-area", value: note, placeholder: "What happened?", onChange: function (e) { setNote(e.target.value); } }),
           h("div", { className: "stoa-line", style: { marginTop: 8 } },

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import io
 import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -32,6 +33,18 @@ def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
     return max(low, min(number, high))
 
 
+def _due(args: dict) -> tuple:
+    """``(args with next_due as YYYY-MM-DD, error)``. A due date that cannot be read is an error, not a guess."""
+    if args.get("next_due") is None:
+        return args, None
+    due = st.parse_due(args["next_due"])
+    if due is None:
+        return args, {"ok": False, "error": "next_due should be a date such as %s (tomorrow, friday, +3d and 12/01/2026 "
+                                            "also work); got '%s'. Nothing was changed."
+                                            % ((dt.date.today() + dt.timedelta(days=3)).isoformat(), str(args["next_due"])[:40])}
+    return dict(args, next_due=due), None
+
+
 class _Blank(dict):
     def __missing__(self, key):
         return ""
@@ -48,6 +61,7 @@ class Desk:
         self._actor = actor or (lambda: "")
         self.http = http
         self._stores: dict = {}
+        self.home: Optional[Path] = None   # the Hermes profile this desk belongs to, when Hermes built it
         self.slack = None  # set by __init__ when the Slack half is wired
         self.markets = Markets(self)
 
@@ -103,8 +117,9 @@ class Desk:
             return "cron" in allow
         return session.get("chat_id", "") in allow
 
-    def can_enrich(self) -> bool:
-        return bool(self.secret(PDL_KEY))
+    def can_enrich(self, playbook: Optional[Playbook] = None) -> bool:
+        """Whether a record can be enriched: the key is set and the playbook has not switched it off."""
+        return bool(self.secret(PDL_KEY)) and (playbook or self.playbook()).enrich != "none"
 
     # -- shared helpers -------------------------------------------------------------------------
     def _resolve(self, ref: Any) -> tuple:
@@ -122,10 +137,14 @@ class Desk:
             return None, {"ok": False, "error": "no record matches '%s'" % ref}
         return deal, None
 
-    def view(self, deal: dict, playbook: Optional[Playbook] = None, activities: int = 0) -> dict:
-        """A deal as the model sees it: empty values dropped, playbook words applied."""
+    def view(self, deal: dict, playbook: Optional[Playbook] = None, activities: int = 0,
+             touches: Optional[dict] = None) -> dict:
+        """A deal as the model sees it: empty values dropped, playbook words applied.
+
+        ``touches`` is ``store.touches()`` when the caller is showing many records at once.
+        """
         playbook = playbook or self.playbook()
-        touch = self.store.last_touch(deal["id"])
+        touch = touches.get(deal["id"], "") if touches is not None else self.store.last_touch(deal["id"])
         out = {"id": deal["id"], "name": deal["name"], "company": deal["company"], "group": deal["grp"],
                "stage": deal["stage"], "stage_label": playbook.label(deal["stage"]), "status": deal["status"],
                "value": deal["value"], "owner": deal["owner"], "next_step": deal["next_step"], "next_due": deal["next_due"],
@@ -171,17 +190,18 @@ class Desk:
         status = str(args.get("status") or "open").lower()
         deals = self.store.list(status=status, stage=stage, grp=str(args.get("group") or ""),
                                 owner=str(args.get("owner") or ""), query=str(args.get("query") or ""))
+        touches = self.store.touches()
         if view == "stale":
-            deals = [d for d in deals if cards.is_stale(playbook, d, self.store.last_touch(d["id"]))]
+            deals = [d for d in deals if cards.is_stale(playbook, d, touches.get(d["id"], ""))]
         elif view == "due":
-            deals = sorted([d for d in deals if cards.is_due(d)], key=lambda d: d["next_due"])
+            deals = sorted([d for d in deals if cards.is_due(d)], key=cards.due_date)
         limit = _int(args.get("limit") or 60, 60, 1, 500)
         out = {"ok": True, "view": view, "playbook": playbook.name, "count": len(deals),
                "open_value": sum(d["value"] for d in deals if d["status"] == "open")}
         if view == "board":
             out["board"] = cards.board_text(playbook, deals)
             out["by_stage"] = self._by_stage(playbook, deals)
-        out["deals"] = [self.view(d, playbook) for d in deals[:limit]]
+        out["deals"] = [self.view(d, playbook, touches=touches) for d in deals[:limit]]
         if len(deals) > limit:
             out["truncated"] = len(deals) - limit
         if not self.store.count():
@@ -203,12 +223,13 @@ class Desk:
         open_deals = self.store.list(status="open")
         week_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
         stale, due = [], []
+        touches = self.store.touches()
         for deal in open_deals:
-            touch = self.store.last_touch(deal["id"])
+            touch = touches.get(deal["id"], "")
             if cards.is_due(deal):
-                due.append(self.view(deal, playbook))
+                due.append(self.view(deal, playbook, touches=touches))
             elif cards.is_stale(playbook, deal, touch):
-                row = self.view(deal, playbook)
+                row = self.view(deal, playbook, touches=touches)
                 row["quiet_days"] = int(st.days_since(touch or deal["updated_at"]) or 0)
                 stale.append(row)
         closed = self.store.list(status="all")
@@ -229,20 +250,20 @@ class Desk:
             "notes_waiting": len(notes.get("notes") or []),
         }
 
-    def flow(self) -> dict:
+    def flow(self, deals: Optional[list] = None, playbook: Optional[Playbook] = None) -> dict:
         """How records have moved through the playbook, for a Sankey diagram.
 
         A record is counted as having reached every stage up to the furthest one it got to: its
         current stage if open, every stage if won, the stage it was closed from if lost.
         """
-        playbook = self.playbook()
+        playbook = playbook or self.playbook()
         stages = playbook.stages
         count = len(stages)
         reached, here, lost = [0] * count, [0] * count, [0] * count
         value = [0.0] * count
         won = from_map = 0
         won_value = 0.0
-        for deal in self.store.list(status="all"):
+        for deal in (deals if deals is not None else self.store.list(status="all")):
             if deal["status"] == "open":
                 far = playbook.position(deal["stage"])
                 if far < 0:
@@ -270,6 +291,9 @@ class Desk:
         action = str(args.get("action") or "get").lower()
         playbook = self.playbook()
         actor = self.actor()
+        args, error = _due(args)
+        if error and action in ("add", "update", "log"):
+            return error
         if action == "add":
             return self._add(args, playbook, actor)
         deal, error = self._resolve(args.get("deal"))
@@ -491,12 +515,17 @@ class Desk:
             return {"ok": False, "error": "People Data Labs is not set up. Add PDL_API_KEY in the plugin's settings "
                                           "(or `hermes config` secrets) to turn on enrichment."}
         playbook = self.playbook()
+        if playbook.enrich == "none":
+            return {"ok": False, "error": "Enrichment is switched off in the %s playbook (enrich: none), so no lookup "
+                                          "was made." % playbook.name}
         deal = None
         if args.get("deal"):
             deal, error = self._resolve(args.get("deal"))
             if error:
                 return error
         kind = str(args.get("kind") or ("company" if playbook.enrich == "company" else "person")).lower()
+        if kind not in ("person", "company"):
+            return {"ok": False, "error": "kind is person or company"}
         if kind == "company":
             lookup = {"website": str(args.get("website") or ""), "name": str(args.get("company") or (deal or {}).get("company") or "")}
         else:
@@ -606,6 +635,9 @@ class Desk:
             summary = str(args.get("summary") or "").strip()
             if not summary:
                 return {"ok": False, "error": "file needs a summary: two or three sentences on what was said and agreed"}
+            args, error = _due(args)
+            if error:
+                return error
             actor = self.actor()
             kind = str(args.get("kind") or "call").lower()
             self.store.log(deal["id"], kind if kind in LOG_KINDS else "call", summary[:4000], actor=actor, ref=note_id)
@@ -645,7 +677,8 @@ class Desk:
             if action == "template":
                 return {"ok": True, "yaml": library.source(DEFAULT),
                         "rules": "name: lowercase-with-dashes. 2 to 9 open stages in order, each with id, label, optional "
-                                 "stale_days and advance (the button label). won and lost are the two closing stages; "
+                                 "stale_days (a number) and advance (the button label, in quotes). won and lost are the two "
+                                 "closing stages; enrich is person, company or none (none hides the Enrich button); "
                                  "lost.reasons is the list offered on the card. drafts.on_enter.<stage id> is what the "
                                  "agent writes when a record enters that stage; placeholders: {name} {company} {group} "
                                  "{stage} {reason} {owner} {value}. fields are extra facts shown on cards."}
@@ -659,6 +692,8 @@ class Desk:
                 return self._use(str(args.get("name") or ""))
         except PlaybookError as exc:
             return {"ok": False, "error": str(exc)}
+        except (TypeError, AttributeError, KeyError) as exc:    # a shape the checks did not foresee
+            return {"ok": False, "error": "that playbook does not hold together: %s" % exc}
         return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["list", "show", "use", "save", "template"]}
 
     def _use(self, name: str) -> dict:
@@ -704,16 +739,28 @@ class Desk:
                    playbook.terms["deal"].lower(): "name", "amount": "value", "linkedin_url": "linkedin", "next step": "next_step",
                    "due": "next_due", "organization": "company", "organisation": "company"}
         added, skipped, problems = 0, 0, []
-        with path.open(newline="", encoding="utf-8-sig") as handle:
-            for number, raw in enumerate(csv.DictReader(handle), start=2):
+        data = path.read_bytes()
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:      # a CSV saved by Excel on Windows
+            text = data.decode("cp1252", errors="replace")
+        for number, raw in enumerate(csv.DictReader(io.StringIO(text, newline="")), start=2):
+            try:
                 row = {}
                 for column, value in raw.items():
-                    key = (column or "").strip().lower()
+                    if column is None:      # more cells than the header has columns (a stray comma)
+                        problems.append("row %d: more cells than columns; the extra ones were ignored" % number)
+                        continue
+                    key = column.strip().lower()
                     row[aliases.get(key, key.replace(" ", "_"))] = (value or "").strip()
                 name = row.get("name", "")
                 if not name:
                     problems.append("row %d: no name" % number)
                     continue
+                due = st.parse_due(row.get("next_due", ""))
+                if due is None:
+                    problems.append("row %d: due date '%s' was not understood and was left blank" % (number, row["next_due"][:30]))
+                    due = ""
                 stage = playbook.resolve_stage(row.get("stage", "")) or playbook.first_stage()
                 group = row.get("grp", "")
                 if any(d["name"].lower() == name.lower() and d["grp"].lower() == group.lower()
@@ -727,12 +774,14 @@ class Desk:
                 deal = self.store.add(name, stage if status == "open" else playbook.first_stage(), actor="import",
                                       company=row.get("company", ""), grp=group, email=row.get("email", ""),
                                       linkedin=row.get("linkedin", ""), value=row.get("value"), owner=row.get("owner", ""),
-                                      next_step=row.get("next_step", ""), next_due=row.get("next_due", ""),
+                                      next_step=row.get("next_step", ""), next_due=due,
                                       source=row.get("source", "") or "import",
                                       fields={k: row[k] for k in field_keys if row.get(k)})
                 if status != "open":
                     self._move(deal, stage, playbook, "import", row.get("lost_reason", ""))
                 added += 1
+            except Exception as exc:        # one bad row is reported, the rest still come in
+                problems.append("row %d: %s" % (number, exc))
         out = {"ok": True, "added": added, "skipped_existing": skipped, "dry_run": dry_run}
         if problems:
             out["problems"] = problems[:20]

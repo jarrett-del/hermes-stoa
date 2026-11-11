@@ -130,7 +130,33 @@ class Playbook:
         return dict(self.data, origin=self.origin)
 
 
+def _days(value: Any, where: str) -> Optional[int]:
+    """A whole number of days, or ``None`` when not given. Anything else is a mistake worth naming."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise PlaybookError("%s must be a number of days, got %r" % (where, value))
+    try:
+        days = int(float(value))
+    except (ValueError, OverflowError):
+        raise PlaybookError("%s must be a number of days, got %r" % (where, value))
+    if not 1 <= days <= 365:
+        raise PlaybookError("%s must be between 1 and 365 days, got %r" % (where, value))
+    return days
+
+
+def _text(value: Any, where: str, limit: int = 4000) -> str:
+    """Text from a YAML value. ``advance: yes`` parses as true, not as a label, so say so."""
+    if value in (None, ""):
+        return ""
+    if isinstance(value, bool) or isinstance(value, (dict, list)):
+        raise PlaybookError("%s must be text (put it in quotes), got %r" % (where, value))
+    return str(value).strip()[:limit]
+
+
 def validate(data: Any) -> dict:
+    """Check a playbook and return it in one known shape. Everything that reads a playbook later
+    relies on this, so whatever passes here cannot break a card, the board or the brief."""
     if not isinstance(data, dict):
         raise PlaybookError("a playbook is a mapping with name, stages, won and lost")
     name = str(data.get("name") or "").strip()
@@ -145,26 +171,53 @@ def validate(data: Any) -> dict:
             raw = {"id": re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-"), "label": raw}
         if not isinstance(raw, dict) or not raw.get("id"):
             raise PlaybookError("each stage needs an id")
-        stage = dict(raw, id=str(raw["id"]), label=str(raw.get("label") or raw["id"]).strip())
+        stage = dict(raw, id=str(raw["id"]), label=_text(raw.get("label"), "a stage label", 60) or str(raw["id"]))
         if not NAME_RE.match(stage["id"]):
             raise PlaybookError("stage id %r must be lowercase letters, digits and dashes" % stage["id"])
         if stage["id"] in seen:
             raise PlaybookError("stage id %r is used twice" % stage["id"])
+        stage["stale_days"] = _days(raw.get("stale_days"), "stale_days for stage %r" % stage["id"])
+        stage["advance"] = _text(raw.get("advance"), "advance for stage %r" % stage["id"], 70)
+        stage = {key: value for key, value in stage.items() if value not in (None, "")}
         seen.add(stage["id"])
         clean.append(stage)
     out = dict(data, name=name, stages=clean)
+    out["stale_days"] = _days(data.get("stale_days"), "stale_days") or 7
+    for key, limit in (("title", 80), ("summary", 300), ("currency", 8)):
+        out[key] = _text(data.get(key), key, limit)
+    terms = data.get("terms") or {}
+    if not isinstance(terms, dict):
+        raise PlaybookError("terms must be a mapping such as {deal: candidate, group: role}")
+    out["terms"] = {str(key): _text(value, "terms.%s" % key, 40) for key, value in terms.items()
+                    if key in TERM_DEFAULTS and _text(value, "terms.%s" % key, 40)}
+    drafts = data.get("drafts") or {}
+    if not isinstance(drafts, dict):
+        raise PlaybookError("drafts must be a mapping with on_enter, follow_up and lost")
+    on_enter = drafts.get("on_enter") or {}
+    if not isinstance(on_enter, dict):
+        raise PlaybookError("drafts.on_enter must map a stage id to what the agent should write")
+    out["drafts"] = {"on_enter": {str(key): _text(value, "drafts.on_enter.%s" % key) for key, value in on_enter.items()},
+                     "follow_up": _text(drafts.get("follow_up"), "drafts.follow_up"),
+                     "lost": _text(drafts.get("lost"), "drafts.lost")}
     for key, fallback in (("won", {"id": "won", "label": "Won"}), ("lost", {"id": "lost", "label": "Lost"})):
         end = data.get(key) or fallback
         if isinstance(end, str):
             end = {"id": re.sub(r"[^a-z0-9]+", "-", end.lower()).strip("-"), "label": end}
-        end = dict(end, id=str(end.get("id") or fallback["id"]), label=str(end.get("label") or fallback["label"]))
+        if not isinstance(end, dict):
+            raise PlaybookError("%s must be a stage with an id and a label" % key)
+        end = dict(end, id=str(end.get("id") or fallback["id"]),
+                   label=_text(end.get("label"), "the %s label" % key, 60) or fallback["label"])
         if not NAME_RE.match(end["id"]) or end["id"] in seen:
             raise PlaybookError("%s stage id %r is invalid or already used" % (key, end["id"]))
         seen.add(end["id"])
         out[key] = end
     reasons = out["lost"].get("reasons") or ["Not a fit", "No budget", "Timing", "Went quiet"]
-    out["lost"]["reasons"] = [str(r)[:60] for r in reasons][:10]
+    if not isinstance(reasons, list):
+        raise PlaybookError("lost.reasons must be a list")
+    out["lost"]["reasons"] = [str(r)[:60] for r in reasons if r not in (None, "")][:10] or ["Not a fit"]
     fields = []
+    if not isinstance(data.get("fields") or [], list):
+        raise PlaybookError("fields must be a list")
     for raw in data.get("fields") or []:
         if isinstance(raw, str):
             raw = {"key": re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_"), "label": raw}
@@ -232,7 +285,7 @@ class Library:
         try:
             data = _load_yaml(text)
         except Exception as exc:
-            raise PlaybookError("not valid YAML: %s" % exc)
+            raise PlaybookError("not valid YAML: %s" % str(exc).split("\n\nTo suppress")[0][:400])
         playbook = Playbook(data, "custom")
         self.user_dir.mkdir(parents=True, exist_ok=True)
         (self.user_dir / (playbook.name + ".yaml")).write_text(text.rstrip() + "\n", encoding="utf-8")

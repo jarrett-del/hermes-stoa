@@ -1,10 +1,15 @@
 """Tests for the desk, with no Hermes and no network. Run: python3 -m unittest discover -s tests"""
 import asyncio
+import datetime as dt
 import importlib.util
 import json
+import sqlite3
 import sys
 import tempfile
+import threading
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,7 +32,7 @@ from stoa import cards, demo, sources  # noqa: E402
 from stoa.desk import Desk  # noqa: E402
 from stoa.playbook import Library, Playbook, PlaybookError, validate  # noqa: E402
 from stoa.slackdesk import ACTIONS, SlackDesk  # noqa: E402
-from stoa.store import Ambiguous, Store, _number, slugify  # noqa: E402
+from stoa.store import Ambiguous, Store, _number, parse_due, slugify  # noqa: E402
 
 
 def make_desk(tmp, playbook="recruiting", secrets=None, http=None, config=None):
@@ -80,7 +85,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(_number("$1.2M"), 1200000)
         self.assertEqual(_number("48,000"), 48000)
         self.assertEqual(_number("junk"), 0)
-        self.assertEqual(slugify("  Ünï & Co!  "), "n-co")
+        self.assertEqual(slugify("  Ünï & Co!  "), "ünï-co")
 
     def test_file_store_survives_reopen(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -771,6 +776,222 @@ class MarketTests(unittest.TestCase):
         self.assertEqual((self.desk.store.count(), self.market({"action": "list"})["markets"]), (0, []))
 
 
+class HardeningTests(unittest.TestCase):
+    """One test per thing a review found: each of these was a way to lose data, spend money or hang."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name)
+
+    def test_due_dates_are_read_the_way_people_write_them(self):
+        base = dt.date(2026, 11, 10)        # a Tuesday
+        for said, meant in (("2026-12-01", "2026-12-01"), ("2026-12-01T09:00:00Z", "2026-12-01"), ("12/01/2026", "2026-12-01"),
+                            ("25/12/2026", "2026-12-25"), ("12/1", "2026-12-01"), ("1 Dec", "2026-12-01"), ("Dec 1, 2026", "2026-12-01"),
+                            ("December 3rd", "2026-12-03"), ("Jan 5", "2027-01-05"), ("today", "2026-11-10"),
+                            ("Tomorrow", "2026-11-11"), ("friday", "2026-11-13"), ("next Tue", "2026-11-17"), ("+3d", "2026-11-13"),
+                            ("in 2 weeks", "2026-11-24"), ("next week", "2026-11-17"), ("", ""), (None, "")):
+            self.assertEqual(parse_due(said, base), meant, said)
+        for nonsense in ("soon", "Q1", "13/13/2026", "2026-02-30", "whenever", "9" * 40):
+            self.assertIsNone(parse_due(nonsense, base), nonsense)
+
+    def test_a_due_date_that_cannot_be_read_is_refused_not_stored(self):
+        refused = self.desk.deal({"action": "add", "name": "Ada Quill", "next_due": "soonish"})
+        self.assertFalse(refused["ok"])
+        self.assertIn("next_due", refused["error"])
+        self.assertIsNone(self.desk.store.find("Ada Quill"))
+        added = self.desk.deal({"action": "add", "name": "Ada Quill", "next_step": "Call", "next_due": "tomorrow"})["deal"]
+        self.assertEqual(added["next_due"], (dt.date.today() + dt.timedelta(days=1)).isoformat())
+        self.assertFalse(self.desk.deal({"action": "update", "deal": added["id"], "next_due": "the 45th"})["ok"])
+        self.assertFalse(self.desk.deal({"action": "log", "deal": added["id"], "text": "Spoke", "next_due": "later"})["ok"])
+        self.assertEqual(len(self.desk.store.activities(added["id"], limit=50)), 1)      # the refused log wrote nothing
+        cleared = self.desk.deal({"action": "update", "deal": added["id"], "next_due": ""})["deal"]
+        self.assertNotIn("next_due", cleared)
+
+    def test_old_free_text_due_dates_do_not_show_as_overdue_forever(self):
+        deal = self.desk.store.add("Old Row", "sourced", next_due="12/01/2099")     # written before dates were checked
+        self.assertFalse(cards.is_due(deal))
+        self.assertTrue(cards.is_due(self.desk.store.add("Older Row", "sourced", next_due="01/02/2020")))
+        self.assertFalse(cards.is_due(self.desk.store.add("Vague Row", "sourced", next_due="Friday-ish")))
+        self.desk.pipeline({"view": "due"})
+        self.desk.brief()
+
+    def test_a_failed_open_does_not_leave_the_ledger_locked(self):
+        store = Store(str(Path(self.tmp.name) / "desk.db"))
+        store.add("Dana Whitfield", "sourced")
+        good, store.path = store.path, str(Path(self.tmp.name) / "no-such-folder" / "desk.db")
+        with self.assertRaises(sqlite3.OperationalError):
+            store.get("dana-whitfield")
+        store.path = good
+        seen = []
+        worker = threading.Thread(target=lambda: seen.append(store.get("dana-whitfield")), daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), "another thread is still waiting for the ledger")
+        self.assertEqual(seen[0]["name"], "Dana Whitfield")
+
+    def test_names_in_any_script_get_their_own_record(self):
+        first = self.desk.deal({"action": "add", "name": "张伟"})["deal"]
+        second = self.desk.deal({"action": "add", "name": "李娜"})["deal"]
+        third = self.desk.deal({"action": "add", "name": "Ольга Петрова"})["deal"]
+        self.assertEqual(len({first["id"], second["id"], third["id"], "deal"}), 4)
+        self.assertEqual(self.desk.store.find("李娜")["id"], second["id"])
+        moved = self.desk.deal({"action": "move", "deal": "李娜", "stage": "next"})["deal"]
+        self.assertEqual(moved["id"], second["id"])
+        self.assertEqual(self.desk.store.get(first["id"])["stage"], "sourced")
+        self.desk.store.add("!!!", "sourced")                                    # nothing id-safe at all: id "deal"
+        self.assertIsNone(self.desk.store.find("???"))                           # and "???" is not that record
+        self.assertLessEqual(len("snooze7|" + self.desk.store.add("名" * 200, "sourced")["id"]), 75)
+
+    def test_import_survives_ragged_rows_bad_dates_and_excel_encoding(self):
+        path = Path(self.tmp.name) / "in.csv"
+        path.write_bytes(("name,company,due\n"
+                          "Zoë Marsh,Acme, Inc,2026-12-01\n"          # an unquoted comma: one cell too many
+                          "Ben Okoro,Fathom,sometime\n"
+                          ",Nameless,\n"
+                          "Cy Tran,Kestrel,12/05/2026\n").encode("cp1252"))
+        dry = self.desk.import_csv(path, dry_run=True)
+        self.assertEqual((dry["ok"], dry["added"]), (True, 3))
+        out = self.desk.import_csv(path)
+        self.assertEqual((out["ok"], out["added"]), (True, 3))
+        self.assertEqual(self.desk.store.find("Cy Tran")["next_due"], "2026-12-05")
+        self.assertEqual(self.desk.store.find("Ben Okoro")["next_due"], "")
+        self.assertEqual(self.desk.store.find("Zoë Marsh")["company"], "Acme")
+        problems = " | ".join(out["problems"])
+        self.assertIn("more cells", problems)
+        self.assertIn("sometime", problems)
+        self.assertIn("no name", problems)
+        self.assertEqual(self.desk.import_csv(path)["added"], 0)                  # running it again adds nothing
+
+    def test_enrich_none_means_no_button_and_no_paid_lookup(self):
+        desk = make_desk(self.tmp.name, secrets={"PDL_API_KEY": "k"}, http=lambda *a, **k: self.fail("a paid lookup was made"))
+        source = desk.library.source("recruiting").replace("name: recruiting", "name: quiet-desk")
+        self.assertIn("\nenrich: person", source)
+        saved = desk.playbook_tool({"action": "save", "yaml": source.replace("\nenrich: person", "\nenrich: none"), "activate": True})
+        self.assertTrue(saved["ok"], saved)
+        self.assertEqual(desk.playbook().enrich, "none")
+        self.assertFalse(desk.can_enrich())
+        deal = desk.deal({"action": "add", "name": "Dana Whitfield", "email": "dana@example.com"})["deal"]
+        self.assertNotIn("stoa_enrich", json.dumps(desk.blocks(desk.store.get(deal["id"]))))
+        self.assertIn("switched off", desk.enrich({"deal": deal["id"]})["error"])
+        self.assertIn("switched off", desk.click("enrich", deal["id"], "", "U1")["notice"])
+
+    def test_a_playbook_that_would_break_later_is_refused_at_save(self):
+        good = self.desk.library.source("recruiting").replace("name: recruiting", "name: mine")
+        for label, broken in (
+                ("stale_days words", good.replace("stale_days: 4", 'stale_days: "4 days"', 1)),
+                ("stale_days zero", good.replace("stale_days: 4", "stale_days: -3", 1)),
+                ("top-level words", good.replace("\nstale_days: 5", "\nstale_days: a week", 1)),
+                ("advance true", good.replace("advance: Reach out", "advance: true", 1)),     # a boolean in every YAML
+                ("terms list", good.split("\nterms:")[0] + "\nterms: [candidate, role]\n" + "stages:" + good.split("\nstages:")[1]),
+                ("drafts text", good.split("\ndrafts:")[0] + "\ndrafts: write something nice\n")):
+            self.assertNotEqual(broken, good, label)
+            result = self.desk.playbook_tool({"action": "save", "yaml": broken, "activate": True})
+            self.assertFalse(result["ok"], label)
+            self.assertTrue(result["error"], label)
+        self.assertEqual(self.desk.playbook().name, "recruiting")
+        self.assertNotIn("mine", self.desk.library.names())
+        with self.assertRaises(PlaybookError):
+            validate({"name": "x", "stages": ["a", "b"], "lost": {"reasons": "price"}})
+        playbook = Playbook({"name": "x", "stages": [{"id": "a", "stale_days": "3"}, "B"], "terms": {"deal": None, "odd": 1}})
+        self.assertEqual((playbook.stale_days("a"), playbook.stale_days("b"), playbook.terms["deal"]), (3, 7, "deal"))
+
+    def test_last_touch_for_every_record_in_one_query_matches_one_at_a_time(self):
+        demo.load(self.desk)
+        store = self.desk.store
+        some = store.list(status="all")[0]
+        store.snooze(some["id"], 3)                     # bookkeeping: must not count as a touch
+        touches = store.touches()
+        for deal in store.list(status="all"):
+            self.assertEqual(touches.get(deal["id"], ""), store.last_touch(deal["id"]), deal["id"])
+        self.desk.park_followup(some["id"], "write it")
+        self.assertEqual(store.meta_prefix("pending:"), {some["id"]: "write it"})
+
+
+class FakeCtx:
+    """The part of Hermes's plugin context that ``register`` uses, recording what it is given."""
+
+    def __init__(self, settings):
+        self.settings = settings
+        self.tools, self.sections, self.commands, self.blueprints, self.skills = {}, {}, {}, [], []
+
+    def get_config(self, key, default=None):
+        return self.settings.get(key, default)
+
+    def set_config(self, key, value):
+        self.settings[key] = value
+
+    def inject_message(self, *args, **kwargs):
+        return False
+
+    def register_tool(self, name, toolset, schema, handler, emoji=""):
+        self.tools[name] = handler
+
+    def register_system_prompt_section(self, name, fn, max_chars=0):
+        self.sections[name] = (fn, max_chars)
+
+    def register_command(self, name, handler, **kwargs):
+        self.commands[name] = handler
+
+    def register_automation_blueprint(self, name, **kwargs):
+        self.blueprints.append(name)
+
+    def register_skill(self, name, path):
+        self.skills.append(name)
+
+    def register_platform_handler(self, *args, **kwargs): pass
+    def register_slack_action_handler(self, *args, **kwargs): pass
+    def register_cli_command(self, *args, **kwargs): pass
+
+
+class RegisterTests(unittest.TestCase):
+    """``register`` against a stand-in for Hermes: what gets wired, and where the desk shows itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        data = Path(self.tmp.name) / "data"
+        data.mkdir()
+        fakes = {"hermes_constants": types.SimpleNamespace(get_hermes_home=lambda: self.tmp.name),
+                 "plugins": types.ModuleType("plugins"),
+                 "plugins.plugin_storage": types.SimpleNamespace(plugin_data_dir=lambda name: data)}
+        patcher = mock.patch.dict(sys.modules, fakes)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.ctx = FakeCtx({"playbook": "recruiting", "channels": ["C1"]})
+        stoa.register(self.ctx)
+
+    def session(self, **values):
+        patcher = mock.patch.object(stoa, "_session", lambda: values)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_everything_the_manifest_promises_is_registered(self):
+        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_market",
+                                                  "gtm_notes", "gtm_pipeline", "gtm_playbook"])
+        self.assertEqual(sorted(self.ctx.blueprints), ["friday-review", "market-watch", "morning-brief", "notes-sweep"])
+        self.assertEqual(sorted(self.ctx.skills), ["desk", "market-map", "playbook-authoring"])
+        self.assertIn("gtm", self.ctx.commands)
+        self.assertEqual(stoa.LIVE_DESKS[-1].home, Path(self.tmp.name))
+
+    def test_the_desk_stays_out_of_chats_it_is_not_allowed_in(self):
+        section, limit = self.ctx.sections["stoa.desk"]
+        self.session(platform="slack", chat_id="C2")
+        for info in (None, {}, {"platform": ""}, {"platform": "slack"}):       # the host may or may not say where
+            self.assertEqual(section(info), "", info)
+        self.assertIn("not available", json.loads(self.ctx.tools["gtm_pipeline"]({}))["error"])
+        self.assertIn("not available", self.ctx.commands["gtm"](""))
+
+    def test_the_desk_introduces_itself_where_it_is_allowed(self):
+        section, limit = self.ctx.sections["stoa.desk"]
+        self.session(platform="slack", chat_id="C1")
+        text = section({})
+        self.assertIn("Stoa GTM desk", text)
+        self.assertLessEqual(len(text), limit)
+        self.assertTrue(json.loads(self.ctx.tools["gtm_pipeline"]({}))["ok"])
+        self.assertIn("Stoa GTM desk", section({"platform": "cli"}))
+
+
 class DashboardApiTests(unittest.TestCase):
     """The dashboard tab's backend, called directly (no web server needed)."""
 
@@ -787,6 +1008,23 @@ class DashboardApiTests(unittest.TestCase):
         self.desk = make_desk(self.tmp.name)
         self.api.desk = lambda: self.desk
         demo.load(self.desk)
+
+    def test_state_costs_the_same_however_many_records_there_are(self):
+        self.desk.store.last_touch = lambda deal_id: self.fail("asked for one record's last touch during /state")
+        self.desk.store.meta_get = lambda key, default="": self.fail("asked for one record's pending task during /state")
+        self.desk.park_followup(self.desk.store.find("Dana Whitfield")["id"], "write it")
+        state = self.api.state()
+        waiting = [d["name"] for d in state["deals"] if d["pending"]]
+        self.assertEqual(waiting, ["Dana Whitfield"])
+
+    def test_records_from_another_playbook_stay_visible(self):
+        self.desk.playbook_tool({"action": "use", "name": "b2b-sales"})
+        state = json.loads(json.dumps(self.api.state()))
+        known = {stage["id"] for stage in state["playbook"]["stages"]}
+        strays = [d for d in state["deals"] if d["status"] == "open" and d["stage"] not in known]
+        self.assertTrue(strays)
+        self.assertTrue(all(d["position"] == -1 and d["advance"] == "" for d in strays))
+        self.assertEqual(state["totals"]["open"], len([d for d in state["deals"] if d["status"] == "open"]))
 
     def test_state_is_complete_and_serialisable(self):
         state = json.loads(json.dumps(self.api.state()))
@@ -998,8 +1236,9 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bad_clicks_never_raise(self):
         await self.slack.on_action(self.ack, {}, {"action_id": "stoa_advance", "value": ""})
-        await self.slack.on_action(self.ack, self.body(), {"action_id": "stoa_advance", "value": "ghost|x"})
+        await self.slack.on_action(self.ack, self.body(thread_ts="1690000000.000100"), {"action_id": "stoa_advance", "value": "ghost|x"})
         self.assertIn("no longer", self.app.client.posts[-1]["text"])
+        self.assertEqual(self.app.client.posts[-1]["thread_ts"], "1690000000.000100")   # the thread's parent, never a reply
         self.assertEqual(self.acks, 2)
 
     async def test_not_connected_falls_back_to_text(self):

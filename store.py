@@ -132,8 +132,76 @@ def days_since(value: str) -> Optional[float]:
 
 
 def slugify(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    """An id from a name. Letters and digits of any script are kept, so two names never share one by accident."""
+    slug = re.sub(r"[\W_]+", "-", (text or "").lower()).strip("-")
     return slug[:ID_MAX].strip("-") or "deal"
+
+
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december")
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def parse_due(value: Any, base: Optional[dt.date] = None) -> Optional[str]:
+    """A due date as ``YYYY-MM-DD``, from the ways people write one.
+
+    ``""`` for nothing, ``None`` when it cannot be read. Understands ISO dates, 12/01/2026, "Dec 1",
+    "1 December 2026", today, tomorrow, a weekday name, "+3d", "in 2 weeks" and "next week".
+    """
+    text = " ".join(str(value if value is not None else "").replace(",", " ").lower().split()).rstrip(".")
+    if text in ("", "none", "null", "clear", "-", "n/a"):
+        return ""
+    base = base or dt.date.today()
+
+    def make(year: int, month: int, day: int) -> Optional[str]:
+        try:
+            return dt.date(year, month, day).isoformat()
+        except ValueError:
+            return None
+
+    def this_or_next_year(month: int, day: int) -> Optional[str]:
+        found = make(base.year, month, day)
+        if found and (base - dt.date.fromisoformat(found)).days > 60:   # "Jan 5" said in December means next January
+            return make(base.year + 1, month, day)
+        return found
+
+    match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[t ].*)?$", text)
+    if match:
+        return make(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    if text in ("today", "now", "eod"):
+        return base.isoformat()
+    if text in ("tomorrow", "tmrw"):
+        return (base + dt.timedelta(days=1)).isoformat()
+    if text == "next week":
+        return (base + dt.timedelta(days=7)).isoformat()
+    match = re.match(r"^(?:in |\+)?(\d{1,3}) ?(d|day|days|w|wk|wks|week|weeks)$", text)
+    if match:
+        span = int(match.group(1)) * (7 if match.group(2).startswith("w") else 1)
+        return (base + dt.timedelta(days=span)).isoformat()
+    word = re.sub(r"^(?:on|by|this|next) ", "", text)
+    for index, name in enumerate(WEEKDAYS):
+        if word in (name, name[:3]) or (name == "thursday" and word in ("thur", "thurs")) or (name == "tuesday" and word == "tues"):
+            ahead = (index - base.weekday()) % 7 or 7
+            return (base + dt.timedelta(days=ahead)).isoformat()
+    match = re.match(r"^(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2}|\d{4}))?$", text)
+    if match:
+        month, day = int(match.group(1)), int(match.group(2))
+        if month > 12 >= day:       # written day first
+            month, day = day, month
+        if match.group(3):
+            year = int(match.group(3))
+            return make(year + 2000 if year < 100 else year, month, day)
+        return this_or_next_year(month, day)
+    words = re.sub(r"(\d)(?:st|nd|rd|th)\b", r"\1", word).split()
+    month = next((i + 1 for w in words for i, name in enumerate(MONTHS) if w in (name, name[:3], name[:4])), 0)
+    numbers = [int(w) for w in words if w.isdigit()]
+    if month and numbers and len(words) <= 3:
+        day = next((n for n in numbers if n <= 31), 0)
+        year = next((n for n in numbers if n > 31), 0)
+        if day:
+            return make(year, month, day) if year else this_or_next_year(month, day)
+    return None
 
 
 class Ambiguous(Exception):
@@ -153,6 +221,8 @@ class Store:
             self._memory = sqlite3.connect(":memory:", check_same_thread=False)
             self._memory.row_factory = sqlite3.Row
         with self._conn() as conn:
+            if self._memory is None:
+                conn.execute("PRAGMA journal_mode=WAL")     # kept in the file: every later connection gets it
             conn.executescript(SCHEMA)
             for table, columns in ADDED_COLUMNS.items():
                 have = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
@@ -172,13 +242,15 @@ class Store:
 
         def __enter__(self):
             self.store._lock.acquire()
-            if self.store._memory is not None:
-                self.conn = self.store._memory
-            else:
-                self.conn = sqlite3.connect(self.store.path, timeout=15)
-                self.conn.row_factory = sqlite3.Row
-                self.conn.execute("PRAGMA journal_mode=WAL")
-                self.conn.execute("PRAGMA busy_timeout=15000")
+            try:
+                if self.store._memory is not None:
+                    self.conn = self.store._memory
+                else:
+                    self.conn = sqlite3.connect(self.store.path, timeout=15)    # waits up to 15 s on a busy file
+                    self.conn.row_factory = sqlite3.Row
+            except BaseException:       # never leave the lock held: every other thread would wait forever
+                self.store._lock.release()
+                raise
             return self.conn
 
         def __exit__(self, exc_type, exc, tb):
@@ -216,7 +288,8 @@ class Store:
         ref = (ref or "").strip()
         if not ref:
             return None
-        exact = self.get(ref) or self.get(slugify(ref))
+        slug = slugify(ref)
+        exact = self.get(ref) or (self.get(slug) if slug != "deal" or ref.lower() == "deal" else None)
         if exact:
             return exact
         with self._conn() as conn:
@@ -245,6 +318,7 @@ class Store:
         base = slugify(name + ("-" + values["grp"] if values.get("grp") else ""))
         stamp = now()
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             deal_id, n = base, 1
             while conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
                 n += 1
@@ -402,6 +476,12 @@ class Store:
                                (deal_id,)).fetchone()
         return row[0] or ""
 
+    def touches(self) -> dict:
+        """``last_touch`` for every record in one query: ``{deal id: timestamp}``."""
+        with self._conn() as conn:
+            return {row[0]: row[1] or "" for row in conn.execute(
+                "SELECT deal_id, max(at) FROM activities WHERE kind NOT IN ('snooze', 'card') GROUP BY deal_id")}
+
     # -- cards ----------------------------------------------------------------------------------
     def remember_card(self, deal_id: str, channel: str, ts: str, session_key: str = "") -> None:
         """Record where a card lives. ``session_key`` is the conversation it was posted from, which is
@@ -458,6 +538,12 @@ class Store:
             row = conn.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
         return row[0] if row else default
 
+    def meta_prefix(self, prefix: str) -> dict:
+        """Every stored value whose key starts with ``prefix``, keyed by the rest of the key."""
+        with self._conn() as conn:
+            return {row[0][len(prefix):]: row[1] for row in conn.execute(
+                "SELECT k, v FROM meta WHERE substr(k, 1, ?) = ?", (len(prefix), prefix))}
+
     def meta_set(self, key: str, value: str) -> None:
         with self._conn() as conn:
             conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?,?)", (key, str(value)))
@@ -470,6 +556,7 @@ class Store:
 
     def bump(self, key: str, by: int = 1) -> int:
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
             value = (int(row[0]) if row and str(row[0]).isdigit() else 0) + by
             conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?,?)", (key, str(value)))

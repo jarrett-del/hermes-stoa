@@ -166,7 +166,7 @@ class SlackDesk:
         result = await asyncio.to_thread(self.desk.click, verb, deal_id, extra, actor)
         log.info("stoa: %s clicked %s on %s", actor, verb, deal_id)
         if result.get("deal") is None:
-            await self._say(channel, ts, result.get("notice") or "That record is no longer on the desk.")
+            await self._say(channel, thread, result.get("notice") or "That record is no longer on the desk.")
             return
         await asyncio.to_thread(self.desk.store.remember_card, deal_id, channel, ts)
         await self._update(channel, ts, deal_id)
@@ -215,6 +215,7 @@ class SlackDesk:
         log.info("stoa: the gateway did not start the follow-up turn (no conversation to continue, or "
                  "plugins.entries.stoa.allow_gateway_injection is not true); the task is parked on the record")
         return False
+
 
 def _fallback(deal: dict) -> str:
     """The notification line, and what screen readers get."""

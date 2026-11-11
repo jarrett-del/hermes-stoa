@@ -21,14 +21,34 @@ PLUGIN = "stoa"
 TOOLSET = "stoa"
 
 
+def _home() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home())
+
+
 def _data_dir() -> Path:
     from plugins.plugin_storage import plugin_data_dir
     return plugin_data_dir(PLUGIN)
 
 
-def _secret(name: str):
-    from agent.secret_scope import get_secret
-    return get_secret(name)
+def _secret_reader(home: Path):
+    """A way to read this profile's secrets from anywhere the plugin runs.
+
+    Inside a chat turn Hermes has the profile's secret scope installed and ``get_secret`` just works.
+    A Slack button click and the web tab arrive outside any turn; on a gateway that serves several
+    profiles nothing says whose keys apply there, and ``get_secret`` refuses. Hermes's own background
+    work handles that by installing the profile's scope around the call, and so does this.
+    """
+    def read(name: str):
+        from agent import secret_scope
+        if secret_scope.current_secret_scope() is not None or not secret_scope.is_multiplex_active():
+            return secret_scope.get_secret(name)
+        token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home), profile_home=str(home))
+        try:
+            return secret_scope.get_secret(name)
+        finally:
+            secret_scope.reset_secret_scope(token)
+    return read
 
 
 def _session() -> dict:
@@ -61,16 +81,24 @@ def _tool(fn, desk=None):
     return handler
 
 
-def build_desk(ctx) -> Desk:
-    return Desk(data_dir=_data_dir, get_config=ctx.get_config, set_config=ctx.set_config, get_secret=_secret,
+def build_desk(get_config, set_config) -> Desk:
+    """A desk that belongs to the profile in scope right now.
+
+    Hermes loads a plugin once per profile, with that profile's home in scope, so the data folder is
+    resolved here and kept: later calls can arrive with no profile in scope at all (a button click).
+    """
+    home, data = _home(), _data_dir()
+    desk = Desk(data_dir=lambda: data, get_config=get_config, set_config=set_config, get_secret=_secret_reader(home),
                 actor=lambda: _session().get("actor", ""))
+    desk.home = home
+    return desk
 
 
 LIVE_DESKS: list = []  # desks of loaded plugin instances, newest last (the dashboard tab reuses the live one)
 
 
 def register(ctx) -> None:
-    desk = build_desk(ctx)
+    desk = build_desk(ctx.get_config, ctx.set_config)
     LIVE_DESKS.append(desk)
     del LIVE_DESKS[:-4]
 
@@ -106,7 +134,10 @@ def register(ctx) -> None:
 
     # -- what the agent knows without being told ------------------------------------------------
     def section(info) -> str:
-        session = dict(_session(), platform=str((info or {}).get("platform") or "").lower())
+        session = _session()
+        platform = str((info or {}).get("platform") or "").lower()
+        if platform:        # the host says where this prompt is for; without that, trust the session itself
+            session = dict(session, platform=platform)
         return desk.prompt_section() if desk.allowed(session) else ""
 
     ctx.register_system_prompt_section("stoa.desk", section, max_chars=900)

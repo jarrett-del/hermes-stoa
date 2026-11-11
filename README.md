@@ -57,6 +57,8 @@ taps a button in Slack you watch the card move.
 
 ![The market map](docs/dashboard-market-map.jpg)
 
+![What the map adds up to](docs/dashboard-market-read.jpg)
+
 Buttons on the web do the same instant, deterministic work as the buttons in Slack. The web
 cannot start an agent turn, so when a click calls for a draft the task waits on the record
 (the card shows *draft waiting*) and Hermes writes it the next time that record comes up in chat.
@@ -89,7 +91,8 @@ Press **Submit to client** and three things happen, in this order:
    (*"Draft the submission note to the client: three bullet points on fit, comp and
    availability, and one honest risk"*) and replies with the draft.
 
-Two people clicking the same button at once move the stage once, not twice.
+Two people clicking the same button at once move the stage once, not twice: the check and the
+change are one database transaction, so it holds across Slack, the web tab and the agent.
 
 ## What you get
 
@@ -205,7 +208,8 @@ a few times a day.
 With a [People Data Labs](https://www.peopledatalabs.com/) key, the **Enrich** button and
 `gtm_enrich` look up a person or company and fill the record's blank fields. It never overwrites
 what a person typed, results are cached for 90 days, and a monthly cap (default 50 lookups)
-keeps the bill predictable.
+keeps the bill predictable. A playbook with `enrich: none` removes the button and refuses the
+lookup, for teams that do not want it at all.
 
 ### Gmail
 
@@ -217,7 +221,12 @@ email, ready for you to read and send. Without it, drafts arrive in the chat.
 
 `gtm_export` writes the whole pipeline to a CSV that opens in Google Sheets or Excel, and reads
 one back in (with a dry run first). That is how you move in from a spreadsheet, and how you get
-a copy out for a board meeting.
+a copy out for a board meeting. Import reads the files spreadsheets actually produce: Excel's
+encoding, a stray comma in a row, due dates written as `12/01/2026` or `Dec 1`. A row it cannot
+use is reported with its row number and the rest still come in.
+
+Due dates are stored as dates. Say "tomorrow", "Friday" or "+3d" and the desk works it out; say
+something it cannot read and it tells you, and nothing is saved.
 
 ## Settings
 
@@ -227,7 +236,7 @@ All optional. Set them in the Desktop app under **Settings → Plugins → Stoa*
 | Setting | Default | What it does |
 |---|---|---|
 | `playbook` | `b2b-sales` | Which playbook the desk runs on |
-| `channels` | empty | Chat ids where the desk is available; empty means everywhere |
+| `channels` | empty | Chat ids where the desk is available; empty means everywhere. Add `cron` to let scheduled jobs use it too |
 | `notes_dir` | empty | Folder of call notes to watch |
 | `notes_days` | `7` | How far back the notes inbox looks |
 | `pdl_monthly_cap` | `50` | Most paid lookups per calendar month (0 = no cap) |
@@ -268,7 +277,10 @@ What the plugin does that you would want to know before installing it:
 - **Slack.** Cards are posted and updated through the Slack app Hermes is already connected
   with. The plugin never reads, stores or sees the Slack token.
 - **Credentials.** `PDL_API_KEY`, `EXA_API_KEY` and `GRANOLA_API_KEY` are read through Hermes's secret scope
-  (`agent.secret_scope.get_secret`). The plugin reads no `.env` or credential file.
+  (`agent.secret_scope.get_secret`). The plugin reads no `.env` or credential file. A button click
+  or a web-tab request arrives outside any chat turn; on a gateway serving several profiles the
+  plugin then installs its own profile's scope around the read, the way Hermes does for its own
+  background work (`set_secret_scope(build_profile_secret_scope(home))`), and removes it after.
 - **Web dashboard.** The tab's backend adds routes under `/api/plugins/stoa/`, behind the
   dashboard's own sign-in. They read and change the pipeline; they call no model and no outside
   service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
@@ -297,7 +309,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 71 tests, no network
+python3 -m unittest discover -s tests     # 90 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
