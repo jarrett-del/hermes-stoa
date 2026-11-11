@@ -43,10 +43,16 @@ def _session() -> dict:
             "actor": get_session_env("HERMES_SESSION_ACTOR_NAME") or get_session_env("HERMES_SESSION_USER_NAME") or ""}
 
 
-def _tool(fn):
+AWAY = {"ok": False, "error": "The Stoa desk is not available in this conversation (the team limits it to certain "
+                                "chats). Do not retry here; use your other tools."}
+
+
+def _tool(fn, desk=None):
     """Tool handlers return JSON strings and never raise into the agent loop."""
     def handler(args: dict, **kwargs) -> str:
         try:
+            if desk is not None and not desk.allowed(_session()):
+                return json.dumps(AWAY)
             return json.dumps(fn(args or {}), ensure_ascii=False, default=str)
         except Exception as exc:
             log.error("stoa: %s failed: %s", getattr(fn, "__name__", "tool"), exc, exc_info=True)
@@ -72,7 +78,7 @@ def register(ctx) -> None:
         (schemas.GTM_PLAYBOOK, desk.playbook_tool, "📜"),
         (schemas.GTM_EXPORT, desk.export, "📤"),
     ):
-        ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=_tool(fn), emoji=emoji)
+        ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=_tool(fn, desk), emoji=emoji)
 
     # -- Slack cards and their buttons ----------------------------------------------------------
     from .slackdesk import ACTIONS, SlackDesk
@@ -82,14 +88,21 @@ def register(ctx) -> None:
     ctx.register_slack_action_handler(ACTIONS, slack.on_action)
 
     # -- /gtm on every surface, `hermes stoa` in a terminal -------------------------------------
-    ctx.register_command("gtm", handler=desk.slash, description="Pipeline board, brief, or one record's card",
+    def slash(raw_args: str) -> str:
+        return desk.slash(raw_args) if desk.allowed(_session()) else "The Stoa desk is not available in this chat."
+
+    ctx.register_command("gtm", handler=slash, description="Pipeline board, brief, or one record's card",
                          args_hint="[brief|stale|due|playbooks|<name>]")
     from . import cli
     ctx.register_cli_command(name="stoa", help="Stoa GTM desk: status, sample data, CSV import and export",
                              setup_fn=cli.setup, handler_fn=lambda args: cli.run(desk, args))
 
     # -- what the agent knows without being told ------------------------------------------------
-    ctx.register_system_prompt_section("stoa.desk", lambda info: desk.prompt_section(), max_chars=900)
+    def section(info) -> str:
+        session = dict(_session(), platform=str((info or {}).get("platform") or "").lower())
+        return desk.prompt_section() if desk.allowed(session) else ""
+
+    ctx.register_system_prompt_section("stoa.desk", section, max_chars=900)
     skills = Path(__file__).parent / "skills"
     for child in sorted(skills.iterdir()):
         if child.is_dir() and (child / "SKILL.md").exists():

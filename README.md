@@ -133,6 +133,7 @@ All optional. Set them in the Desktop app under **Settings → Plugins → Stoa*
 | Setting | Default | What it does |
 |---|---|---|
 | `playbook` | `b2b-sales` | Which playbook the desk runs on |
+| `channels` | empty | Chat ids where the desk is available; empty means everywhere |
 | `notes_dir` | empty | Folder of call notes to watch |
 | `notes_days` | `7` | How far back the notes inbox looks |
 | `pdl_monthly_cap` | `50` | Most paid lookups per calendar month (0 = no cap) |
@@ -190,7 +191,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 47 tests, no network
+python3 -m unittest discover -s tests     # 48 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

@@ -168,6 +168,15 @@ class DeskTests(unittest.TestCase):
         self.assertIn("Good call.", [a["text"] for a in got["deal"]["activity"]])
         self.assertIn("Next: Send JD", got["card"])
 
+    def test_channel_allowlist(self):
+        self.assertTrue(self.desk.allowed({"platform": "slack", "chat_id": "C1"}))
+        desk = make_desk(self.tmp.name, config={"channels": ["C1"]})
+        self.assertTrue(desk.allowed({"platform": "slack", "chat_id": "C1"}))
+        self.assertFalse(desk.allowed({"platform": "slack", "chat_id": "D9"}))
+        self.assertFalse(desk.allowed({"platform": "telegram", "chat_id": ""}))
+        self.assertTrue(desk.allowed({"platform": "cli"}))
+        self.assertTrue(desk.allowed({}))
+
     def test_unknown_and_missing_refs(self):
         self.assertFalse(self.desk.deal({"action": "get", "deal": "ghost"})["ok"])
         self.assertFalse(self.desk.deal({"action": "get"})["ok"])

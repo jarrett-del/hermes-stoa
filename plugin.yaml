@@ -27,6 +27,11 @@ config_schema:
     default: b2b-sales
     label: Playbook
     description: "Which playbook the desk runs on: b2b-sales, recruiting, agency, or one you saved."
+  channels:
+    type: list
+    default: []
+    label: Limit to these chats
+    description: "Chat ids (for example Slack channel ids) where the desk is available. Empty means everywhere. Terminal and Desktop sessions are always allowed."
   notes_dir:
     type: str
     default: ""

@@ -78,6 +78,18 @@ class Desk:
         except Exception:
             return "agent"
 
+    def allowed(self, session: Optional[dict]) -> bool:
+        """Whether the desk is available in this conversation (the ``channels`` setting)."""
+        allow = self.setting("channels", []) or []
+        if isinstance(allow, str):
+            allow = [c.strip() for c in allow.split(",") if c.strip()]
+        if not allow:
+            return True
+        session = session or {}
+        if session.get("platform", "") in ("", "cli", "tui", "desktop", "local"):
+            return True
+        return session.get("chat_id", "") in allow
+
     def can_enrich(self) -> bool:
         return bool(self.secret(PDL_KEY))
 
