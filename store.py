@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS cards (
   ts TEXT NOT NULL,
   deal_id TEXT NOT NULL,
   session_key TEXT NOT NULL DEFAULT '',
+  asked_by TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (channel, ts)
 );
 CREATE TABLE IF NOT EXISTS cache (
@@ -108,7 +109,7 @@ CREATE TABLE IF NOT EXISTS intakes (
 ADDED_COLUMNS = {
     "markets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
     "targets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
-    "cards": {"session_key": "TEXT NOT NULL DEFAULT ''"},
+    "cards": {"session_key": "TEXT NOT NULL DEFAULT ''", "asked_by": "TEXT NOT NULL DEFAULT ''"},
 }
 
 EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source")
@@ -500,15 +501,23 @@ class Store:
                 "SELECT deal_id, max(at) FROM activities WHERE kind NOT IN ('snooze', 'card') GROUP BY deal_id")}
 
     # -- cards ----------------------------------------------------------------------------------
-    def remember_card(self, deal_id: str, channel: str, ts: str, session_key: str = "") -> None:
+    def remember_card(self, deal_id: str, channel: str, ts: str, session_key: str = "", asked_by: str = "") -> None:
         """Record where a card lives. ``session_key`` is the conversation it was posted from, which is
-        where a later button click sends the agent's writing task; an empty one keeps what is stored."""
+        where a later button click sends the agent's writing task; ``asked_by`` is the Slack user it
+        was posted for, who may press its buttons. An empty one keeps what is stored."""
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO cards (channel, ts, deal_id, session_key) VALUES (?,?,?,?) "
+                "INSERT INTO cards (channel, ts, deal_id, session_key, asked_by) VALUES (?,?,?,?,?) "
                 "ON CONFLICT (channel, ts) DO UPDATE SET deal_id = excluded.deal_id, session_key = "
-                "CASE WHEN excluded.session_key != '' THEN excluded.session_key ELSE cards.session_key END",
-                (channel, ts, deal_id, session_key))
+                "CASE WHEN excluded.session_key != '' THEN excluded.session_key ELSE cards.session_key END, asked_by = "
+                "CASE WHEN excluded.asked_by != '' THEN excluded.asked_by ELSE cards.asked_by END",
+                (channel, ts, deal_id, session_key, asked_by))
+
+    def card_asker(self, channel: str, ts: str) -> str:
+        """The Slack user a card, a review or a map was posted for; '' when nobody is on record."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT asked_by FROM cards WHERE channel = ? AND ts = ?", (channel, ts)).fetchone()
+        return row[0] if row else ""
 
     def card_session(self, channel: str, ts: str) -> str:
         with self._conn() as conn:

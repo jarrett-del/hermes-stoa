@@ -240,7 +240,7 @@ GTM_EXPORT = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["export", "import", "table"]},
-            "path": {"type": "string", "description": "import: the CSV to read. export: where to write (optional)."},
+            "path": {"type": "string", "description": "import: a .csv or .tsv file in the desk's imports folder, the configured import folder or the working directory. export: a file name for the CSV (optional); it is always written to the plugin's exports folder."},
             "dry_run": {"type": "boolean", "description": "import: count what would be added without adding it."},
         },
         "required": ["action"],
@@ -288,7 +288,7 @@ GTM_INTAKE = {
                     }],
                 },
             },
-            "path": {"type": "string", "description": "propose: a CSV file to read instead of rows."},
+            "path": {"type": "string", "description": "propose: a .csv or .tsv file to read instead of rows. It has to be in the desk's imports folder, the configured import folder or the working directory."},
             "columns": {"type": "array", "items": {"type": "string"},
                         "description": "propose: the header row, when rows are lists of cells (a spreadsheet tab read as a table)."},
             "id": {"type": "string", "description": "show/apply/discard: the list's id. May be left out when only one is waiting."},

@@ -1,5 +1,5 @@
 name: stoa
-version: 0.8.1
+version: 0.9.0
 manifest_version: 2
 api_version: 1
 description: >-
@@ -35,6 +35,16 @@ config_schema:
     default: []
     label: Limit to these chats
     description: "Chat ids (for example Slack channel ids) where the desk is available. Empty means everywhere. Terminal and Desktop sessions are always allowed; add the word cron to let scheduled jobs use it too."
+  slack_users:
+    type: list
+    default: []
+    label: Who may press Slack buttons
+    description: "Slack user ids (they start with U) who may press the buttons on any card, review or map. Empty means only the person a card was posted for can press its buttons."
+  import_dir:
+    type: str
+    default: ""
+    label: Import folder
+    description: "A folder the agent may read CSV files from by path, besides the plugin's own imports folder and the working directory. Optional."
   notes_dir:
     type: str
     default: ""

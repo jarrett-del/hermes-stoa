@@ -26,6 +26,10 @@ HANDOFF_GRACE = 45  # seconds an accepted hand-off gets to open the record befor
 HANDOFF_SETTLE = 8  # seconds between the agent opening the record and its draft landing in the thread
 
 
+NOT_ALLOWED = ("Not allowed: these buttons work for the person this was posted for, or for the people your team has "
+               "listed in the Stoa plugin's `slack_users` setting.")
+
+
 class SlackDesk:
     def __init__(self, desk, inject: Callable[..., bool]):
         self.desk = desk
@@ -67,18 +71,20 @@ class SlackDesk:
             return None
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(POST_TIMEOUT)
 
-    def post_card(self, channel: str, deal_id: str, thread_ts: str = "", session_key: str = "") -> dict:
+    def post_card(self, channel: str, deal_id: str, thread_ts: str = "", session_key: str = "", asked_by: str = "") -> dict:
+        """``asked_by`` is the Slack user the card is for: the one person who may press its buttons
+        when the team has not listed anyone in ``slack_users``."""
         if not self.available:
             return {"ok": False, "error": "Slack is not connected"}
         try:
-            result = self._run(self._post(channel, deal_id, thread_ts, session_key))
+            result = self._run(self._post(channel, deal_id, thread_ts, session_key, asked_by))
         except Exception as exc:
             log.warning("stoa: could not post a card to %s: %s", channel, exc)
             return {"ok": False, "error": _slack_error(exc)}
         return result or {"ok": True, "channel": channel}
 
-    def post_blocks(self, channel: str, blocks: list, text: str, thread_ts: str = "") -> dict:
-        """Post a ready-made message (an intake review). Never raises."""
+    def post_blocks(self, channel: str, blocks: list, text: str, thread_ts: str = "", asked_by: str = "", key: str = "") -> dict:
+        """Post a ready-made message (an intake review) and remember who it is for. Never raises."""
         if not self.available:
             return {"ok": False, "error": "Slack is not connected"}
         kwargs = {"channel": channel, "blocks": blocks, "text": text, "unfurl_links": False}
@@ -89,10 +95,13 @@ class SlackDesk:
         except Exception as exc:
             log.warning("stoa: could not post to %s: %s", channel, exc)
             return {"ok": False, "error": _slack_error(exc)}
-        return {"ok": True, "channel": channel, "ts": (response or {}).get("ts", "")}
+        ts = (response or {}).get("ts", "")
+        if ts and key:
+            self.desk.store.remember_card(key, (response or {}).get("channel") or channel, ts, "", asked_by)
+        return {"ok": True, "channel": channel, "ts": ts}
 
-    def post_map(self, channel: str, market_id: str, thread_ts: str = "", session_key: str = "") -> dict:
-        return self.post_card(channel, MAP + market_id, thread_ts, session_key)
+    def post_map(self, channel: str, market_id: str, thread_ts: str = "", session_key: str = "", asked_by: str = "") -> dict:
+        return self.post_card(channel, MAP + market_id, thread_ts, session_key, asked_by)
 
     def refresh(self, deal_id: str) -> None:
         """Redraw every card already posted for a deal or a market map (best effort, never raises)."""
@@ -114,7 +123,7 @@ class SlackDesk:
             return None, ""
         return self.desk.blocks(deal), _fallback(deal)
 
-    async def _post(self, channel: str, deal_id: str, thread_ts: str = "", session_key: str = "") -> dict:
+    async def _post(self, channel: str, deal_id: str, thread_ts: str = "", session_key: str = "", asked_by: str = "") -> dict:
         blocks, text = await asyncio.to_thread(self._render, deal_id)
         if blocks is None:
             return {"ok": False, "error": "no such record"}
@@ -122,7 +131,7 @@ class SlackDesk:
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         response = await self.client.chat_postMessage(**kwargs)
-        await asyncio.to_thread(self.desk.store.remember_card, deal_id, response["channel"], response["ts"], session_key)
+        await asyncio.to_thread(self.desk.store.remember_card, deal_id, response["channel"], response["ts"], session_key, asked_by)
         return {"ok": True, "channel": response["channel"], "ts": response["ts"]}
 
     async def _update(self, channel: str, ts: str, deal_id: str) -> None:
@@ -148,6 +157,31 @@ class SlackDesk:
         except Exception as exc:
             log.warning("stoa: could not post in the card's thread: %s", exc)
 
+    # -- who may press a button -----------------------------------------------------------------
+    def may_click(self, user_id: str, channel: str, ts: str) -> bool:
+        """A button moves stages, applies lists and can spend paid lookups, so a click is taken only
+        from someone entitled to it. The channel has to be one the desk is available in (``channels``).
+        Then: with people listed in ``slack_users``, the user has to be one of them; with nobody
+        listed, the user has to be the person this message was posted for."""
+        if not user_id or not channel or not self.desk.allowed({"platform": "slack", "chat_id": channel}):
+            return False
+        listed = self.desk.slack_users()
+        if listed:
+            return user_id in listed
+        return bool(ts) and self.desk.store.card_asker(channel, ts) == user_id
+
+    async def _refuse(self, channel: str, user_id: str, thread_ts: str = "") -> None:
+        """Tell the person who pressed, and nobody else, that the click was not taken."""
+        if not channel or not user_id:
+            return
+        kwargs = {"channel": channel, "user": user_id, "text": NOT_ALLOWED}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            await self.client.chat_postEphemeral(**kwargs)
+        except Exception as exc:
+            log.debug("stoa: could not tell %s the click was refused: %s", user_id, exc)
+
     # -- button clicks --------------------------------------------------------------------------
     async def on_action(self, ack, body, action) -> None:
         await ack()  # Slack wants this within 3 seconds; the work follows
@@ -170,6 +204,10 @@ class SlackDesk:
         actor = user.get("name") or user.get("username") or user.get("id", "")
 
         thread = message.get("thread_ts") or ts
+        if not await asyncio.to_thread(self.may_click, user.get("id", ""), channel, ts):
+            log.info("stoa: refused a click on %s by %s in %s", action_id, actor or "someone", channel or "an unknown channel")
+            await self._refuse(channel, user.get("id", ""), message.get("thread_ts") or "")
+            return
         if verb in ("intake", "intake_discard"):  # an intake review: "apply|<id>" or "discard|<id>"
             op, _, intake_id = value.partition("|")
             if intake_id and channel and ts:

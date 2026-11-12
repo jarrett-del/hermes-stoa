@@ -24,11 +24,11 @@ class PlaybookError(ValueError):
 
 def _load_yaml(text: str) -> Any:
     try:
-        import yaml  # PyYAML ships with Hermes
+        from ruamel.yaml import YAML       # the YAML library Hermes ships
+    except ImportError:                    # outside Hermes (the plugin's own tests): PyYAML, if that is what is installed
+        import yaml
         return yaml.safe_load(text)
-    except ImportError:  # pragma: no cover - fallback for a ruamel-only environment
-        from ruamel.yaml import YAML
-        return YAML(typ="safe").load(text)
+    return YAML(typ="safe").load(text)
 
 
 class Playbook:

@@ -368,7 +368,9 @@ All optional. Set them in the Desktop app under **Settings → Plugins → Stoa*
 | Setting | Default | What it does |
 |---|---|---|
 | `playbook` | `b2b-sales` | Which playbook the desk runs on |
-| `channels` | empty | Chat ids where the desk is available; empty means everywhere. Add `cron` to let scheduled jobs use it too |
+| `channels` | empty | Chat ids where the desk is available; empty means everywhere. Add `cron` to let scheduled jobs use it too. Button clicks are refused outside these chats as well |
+| `slack_users` | empty | Slack user ids (they start with `U`) who may press the buttons on any card, review or map. Empty means only the person a card was posted for can press its buttons |
+| `import_dir` | empty | A folder the agent may read CSV files from by path, besides the plugin's own `imports/` folder and the working directory |
 | `notes_dir` | empty | Folder of call notes to watch |
 | `notes_days` | `7` | How far back the notes inbox looks |
 | `pdl_monthly_cap` | `50` | Most paid lookups per calendar month (0 = no cap) |
@@ -417,7 +419,10 @@ What the plugin does that you would want to know before installing it:
 - **Paid lookups.** People Data Labs charges per result. Every lookup counts against
   `pdl_monthly_cap`, and a buyer lookup returns at most five people.
 - **Slack.** Cards are posted and updated through the Slack app Hermes is already connected
-  with. The plugin never reads, stores or sees the Slack token.
+  with. The plugin never reads, stores or sees the Slack token. A button moves a stage, applies a
+  list and can spend a paid lookup, so a press is taken only from the person the card was posted
+  for, or, when you list people in `slack_users`, only from them, and only in a chat the desk is
+  available in. Anyone else gets a private "Not allowed" and nothing changes.
 - **Credentials.** `PDL_API_KEY`, `EXA_API_KEY` and `GRANOLA_API_KEY` are read through Hermes's secret scope
   (`agent.secret_scope.get_secret`). The plugin reads no `.env` or credential file. A button click
   or a web-tab request arrives outside any chat turn; on a gateway serving several profiles the
@@ -439,16 +444,19 @@ What the plugin does that you would want to know before installing it:
   dashboard's own sign-in. They read and change the pipeline; they call no model and no outside
   service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
 - **Files outside the plugin's own data.** It reads Markdown and text files in the folder you
-  set as `notes_dir`, and a CSV at a path you (or the agent, on your request) pass to import or intake.
-  Exports (the pipeline as CSV, a market map as a web page) are written to the plugin's
-  `exports/` folder unless a CSV path is given.
+  set as `notes_dir`. By path it reads only `.csv` and `.tsv` files, and only from the plugin's
+  own `imports/` folder, the folder you name in `import_dir`, and the working directory when that
+  is a project folder; a path the agent passes anywhere else is refused. (At a terminal,
+  `hermes stoa import <file>` reads the CSV you name.) It writes nowhere outside its own data
+  folder: exports (the pipeline as CSV, a market map as a web page) always go to its `exports/`
+  folder, and a file name is all the agent can choose.
 - **Messages to the agent.** With `allow_gateway_injection` granted, a button click queues one
   instruction for the agent in the card's thread. The agent drafts; it is told not to send.
 - **Stored data.** Names, emails, notes and enrichment results for the people in your pipeline
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.8
+## Limits in 0.9
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -463,6 +471,8 @@ What the plugin does that you would want to know before installing it:
   in it come back when you approve them. Deleting a row in the Sheet does not remove the record.
 - After updating the plugin, restart the gateway so the Slack buttons bind to the new code.
 - A team shares one desk. There are owners on records, but no per-person permissions.
+- A card posted by a scheduled job, or before 0.9, has no one on record as having asked for it:
+  list the people who may press such cards in `slack_users`, or ask for the card again.
 - The activity sweep is only as good as the tools your Hermes has connected and the model reading
   the mail. It summarises; check the record's log against the email when it matters.
 - The dock on the page runs a turn of your agent's model, the same as typing in a chat. It takes
@@ -474,7 +484,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 121 tests, no network
+python3 -m unittest discover -s tests     # 132 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

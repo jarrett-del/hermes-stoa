@@ -23,8 +23,8 @@ def setup(subparser) -> None:
                         help="recruiting: an agency with about $1.2M in open fees. saas: a company selling a fraud prevention "
                              "tool, about $2.5M of pipeline. Left out: the one that fits the active playbook")
     sample.add_argument("--clear", action="store_true", help="Remove the sample records instead")
-    export = subs.add_parser("export", help="Write the pipeline to a CSV file")
-    export.add_argument("path", nargs="?", default="")
+    export = subs.add_parser("export", help="Write the pipeline to a CSV file in the plugin's exports folder")
+    export.add_argument("path", nargs="?", default="", metavar="name", help="A file name (optional). It is written to the exports folder.")
     imp = subs.add_parser("import", help="Add records from a CSV file")
     imp.add_argument("path")
     imp.add_argument("--dry-run", action="store_true")
@@ -92,7 +92,8 @@ def run(desk, args) -> None:
         result = desk.export({"action": "export", "path": args.path or None})
         print("Wrote %d records to %s" % (result["rows"], result["path"]) if result.get("ok") else result.get("error"))
     elif command == "import":
-        result = desk.import_csv(Path(args.path).expanduser(), dry_run=args.dry_run)
+        path, refused = desk.csv_path(args.path, trusted=True)        # typed by a person at a terminal: any folder, CSV only
+        result = refused or desk.import_csv(path, dry_run=args.dry_run)
         if result.get("ok"):
             print("%s %d records, skipped %d already on the desk."
                   % ("Would add" if args.dry_run else "Added", result["added"], result["skipped_existing"]))

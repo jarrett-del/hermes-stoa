@@ -320,10 +320,14 @@ class DeskTests(unittest.TestCase):
         other = tempfile.TemporaryDirectory()
         self.addCleanup(other.cleanup)
         fresh = make_desk(other.name)
-        dry = fresh.export({"action": "import", "path": exported["path"], "dry_run": True})
+        self.assertIn("outside the folders", fresh.export({"action": "import", "path": exported["path"]})["error"])   # not one of its folders
+        inbox = Path(other.name) / "imports"
+        self.assertTrue(inbox.is_dir())                                # the refusal made the folder it points to
+        (inbox / "pipeline.csv").write_bytes(Path(exported["path"]).read_bytes())
+        dry = fresh.export({"action": "import", "path": "pipeline.csv", "dry_run": True})      # a bare name is looked for in the import folders
         self.assertEqual((dry["added"], fresh.store.count()), (7, 0))
-        self.assertEqual(fresh.export({"action": "import", "path": exported["path"]})["added"], 7)
-        again = fresh.export({"action": "import", "path": exported["path"]})
+        self.assertEqual(fresh.export({"action": "import", "path": str(inbox / "pipeline.csv")})["added"], 7)
+        again = fresh.export({"action": "import", "path": "pipeline.csv"})
         self.assertEqual((again["added"], again["skipped_existing"]), (0, 7))
         priya = fresh.store.find("Priya Raman")
         self.assertEqual((priya["stage"], priya["value"], priya["fields"]["comp"]), ("interview", 45000, "$240k base"))
@@ -1107,7 +1111,9 @@ class IntakeTests(unittest.TestCase):
         self.assertEqual(third["deal"], self.dana["id"])
 
     def test_a_csv_is_read_by_the_desk_and_other_files_are_the_agents_to_read(self):
-        path = Path(self.tmp.name) / "leads.csv"
+        inbox = Path(self.tmp.name) / "imports"
+        inbox.mkdir(exist_ok=True)
+        path = inbox / "leads.csv"
         path.write_bytes("Candidate,Company,Search,Due\nZo\u00eb Marsh,Acme,Staff Backend \u00b7 Northwind,12/05/2026\n,,,\n".encode("cp1252"))
         out = self.desk.intake.run({"action": "propose", "path": str(path)})
         self.assertEqual((out["source"], out["counts"]["new"], out["counts"]["rows"]), ("leads.csv", 1, 1))
@@ -1452,9 +1458,86 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual((counts["mapped"], counts["tracked"], counts["dismissed"]), (6, 1, 1))
 
 
+class FileBoundaryTests(unittest.TestCase):
+    """A path in a tool call is the model's choice, and a model can be talked into things. So the desk
+    writes its exports in one folder of its own, and reads CSVs by path from a few named folders only."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name).resolve() / "plugin-data"
+        self.home.mkdir()
+        self.outside = Path(self.tmp.name).resolve() / "elsewhere"
+        self.outside.mkdir()
+        self.desk = make_desk(str(self.home))
+        fixture.load(self.desk)
+
+    def test_an_export_is_a_file_name_in_the_exports_folder_and_nothing_else(self):
+        exports = (self.home / "exports").resolve()
+        victim = self.outside / "config.yaml"
+        victim.write_text("keep me")
+        for bad in (str(victim), "../elsewhere/config.yaml", "..", "sub/pipeline.csv", "sub\\pipeline.csv", "~/.zshrc", ".hidden.csv",
+                    "/etc/passwd", "a" * 200):
+            out = self.desk.export({"action": "export", "path": bad})
+            self.assertFalse(out["ok"], bad)
+            self.assertIn("file name, not a path", out["error"])
+        self.assertEqual(victim.read_text(), "keep me")
+        named = self.desk.export({"action": "export", "path": "q4 pipeline"})
+        self.assertEqual(Path(named["path"]), exports / "q4 pipeline.csv")                      # the suffix is added
+        self.assertEqual(Path(self.desk.export({"action": "export"})["path"]).parent, exports)   # the default lands there too
+        self.assertEqual(named["rows"], 7)
+        self.assertEqual([p.name for p in exports.iterdir() if p.name.startswith(".")], [])       # nothing half-written is left
+        # a link someone planted in the folder is not followed out of it
+        (exports / "trap.csv").symlink_to(victim)
+        self.assertFalse(self.desk.export({"action": "export", "path": "trap.csv"})["ok"])
+        self.assertEqual(victim.read_text(), "keep me")
+
+    def test_a_csv_is_read_by_path_only_from_the_import_folders(self):
+        secret = self.outside / "customers.csv"
+        secret.write_text("Name,Company\nEve Stone,Rival Co\n")
+        for tool in (lambda path: self.desk.export({"action": "import", "path": path}),
+                     lambda path: self.desk.intake.run({"action": "propose", "path": path})):
+            refused = tool(str(secret))
+            self.assertFalse(refused["ok"])
+            self.assertIn("outside the folders", refused["error"])
+            self.assertIn("read it yourself", tool(str(self.outside / "notes.txt"))["error"])      # only .csv and .tsv, wherever it is
+            self.assertIn("read it yourself", tool(str(self.outside / "id_rsa"))["error"])
+        self.assertIsNone(self.desk.store.find("Eve Stone"))
+        inbox = self.home / "imports"
+        self.assertTrue(inbox.is_dir())                                # the refusal made the folder it points to
+        (inbox / "event.csv").write_text("Name,Company\nAda Park,Orbit\n")
+        self.assertEqual(self.desk.export({"action": "import", "path": "event.csv"})["added"], 1)
+        (inbox / "leak.csv").symlink_to(secret)                        # a link inside the folder that points out of it
+        self.assertIn("outside the folders", self.desk.export({"action": "import", "path": str(inbox / "leak.csv")})["error"])
+        self.assertIn("outside the folders", self.desk.intake.run({"action": "propose", "path": "../elsewhere/customers.csv"})["error"])
+        self.assertIsNone(self.desk.store.find("Eve Stone"))
+
+    def test_the_team_can_name_one_more_folder_and_a_person_at_a_terminal_is_trusted(self):
+        named = make_desk(str(self.home), config={"import_dir": str(self.outside)})
+        (self.outside / "customers.csv").write_text("Name,Company\nEve Stone,Rival Co\n")
+        self.assertEqual(named.intake.run({"action": "propose", "path": str(self.outside / "customers.csv")})["counts"]["new"], 1)
+        path, refused = self.desk.csv_path(str(self.outside / "customers.csv"), trusted=True)      # `hermes stoa import <path>`
+        self.assertEqual((path, refused), ((self.outside / "customers.csv").resolve(), None))
+        self.assertIn("read it yourself", self.desk.csv_path(str(self.outside / "notes.txt"), trusted=True)[1]["error"])
+
+    def test_the_working_directory_counts_only_when_it_is_a_project_folder(self):
+        project = self.outside / "project"
+        project.mkdir()
+        with mock.patch.object(Path, "cwd", return_value=project), mock.patch.object(Path, "home", return_value=self.outside):
+            self.assertIn(project.resolve(), self.desk.import_roots())
+        with mock.patch.object(Path, "cwd", return_value=self.outside), mock.patch.object(Path, "home", return_value=self.outside):
+            self.assertEqual(self.desk.import_roots(), [(self.home / "imports").resolve()])          # the home directory is not a project
+        with mock.patch.object(Path, "cwd", return_value=Path(self.outside.anchor)), mock.patch.object(Path, "home", return_value=self.outside):
+            self.assertEqual(self.desk.import_roots(), [(self.home / "imports").resolve()])          # nor is anything above it
+
+
 class FakeClient:
     def __init__(self):
-        self.posts, self.updates = [], []
+        self.posts, self.updates, self.whispers = [], [], []
+
+    async def chat_postEphemeral(self, **kwargs):
+        self.whispers.append(kwargs)
+        return {"ok": True}
 
     async def chat_postMessage(self, **kwargs):
         self.posts.append(kwargs)
@@ -1470,11 +1553,119 @@ class FakeApp:
         self.client = FakeClient()
 
 
+class SlackClickGuardTests(unittest.IsolatedAsyncioTestCase):
+    """A button moves a stage, applies a list and can spend a paid lookup. It is taken only from the
+    person the message was posted for, or from someone the team has listed, in a chat the desk is in."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = {}
+        self.wire(self.settings)
+
+    def wire(self, config):
+        self.desk = make_desk(self.tmp.name, config=config)
+        if not self.desk.store.count():
+            fixture.load(self.desk)
+        self.injected = []
+        self.slack = SlackDesk(self.desk, lambda content, origin=None, session_key=None: self.injected.append(content) or True)
+        self.slack.grace = 0.05
+        self.slack.settle = 0.02
+        self.desk.slack = self.slack
+        self.app = FakeApp()
+        self.slack.wire(self.app, None)
+        self.dana = self.desk.store.find("Dana Whitfield")
+
+    async def asyncTearDown(self):
+        others = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        if others:
+            await asyncio.wait(others, timeout=5)
+
+    async def ack(self):
+        pass
+
+    def press(self, user, action, value, ts="1700000000.000001", channel="C1"):
+        body = {"user": {"id": user, "name": user.lower()}, "channel": {"id": channel}, "team": {"id": "T1"}, "message": {"ts": ts}}
+        return self.slack.on_action(self.ack, body, {"action_id": action, "value": value})
+
+    def stage(self):
+        return self.desk.store.get(self.dana["id"])["stage"]
+
+    async def test_only_the_person_a_card_was_posted_for_can_press_it(self):
+        asked = {"platform": "slack", "chat_id": "C1", "user_id": "U1", "session_key": "s1"}
+        self.assertTrue((await asyncio.to_thread(self.desk.card, {"deal": "dana"}, asked))["posted"])
+        await self.press("U2", "stoa_advance", self.dana["id"] + "|screened")           # a colleague, a guest, anyone else in the channel
+        self.assertEqual(self.stage(), "screened")
+        whisper = self.app.client.whispers[-1]
+        self.assertEqual((whisper["channel"], whisper["user"]), ("C1", "U2"))            # told privately, in the place they pressed
+        self.assertIn("Not allowed", whisper["text"])
+        self.assertEqual((self.injected, self.app.client.updates), ([], []))             # no draft was started, no card redrawn
+        await self.press("U2", "stoa_enrich", self.dana["id"])                           # nor a paid lookup
+        await self.press("U2", "stoa_lost", self.dana["id"] + "|0")
+        self.assertEqual((self.stage(), self.desk.store.get(self.dana["id"])["status"]), ("screened", "open"))
+        await self.press("U1", "stoa_advance", self.dana["id"] + "|screened")
+        self.assertEqual(self.stage(), "submitted")
+        self.assertEqual(len(self.app.client.whispers), 3)
+
+    async def test_a_card_nobody_asked_for_needs_the_team_to_say_who_may_press_it(self):
+        await asyncio.to_thread(self.desk.card, {"deal": "dana", "channel": "C1"}, {"platform": "cron"})     # a scheduled job posted it
+        await self.press("U1", "stoa_advance", self.dana["id"] + "|screened")
+        self.assertEqual(self.stage(), "screened")
+        self.wire({"slack_users": "U7, U8"})                                             # the team lists who may
+        await self.press("U8", "stoa_advance", self.dana["id"] + "|screened")
+        self.assertEqual(self.stage(), "submitted")
+
+    async def test_with_a_list_only_the_people_on_it_can_press(self):
+        self.wire({"slack_users": ["U7"]})
+        asked = {"platform": "slack", "chat_id": "C1", "user_id": "U1"}
+        await asyncio.to_thread(self.desk.card, {"deal": "dana"}, asked)
+        await self.press("U1", "stoa_advance", self.dana["id"] + "|screened")           # asked for it, but is not on the team's list
+        self.assertEqual(self.stage(), "screened")
+        await self.press("U7", "stoa_advance", self.dana["id"] + "|screened")
+        self.assertEqual(self.stage(), "submitted")
+
+    async def test_the_chats_the_desk_is_limited_to_hold_for_clicks_too(self):
+        self.wire({"channels": ["C1"], "slack_users": ["U1"]})
+        await self.press("U1", "stoa_advance", self.dana["id"] + "|screened", channel="C9")     # an old card in a chat since closed to the desk
+        self.assertEqual(self.stage(), "screened")
+        self.assertIn("Not allowed", self.app.client.whispers[-1]["text"])
+        await self.press("U1", "stoa_advance", self.dana["id"] + "|screened", channel="C1")
+        self.assertEqual(self.stage(), "submitted")
+
+    async def test_a_list_waiting_for_approval_is_applied_only_by_the_person_who_sent_it(self):
+        here = {"platform": "slack", "chat_id": "C1", "user_id": "U1"}
+        out = await asyncio.to_thread(self.desk.intake.run, {"action": "propose", "source": "badge scans",
+                                                              "rows": [{"name": "Ada Quill", "company": "Fathom Data"}]}, here)
+        self.assertTrue(out["posted"])
+        await self.press("U2", "stoa_intake", "apply|" + out["id"])
+        self.assertIsNone(self.desk.store.find("Ada Quill"))
+        self.assertEqual(self.desk.store.intake_get(out["id"])["status"], "open")
+        await self.press("U2", "stoa_intake_discard", "discard|" + out["id"])            # nor thrown away by someone else
+        self.assertEqual(self.desk.store.intake_get(out["id"])["status"], "open")
+        await self.press("U1", "stoa_intake", "apply|" + out["id"])
+        self.assertEqual(self.desk.store.find("Ada Quill")["company"], "Fathom Data")
+
+    async def test_a_company_on_a_map_is_added_only_by_the_person_who_asked_for_the_map(self):
+        session = {"platform": "slack", "chat_id": "C1", "user_id": "U1"}
+        self.assertTrue((await asyncio.to_thread(self.desk.market, {"action": "post"}, session))["posted"])
+        button = [b["accessory"] for b in self.app.client.posts[0]["blocks"] if b.get("accessory")][0]
+        before = self.desk.store.count()
+        await self.press("U2", "stoa_track", button["value"])
+        self.assertEqual(self.desk.store.count(), before)
+        await self.press("U1", "stoa_track", button["value"])
+        self.assertEqual(self.desk.store.count(), before + 1)
+
+    async def test_a_click_with_no_sender_or_no_place_is_refused_quietly(self):
+        await self.slack.on_action(self.ack, {}, {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})
+        await self.slack.on_action(self.ack, {"user": {"id": "U1"}}, {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})
+        self.assertEqual((self.stage(), self.app.client.whispers), ("screened", []))
+
+
 class SlackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.desk = make_desk(self.tmp.name)
+        self.desk = make_desk(self.tmp.name, config={"slack_users": ["U1"]})      # these tests press as U1, who is on the team's list
         fixture.load(self.desk)
         self.injected = []
         self.accept = True

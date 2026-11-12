@@ -593,7 +593,8 @@ class Markets:
             return {"ok": True, "posted": False, "map": text, "note": "Slack is not available here, so show this map as text."}
         here = session.get("platform") == "slack" and channel == session.get("chat_id")
         result = slack.post_map(channel, market["id"], session.get("thread_id") or "" if here else "",
-                                session.get("session_key") or "" if here else "")
+                                session.get("session_key") or "" if here else "",
+                                session.get("user_id") or "" if session.get("platform") == "slack" else "")
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error") or "Slack did not accept the map", "map": text}
         return {"ok": True, "posted": True, "note": "The map is posted with an Add to pipeline button on each company. "

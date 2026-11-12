@@ -82,12 +82,9 @@ class Intake:
         rows, source = args.get("rows"), _text(args.get("source"), 80)
         problems: list = []
         if args.get("path"):
-            path = Path(str(args["path"])).expanduser()
-            if not path.is_file():
-                return {"ok": False, "error": "no file at %s" % path}
-            if path.suffix.lower() not in (".csv", ".tsv", ".txt"):
-                return {"ok": False, "error": "only a CSV can be read from a path. For anything else (a PDF, a spreadsheet, "
-                                              "an image), read it yourself and pass what you find as rows."}
+            path, refused = self.desk.csv_path(args["path"])     # a .csv or .tsv inside the desk's import folders
+            if refused:
+                return refused
             rows, problems = self._read_csv(path)
             source = source or path.name
         columns = args.get("columns")
@@ -122,7 +119,8 @@ class Intake:
                            "draws it with a tick box per row and an Apply button. Add one line on what you found. " + waiting)
             del out["rows"]
         elif session.get("platform") == "slack" and slack is not None and slack.available and session.get("chat_id"):
-            posted = slack.post_blocks(session["chat_id"], self.blocks(intake), self.headline(intake), session.get("thread_id") or "")
+            posted = slack.post_blocks(session["chat_id"], self.blocks(intake), self.headline(intake), session.get("thread_id") or "",
+                                       asked_by=session.get("user_id") or "", key="intake:" + intake_id)
             if posted.get("ok"):
                 out["posted"] = True
                 out["note"] = "The review is posted with Apply and Discard buttons. One line is enough. " + waiting

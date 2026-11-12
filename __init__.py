@@ -61,6 +61,7 @@ def _session() -> dict:
             "chat_id": get_session_env("HERMES_SESSION_CHAT_ID") or "",
             "thread_id": get_session_env("HERMES_SESSION_THREAD_ID") or "",
             "session_key": get_session_env("HERMES_SESSION_KEY") or "",
+            "user_id": get_session_env("HERMES_SESSION_ACTOR_ID") or get_session_env("HERMES_SESSION_USER_ID") or "",
             "actor": get_session_env("HERMES_SESSION_ACTOR_NAME") or get_session_env("HERMES_SESSION_USER_NAME") or ""}
 
 

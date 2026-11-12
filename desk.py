@@ -10,6 +10,7 @@ import datetime as dt
 import hashlib
 import io
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -124,6 +125,87 @@ class Desk:
         if session.get("platform") == "cron":        # scheduled jobs have no chat: they are opted in by name
             return "cron" in allow
         return session.get("chat_id", "") in allow
+
+    def slack_users(self) -> set:
+        """Slack user ids who may press the buttons on any card (the ``slack_users`` setting). With
+        nobody listed, only the person a card was posted for may press its buttons."""
+        listed = self.setting("slack_users", []) or []
+        if isinstance(listed, str):
+            listed = listed.replace(",", " ").split()
+        return {str(item).strip() for item in listed if str(item).strip()}
+
+    # -- files the desk may touch on a model's say-so ------------------------------------------------
+    def import_roots(self) -> list:
+        """The folders a CSV may be read from when the path arrives in a tool call: the plugin's own
+        ``imports`` folder, the folder named in the ``import_dir`` setting, and the working directory
+        when that is a project folder (not the home directory or anything above it)."""
+        roots = [self.data_dir / "imports"]
+        configured = str(self.setting("import_dir", "") or "").strip()
+        if configured:
+            roots.append(Path(configured).expanduser())
+        try:
+            here, home = Path.cwd().resolve(), Path.home().resolve()
+            if here != home and here not in home.parents:
+                roots.append(here)
+        except (OSError, RuntimeError):
+            pass
+        out = []
+        for root in roots:
+            try:
+                resolved = root.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if resolved not in out:
+                out.append(resolved)
+        return out
+
+    def csv_path(self, given: Any, trusted: bool = False) -> tuple:
+        """``(path, None)`` for a CSV the desk may read, or ``(None, error)``. Only ``.csv`` and ``.tsv``.
+        A path a person typed at a terminal is ``trusted``; one that arrives in a tool call has to sit
+        inside one of the import folders once every symlink in it is resolved."""
+        raw = str(given or "").strip()
+        if not raw:
+            return None, {"ok": False, "error": "this needs the path of a CSV file"}
+        path = Path(raw).expanduser()
+        if path.suffix.lower() not in (".csv", ".tsv"):
+            return None, {"ok": False, "error": "only a .csv or .tsv file can be read from a path. For anything else (a PDF, a "
+                                                "spreadsheet, an image), read it yourself and pass what you find as rows."}
+        roots = [] if trusted else self.import_roots()
+        if not trusted and not path.is_absolute():       # a bare file name: look for it in the import folders
+            found = [root / path for root in roots if (root / path).is_file()]
+            path = found[0] if found else roots[0] / path
+        try:
+            path = path.resolve()
+        except (OSError, RuntimeError):
+            return None, {"ok": False, "error": "that path cannot be read"}
+        if not trusted and not any(root in path.parents for root in roots):
+            try:
+                (self.data_dir / "imports").mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            return None, {"ok": False, "error": "that file is outside the folders the desk reads from by path (%s). Put the CSV in "
+                                                "one of them, or read it yourself and pass its rows." % ", ".join(str(r) for r in roots)}
+        if not path.is_file():
+            return None, {"ok": False, "error": "no file at %s" % path}
+        return path, None
+
+    def export_path(self, name: Any, default: str, suffix: str = ".csv") -> Path:
+        """A file in the plugin's ``exports`` folder and nowhere else. ``name`` is a file name; anything
+        that reads as a path, or that would land outside the folder, raises ``ValueError``."""
+        folder = self.data_dir / "exports"
+        folder.mkdir(parents=True, exist_ok=True)
+        folder = folder.resolve()
+        name = str(name or default).strip()
+        pathlike = (not name or name.startswith(".") or ".." in name or len(name) > 120 or Path(name).is_absolute()
+                    or any(mark in name for mark in ("/", "\\", "\x00", os.sep) + ((os.altsep,) if os.altsep else ())))
+        if pathlike:
+            raise ValueError("export takes a file name, not a path: the file is always written to %s" % folder)
+        if not name.lower().endswith(suffix):
+            name += suffix
+        path = (folder / name).resolve()
+        if path.parent != folder:
+            raise ValueError("export takes a file name, not a path: the file is always written to %s" % folder)
+        return path
 
     def desktop_open(self, session: Optional[dict] = None) -> bool:
         """Whether this conversation is in the Hermes Desktop app or Webapp with Stoa's half loaded,
@@ -561,7 +643,8 @@ class Desk:
         # and remembers the session, so a later button click can hand the writing back to it.
         here = session.get("platform") == "slack" and channel == session.get("chat_id")
         thread = session.get("thread_id") or "" if here and not args.get("top_level") else ""
-        result = self.slack.post_card(channel, deal["id"], thread, session.get("session_key") or "" if here else "")
+        asker = session.get("user_id") or "" if session.get("platform") == "slack" else ""     # the person it is posted for
+        result = self.slack.post_card(channel, deal["id"], thread, session.get("session_key") or "" if here else "", asker)
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error") or "Slack did not accept the card", "card": text}
         return {"ok": True, "posted": True, "channel": result.get("channel", channel), "ts": result.get("ts", ""),
@@ -771,22 +854,30 @@ class Desk:
         action = str(args.get("action") or "export").lower()
         playbook = self.playbook()
         if action == "export":
-            folder = self.data_dir / "exports"
-            folder.mkdir(parents=True, exist_ok=True)
-            path = Path(str(args["path"])).expanduser() if args.get("path") else \
-                folder / ("pipeline-%s.csv" % dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            try:
+                path = self.export_path(args.get("path") or args.get("name"),
+                                        "pipeline-%s.csv" % dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
             header, rows = self.store.export_rows([f["key"] for f in playbook.fields])
             header = ["group" if h == "grp" else h for h in header]
-            with path.open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(header)
-                writer.writerows(rows)
+            partial = path.with_name(".%s.%d.part" % (path.name, os.getpid()))     # written beside it, then moved into place
+            try:
+                with partial.open("w", newline="", encoding="utf-8") as handle:
+                    writer = csv.writer(handle)
+                    writer.writerow(header)
+                    writer.writerows(rows)
+                os.replace(partial, path)
+            finally:
+                if partial.exists():
+                    partial.unlink()
             return {"ok": True, "path": str(path), "rows": len(rows), "columns": header,
-                    "note": "A plain CSV. It opens in Google Sheets or Excel as is."}
+                    "note": "A plain CSV in the plugin's exports folder. It opens in Google Sheets or Excel as is."}
         if action == "import":
-            if not args.get("path"):
-                return {"ok": False, "error": "import needs the path of a CSV file"}
-            return self.import_csv(Path(str(args["path"])).expanduser(), dry_run=bool(args.get("dry_run")))
+            path, refused = self.csv_path(args.get("path"))
+            if refused:
+                return refused
+            return self.import_csv(path, dry_run=bool(args.get("dry_run")))
         if action == "table":
             return self.table(_int(args.get("limit") or 1000, 1000, 1, 5000))
         return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["export", "import", "table"]}

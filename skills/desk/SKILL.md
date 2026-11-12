@@ -55,8 +55,10 @@ pasted message: anything with more than a couple of people or companies in it.
 
 1. Read it yourself and pull out the records. Use only what is there; leave blank what it does
    not say. Put anything useful that has no field into `note`.
-2. Call `gtm_intake(action="propose", source="<what it is>", rows=[...])`. For a CSV on disk,
-   pass `path` instead and the desk reads it.
+2. Call `gtm_intake(action="propose", source="<what it is>", rows=[...])`. For a `.csv` or `.tsv`
+   that sits in the desk's imports folder, the configured import folder or the working directory,
+   pass `path` instead and the desk reads it. A file anywhere else is refused: read it yourself
+   and pass its rows.
 3. Show the review the tool gives you (a directive, a Slack message it already posted, or text).
    Say in one line what you found.
 4. Stop there. The person presses **Apply**, or tells you to apply ("apply all but 3"), and only
@@ -172,8 +174,10 @@ After edits are applied, mirror again so the Sheet shows the result.
 
 ## Getting data in and out
 
-`gtm_export(action="export")` writes a CSV that opens in Google Sheets or Excel. To bring an
-existing spreadsheet in, export it as CSV and call `gtm_export(action="import", dry_run=true)`
+`gtm_export(action="export")` writes a CSV that opens in Google Sheets or Excel. It always lands in
+the plugin's exports folder; `path` there is a file name, never a location, and the result tells
+you where the file is. To bring an existing spreadsheet in, have it exported as CSV into the desk's
+imports folder (or the working directory) and call `gtm_export(action="import", dry_run=true)`
 first, tell the user what would be added, then import.
 
 ## Things you do not do
