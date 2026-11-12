@@ -1819,10 +1819,13 @@ class GroupTests(unittest.TestCase):
         self.assertEqual((playbook.terms["deal"], playbook.terms["group"], playbook.map_group, playbook.won["label"]), ("lead", "search", "map", "Handed over"))
         desk.group({"action": "set", "group": "Fintech CFOs · Acme", "client": "Acme", "fields": {"What the client sells": "Forecasting for finance teams"}})
         desk.market({"action": "define", "name": "Fintech CFOs · Acme", "brief": "Fintechs with a new CFO."}, {})
-        desk.market({"action": "add", "market": "Fintech CFOs · Acme", "companies": [{"company": "Ledgerline", "fit": 4, "location": "Austin, TX"}]}, {})
+        desk.market({"action": "add", "market": "Fintech CFOs · Acme", "companies": [
+            {"company": "Ledgerline", "fit": 4, "location": "Austin, TX", "signal": "New CFO in March"}]}, {})
         out = desk.market({"action": "track", "market": "Fintech CFOs · Acme", "targets": ["Ledgerline"], "contact": "Rosa Lind", "title": "CFO"}, {})
         lead = desk.store.get(out["added_to_pipeline"][0]["deal"])
         self.assertEqual((lead["grp"], lead["fields"].get("title"), lead["fields"].get("location")), ("Fintech CFOs · Acme", "CFO", "Austin, TX"))
+        self.assertEqual(lead["fields"].get("trigger"), "New CFO in March")          # why now comes over from the map
+        self.assertIn("New CFO in March", Path(desk.export({"action": "export", "group": "Acme", "share": True})["path"]).read_text())
         self.assertEqual(desk.view(lead)["client"], "Acme")
         moved = desk.click("advance", lead["id"], lead["stage"], "tester")           # Identified -> Researched: the research note is asked for
         self.assertIn("Acme", moved["followup"])

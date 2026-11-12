@@ -537,7 +537,8 @@ class Markets:
                 next_step="First outreach" if contact else "Find the right contact",
                 fields={k: v for k, v in (("title", person.get("title", "") if contact else ""),
                                           ("location", target["location"]), ("company_size", target["size"]),
-                                          ("competitor", target["detail"].get("uses", ""))) if v and k in keys})
+                                          ("competitor", target["detail"].get("uses", "")),
+                                          ("trigger", target["signal"])) if v and k in keys})      # why now, where the playbook keeps it
             note = " ".join(b for b in (target["why"], "Signal: %s." % target["signal"] if target["signal"] else "",
                                         "Uses today: %s." % target["detail"]["uses"] if target["detail"].get("uses") else "",
                                         "Source: %s" % target["source"] if target["source"] else "") if b)
