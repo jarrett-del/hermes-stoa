@@ -17,19 +17,21 @@ import { createElement as h, useEffect, useRef, useState } from 'react'
 let rest = null // ctx.rest, set in register()
 let storage = null // ctx.storage, set in register()
 
-// What the pane and the page are narrowed to. One store, so both show the same thing.
+// What the pane and the page are narrowed to. One store, so both show the same thing. `stage` is
+// not a filter: it is the stage picked out on the board, where every column keeps its cards.
 const NO_FILTER = { text: '', owner: '', group: '', stage: '', due: false, quiet: false }
 const $filter = atom({ ...NO_FILTER })
 function setFilter(patch) {
   const next = { ...$filter.get(), ...patch }
   $filter.set(next)
-  if (storage) storage.set('filter', next)
+  // Only whose records and which group are remembered between visits. Anything that hides records
+  // for a moment (a search, due, quiet, a picked-out stage) starts clear, so nothing looks missing.
+  if (storage) storage.set('filter', { owner: next.owner, group: next.group })
 }
-const filtering = f => Boolean(f.text || f.owner || f.group || f.stage || f.due || f.quiet)
+const filtering = f => Boolean(f.text || f.owner || f.group || f.due || f.quiet)
 function matches(deal, f) {
   if (f.owner && deal.owner !== f.owner) return false
   if (f.group && deal.group !== f.group) return false
-  if (f.stage && deal.stage !== f.stage) return false
   if ((f.due || f.quiet) && !((f.due && deal.due) || (f.quiet && deal.stale && !deal.due))) return false
   if (!f.text) return true
   return [deal.name, deal.company, deal.group, deal.next_step, deal.owner, deal.stage_label].join(' ').toLowerCase().includes(f.text.toLowerCase())
@@ -442,7 +444,10 @@ const CSS = `
 .stoa-headstats b { display: block; margin-top: 3px; font-size: 20px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stoa-tabsrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
 .stoa-col { min-width: 0; border-radius: 10px; transition: opacity .2s ease, background .15s ease; }
-.stoa-col[data-dim="1"] { opacity: .38; }
+.stoa-col[data-dim="1"] { opacity: .45; }
+.stoa-col[data-dim="1"]:hover { opacity: .8; }
+.stoa-col[data-spot="1"] .stoa-colhead .stoa-eyebrow { color: var(--stoa-accent-text); }
+.stoa-col[data-spot="1"] .stoa-weight i { background: var(--stoa-accent); }
 .stoa-col[data-over="1"] { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); }   /* inset: the board clips anything drawn outside a column */
 .stoa-weight { height: 2px; margin: 0 2px 9px; border-radius: 2px; background: var(--ui-stroke-tertiary); }
 .stoa-weight i { display: block; height: 100%; border-radius: 2px; background: var(--ui-text-tertiary); transition: width .4s ease; }
@@ -803,11 +808,14 @@ function Filters({ state }) {
       [h('option', { key: '', value: '' }, 'All ' + terms.groups)].concat(groups.map(group => h('option', { key: group, value: group }, group)))) : null,
     h('button', { type: 'button', className: 'stoa-toggle', 'data-on': f.due ? '1' : '0', onClick: () => setFilter({ due: !f.due }) }, 'Due'),
     h('button', { type: 'button', className: 'stoa-toggle', 'data-on': f.quiet ? '1' : '0', onClick: () => setFilter({ quiet: !f.quiet }) }, 'Quiet'),
-    filtering(f) ? h('button', { type: 'button', className: 'stoa-toggle', onClick: () => setFilter({ ...NO_FILTER }) }, 'Clear') : null)
+    f.stage && state.playbook.stages.some(stage => stage.id === f.stage) ? h('button', { type: 'button', className: 'stoa-toggle', 'data-on': '1',
+      title: 'This stage is picked out on the board. Press to let go.', onClick: () => setFilter({ stage: '' }) },
+    state.playbook.stages.find(stage => stage.id === f.stage).label + '  ×') : null,
+    filtering(f) || f.stage ? h('button', { type: 'button', className: 'stoa-toggle', onClick: () => setFilter({ ...NO_FILTER }) }, 'Clear') : null)
 }
 
 // -- the funnel: how many reach each stage, and what share moves on ------------------------------
-// Press a stage to narrow the board to it; press it again to let go.
+// Press a stage to pick out its column on the board (the others stay, dimmed); press it again to let go.
 function Funnel({ state }) {
   const flow = state.flow, pb = state.playbook
   const filter = useValue($filter)
@@ -831,7 +839,7 @@ function Funnel({ state }) {
     const on = Boolean(step.id) && filter.stage === step.id
     groups.push(h('g', { key: 'g' + index, className: 'stoa-fn-step', 'data-on': on ? '1' : '0', 'data-press': step.id ? '1' : '0',
       onClick: step.id ? () => setFilter({ stage: on ? '' : step.id }) : undefined },
-      h('title', null, step.id ? (on ? 'Show every stage' : 'Show only ' + step.label) : step.label),
+      h('title', null, step.id ? (on ? 'Let go of ' + step.label : 'Pick out ' + step.label + ' on the board') : step.label),
       h('rect', { className: 'stoa-fn-hit', x: x - 4, y: 0, width: col - 2, height: H }),
       h('rect', { className: step.won ? 'stoa-fn-won' : 'stoa-fn-block', x, y: mid - tallness / 2, width: block, height: tallness, rx: 3,
         style: { animationDelay: index * 55 + 'ms' } }),
@@ -1276,7 +1284,7 @@ const SAY = ['Add Priya Raman from Lumen Health, met at the conference, call her
   'Move Marcus to the next stage and draft the email', 'Who has gone quiet, and what should I send each of them?', 'Here are my leads (then drop a CSV on the page)',
   'Map the market for us and add the three best fits', 'Write me a playbook for selling to dental practices']
 const BY_HAND = ['Drag a card to another column to move it; drop it on the last column to close it as won.', 'Changed your mind? Undo appears above the box at the foot of the page, and on the record.',
-  'Press a stage in the funnel to narrow the board to it.', 'Press a company name on a record, or Companies on the pipeline, for everything at that company.',
+  'Press a stage in the funnel to pick out its column on the board; press it again to let go.', 'Press a company name on a record, or Companies on the pipeline, for everything at that company.',
   'Press a card or a row to open the record: advance it, mark the step done, snooze it, or edit any fact.', 'Drop a CSV anywhere on the page. It comes back as a review; nothing is written until you apply.',
   'Use the microphone in the box at the foot of the page to dictate.']
 const TYPED = [['/gtm', 'the board, in any Hermes chat'], ['/gtm today', 'what needs you, most pressing first'], ['/gtm brief', 'the morning brief'], ['/gtm <name>', 'one record as a card'],
@@ -1613,8 +1621,15 @@ function Board({ state, openId, setOpenId }) {
   const pb = state.playbook
   const filter = useValue($filter)
   const [over, setOver] = useState('')
+  const board = useRef(null)
+  // A stage picked out in the funnel: bring its column into view. Every column keeps its cards.
+  useEffect(() => {
+    const el = board.current
+    const column = el && filter.stage ? el.querySelector('[data-spot="1"]') : null
+    if (column) el.scrollTo({ left: Math.max(0, column.offsetLeft - el.offsetLeft - (el.clientWidth - column.clientWidth) / 2), behavior: 'smooth' })
+  }, [filter.stage])
   const open = state.deals.filter(deal => deal.status === 'open' && matches(deal, filter))
-  const won = state.deals.filter(deal => deal.status === 'won' && matches(deal, { ...filter, stage: '', due: false, quiet: false }))
+  const won = state.deals.filter(deal => deal.status === 'won' && matches(deal, { ...filter, due: false, quiet: false }))
     .sort((a, b) => (a.stage_at < b.stage_at ? 1 : -1))
   const known = new Set(pb.stages.map(stage => stage.id))
   const strays = open.filter(deal => !known.has(deal.stage))
@@ -1632,8 +1647,10 @@ function Board({ state, openId, setOpenId }) {
     const target = column.won ? pb.won.id : column.id
     if (deal && deal.stage !== target) act(id, { verb: 'move', stage: target })
   }
-  return h('div', { className: 'stoa-board' }, columns.map(column =>
-    h('div', { key: column.id, className: 'stoa-col', 'data-over': over === column.id ? '1' : '0', 'data-dim': filter.stage && !column.won && column.id !== filter.stage ? '1' : '0',
+  const picked = filter.stage && known.has(filter.stage) ? filter.stage : ''       // a stage from another playbook picks out nothing
+  return h('div', { className: 'stoa-board', ref: board }, columns.map(column =>
+    h('div', { key: column.id, className: 'stoa-col', 'data-over': over === column.id ? '1' : '0', 'data-dim': picked && column.id !== picked ? '1' : '0',
+      'data-spot': picked && column.id === picked ? '1' : '0',
       onDragOver: event => { if (dragging(event) && !column.other) { event.preventDefault(); if (over !== column.id) setOver(column.id) } },
       onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setOver('') },
       onDrop: event => drop(event, column) },
@@ -1850,7 +1867,8 @@ export default {
   register(ctx) {
     rest = ctx.rest
     storage = ctx.storage
-    $filter.set({ ...NO_FILTER, ...(ctx.storage.get('filter', {}) || {}) })
+    const kept = ctx.storage.get('filter', {}) || {}      // an older version kept every filter, a picked-out stage included: take only these two
+    $filter.set({ ...NO_FILTER, owner: typeof kept.owner === 'string' ? kept.owner : '', group: typeof kept.group === 'string' ? kept.group : '' })
     // While the app is open the desk knows it can draw cards and maps in the conversation here.
     const hello = () => { ctx.rest('/hello', { method: 'POST', body: {} }).catch(() => {}) }
     hello()

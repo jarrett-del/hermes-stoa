@@ -137,7 +137,7 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   shows the review, with no model in between. A small text file goes along with your message.
 - **Or do it by hand.** Drag a card to another column to move it. **+ New** adds a record from a
   short form. **Edit** on any record changes its next step, stage, value, owner and the rest, and
-  adds a line to its log. Press a stage in the funnel to narrow the board to it. No model involved.
+  adds a line to its log. Press a stage in the funnel to pick out its column on the board. No model involved.
 
 ![Adding a candidate by hand on the page](docs/desktop-new.jpg)
 
