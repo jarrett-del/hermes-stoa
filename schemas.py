@@ -209,6 +209,7 @@ GTM_MARKET = {
             "target": {"type": "string", "description": "people: the company (map id or name)."},
             "titles": {"type": "array", "items": {"type": "string"}, "description": "people: title fragments to match, e.g. ['vp operations', 'head of logistics']."},
             "targets": {"type": "array", "items": {"type": "string"}, "description": "track/dismiss: map ids or company names."},
+            "group": {"type": "string", "description": "track: the group to put them in (a search, a campaign), when it should not be the playbook's usual one. The answer says which group each one went to."},
             "contact": {"type": "string", "description": "track (one target): the person's name, if not already on the map."},
             "title": {"type": "string", "description": "track: the contact's title."},
             "email": {"type": "string"},
@@ -254,12 +255,15 @@ GTM_EXPORT = {
         "Use dry_run=true first to see what an import would add. For a file someone sends, prefer gtm_intake: "
         "it shows what would change, including updates to existing records, before anything is written. "
         "action='table' returns the pipeline as columns and rows, ready to write into a spreadsheet tab such as a "
-        "Google Sheet; read that tab back later with gtm_intake(columns=..., rows=...) to bring edits home."
+        "Google Sheet; read that tab back later with gtm_intake(columns=..., rows=...) to bring edits home. Pass `group` "
+        "with export or table for one group only (one search, one account), or a client's name for everything that is "
+        "for that client: the list to hand a client is theirs alone."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["export", "import", "table"]},
+            "group": {"type": "string", "description": "export/table: only this group (a search, an account) by name, or a client's name for every group that is for them. Left out: the whole desk."},
             "path": {"type": "string", "description": "import: a .csv or .tsv file in the desk's imports folder, the configured import folder or the working directory. export: a file name for the CSV (optional); it is always written to the plugin's exports folder."},
             "dry_run": {"type": "boolean", "description": "import: count what would be added without adding it."},
         },

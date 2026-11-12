@@ -1,0 +1,105 @@
+# Lead searches for clients: for a fractional sales lead, an outbound agency or a consultant who finds and works
+# prospects on a client's behalf. The record is a lead; the group is the search it belongs to, and every search
+# has a client (set it on the search). One market map feeds one search.
+name: client-leads
+title: Client lead desk
+door: Lead searches for clients
+summary: Prospecting done for clients. One lead per record, grouped by the search you are running for a client.
+terms:
+  deal: lead
+  deals: leads
+  group: search
+  groups: searches
+  company: Company
+  value: Est. deal size
+currency: USD
+stale_days: 6
+enrich: person
+map_group: map      # a company added from a market map: joins the group named after the map
+
+stages:
+  - id: identified
+    win_probability: 5
+    label: Identified
+    stale_days: 5
+    advance: Research done
+  - id: researched
+    win_probability: 10
+    label: Researched
+    stale_days: 4
+    advance: Reach out
+  - id: contacted
+    win_probability: 20
+    label: Contacted
+    stale_days: 5
+    advance: They replied
+  - id: replied
+    win_probability: 45
+    label: In conversation
+    stale_days: 3
+    advance: Meeting booked
+  - id: meeting
+    win_probability: 70
+    label: Meeting booked
+    stale_days: 4
+    advance: Hand to client
+
+# After the handover: what became of it on the client's side.
+delivery:
+  - {id: handed, label: Handed to the client}
+  - {id: met, label: Client meeting held}
+  - {id: opportunity, label: In the client's pipeline}
+
+won:
+  id: handed-over
+  label: Handed over
+lost:
+  id: dropped
+  label: Dropped
+  reasons: [Not a fit, No reply, Not now, Wrong person, Already a customer, Asked not to be contacted]
+
+fields:
+  - {key: title, label: Title}
+  - {key: trigger, label: Why now}
+  - {key: angle, label: Angle}
+  - {key: competitor, label: Uses today}
+  - {key: company_size, label: Company size}
+  - {key: location, label: Location}
+
+# What is kept on a search itself (its client, its status and a note are kept on every group).
+group_fields:
+  - {key: offer, label: What the client sells}
+  - {key: icp, label: Who we are looking for}
+  - {key: target, label: Meetings wanted}
+  - {key: channel, label: Channels}
+  - {key: sender, label: Sent as}
+  - {key: report, label: Reporting day}
+
+drafts:
+  follow_up: >
+    Draft a short follow-up to {name} at {company}, written as {client} would write it (this is the
+    {group} search). Pick up from the last thing in the activity log, add one new reason to reply,
+    and end with one easy question. Under 70 words. No "just checking in".
+  on_enter:
+    researched: >
+      Write a research note on {name} at {company} for the {group} search: what the company does,
+      why it fits what {client} is looking for, the trigger that makes now a good time, and the one
+      angle to open with. Five lines. Say what you could not confirm.
+    contacted: >
+      Draft the first message to {name} at {company} on behalf of {client}. Open with the trigger or
+      the angle from the notes, say in one line what {client} does for companies like theirs, and
+      ask one question that is easy to answer. Under 80 words, no attachments, no links.
+    replied: >
+      {name} replied. Draft the answer: respond to exactly what they said, and offer two times for a
+      20-minute call with {client}. If they asked something only {client} can answer, list it for
+      me instead of guessing.
+    meeting: >
+      Draft the confirmation to {name} for the meeting with {client}: the time, who will be there and
+      the one thing worth preparing. Then draft a three-line heads-up for {client}.
+    handed-over: >
+      Write the handover note to {client} for {name} at {company}: who they are, why they took the
+      meeting, what was said so far (quote the log, do not embellish), what they care about, and the
+      suggested next step. Under 150 words.
+  lost: >
+    Draft a short, polite closing note to {name}, only if we were in conversation; otherwise say no
+    note is needed. Leave the door open. The reason we recorded: {reason}.

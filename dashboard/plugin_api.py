@@ -449,15 +449,29 @@ def use_playbook(body: dict = Body(...)) -> dict:
 @router.get("/export")
 def export() -> dict:
     """The whole pipeline as CSV text, for the page to hand to the browser as a download."""
+    return _export("")
+
+
+@router.post("/export")
+def export_part(body: dict = Body(...)) -> dict:
+    """The same for one group (a search, an account), or for everything that is for one client."""
+    return _export(str((body or {}).get("group") or ""))
+
+
+def _export(group: str) -> dict:
     import csv
     import io
     d = desk()
-    header, rows = d.store.export_rows([field["key"] for field in d.playbook().fields])
+    scope, label, error = d.export_scope(group)
+    if error:
+        raise HTTPException(404, error.get("error") or "no such group")
+    header, rows = d.store.export_rows([field["key"] for field in d.playbook().fields], scope)
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["group" if name == "grp" else name for name in header])
     writer.writerows(rows)
-    return {"filename": "stoa-%s.csv" % time.strftime("%Y%m%d"), "csv": out.getvalue(), "rows": len(rows)}
+    name = _mod("store").slugify(label)[:60] if label else "stoa"
+    return {"filename": "%s-%s.csv" % (name, time.strftime("%Y%m%d")), "csv": out.getvalue(), "rows": len(rows), "only": label}
 
 
 @router.post("/intake")

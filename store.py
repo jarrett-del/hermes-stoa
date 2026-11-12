@@ -1638,11 +1638,14 @@ class Store:
                     "lists_waiting": one("SELECT count(*) FROM intakes WHERE status = 'open'")}
 
     # -- CSV ------------------------------------------------------------------------------------
-    def export_rows(self, field_keys: Iterable[str] = ()) -> tuple:
+    def export_rows(self, field_keys: Iterable[str] = (), groups: Optional[set] = None) -> tuple:
+        """The pipeline as a header and rows. ``groups`` (a set of group keys) narrows it to the records in them."""
         field_keys = list(field_keys)
         header = list(CSV_COLUMNS) + field_keys
         rows = []
         for deal in sorted(self.list(status="all"), key=lambda d: (d["grp"], d["name"])):
+            if groups is not None and group_key(deal["grp"]) not in groups:
+                continue
             rows.append([deal.get(c, "") for c in CSV_COLUMNS] + [deal["fields"].get(k, "") for k in field_keys])
         return header, rows
 

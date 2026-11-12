@@ -36,6 +36,19 @@ ship with the plugin (`b2b-sales`, `recruiting`, `agency`). When none fits, writ
      `{group}` `{stage}` `{reason}` `{owner}` `{value}`.
    - `enrich`: `person` when they sell to individuals they need to research, `company` when the
      account matters more, `none` to hide the Enrich button.
+   - `terms.group` and `map_group`: what records are grouped under, and where a company added from
+     a market map goes. If each company they sell to is its own group (an account), say
+     `map_group: company`. If a group is something they run and fill (a search, a campaign, a
+     lead list for one of their clients), say `map_group: map`: one map feeds one group. Always
+     say one of the two. Someone who works leads **for clients** needs `map_group: map` and a
+     group that is not called "client": the client is set on each group.
+   - `group_fields`: two to six facts kept on the group itself (a search's fee terms, what a
+     client sells, who the campaign is aimed at).
+   - `delivery`: up to six stages a won record moves through afterwards, when there is work after
+     the win (Kickoff, Delivering, Month to month).
+   - `win_probability` on each stage (0 to 100): how likely a record there is to be won. It
+     feeds the forecast until their own history takes over.
+   - In drafts, `{client}` is the client of the record's group.
 5. **Show it before saving.** Give the user the stage list and button labels in plain words,
    not the YAML, and ask if it matches how they work.
 6. **Save.** `gtm_playbook(action="save", yaml=..., activate=true)`. If it returns an error, fix

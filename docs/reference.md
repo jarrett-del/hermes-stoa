@@ -21,7 +21,7 @@ Every part of Stoa, and its settings. For how a day on the desk goes, see [the g
 | **`hermes stoa`** | Status, board, brief, map, the ledger (`history`), autonomy, sample data, CSV import and export from a terminal |
 | **7 automations** | Morning brief, email-call-and-Slack activity sweep, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
-| **4 playbooks** | `b2b-sales`, `recruiting`, `agency`, `partnerships`, plus any you or the agent write |
+| **5 playbooks** | `b2b-sales`, `recruiting`, `agency`, `client-leads` (lead searches run for clients), `partnerships`, plus any you or the agent write |
 
 ### Market maps
 
@@ -202,6 +202,15 @@ word. The group is a thing of its own, kept under that name however it is typed:
   one candidate. Put there, their mail is recognised as being about that search, and "who do we
   deal with at Northwind?" finds them.
 - **Notes**, and every change on the ledger.
+
+**One client's list by itself.** *"Export the Northwind search"* writes a CSV of that search and
+nothing else (`gtm_export(action="export", group=...)`, or **Export as CSV** on its panel). A
+client's name in place of a search's gives everything that is for them.
+
+**From a market map.** A playbook says where a company added from a map goes (`map_group`): into
+the group named after the map, when a group is something you run and fill (a search, a lead list
+for a client), or into a group of its own, when each company is an account. The `client-leads`
+playbook is the first kind: name a map after the search, and its companies land in that search.
 
 *"We are starting a Staff Backend search for Northwind at 20%"* opens one. On the page, the
 Pipeline tab lists them beside the board and the companies; press one for its records, its

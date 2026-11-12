@@ -1214,7 +1214,8 @@ class Desk:
     def _followup(self, playbook: Playbook, deal: dict, actor: str, task: str, happened: str, reason: str = "") -> str:
         words = _Blank(name=deal["name"], company=deal["company"] or "their company", group=deal["grp"] or "this",
                        stage=playbook.label(deal["stage"]), reason=reason or "not recorded", owner=deal["owner"],
-                       value=cards.money(deal["value"], playbook.currency))
+                       value=cards.money(deal["value"], playbook.currency),
+                       client=((self.store.grp_get(deal["grp"]) or {}).get("client") if deal["grp"] else "") or "the client")
         try:
             task = " ".join(task.split()).format_map(words)
         except (ValueError, IndexError):
@@ -2221,7 +2222,12 @@ class Desk:
                                  "closing stages; enrich is person, company or none (none hides the Enrich button); "
                                  "lost.reasons is the list offered on the card. drafts.on_enter.<stage id> is what the "
                                  "agent writes when a record enters that stage; placeholders: {name} {company} {group} "
-                                 "{stage} {reason} {owner} {value}. fields are extra facts shown on cards."}
+                                 "{client} {stage} {reason} {owner} {value}. fields are extra facts shown on cards; group_fields are "
+                                 "the facts kept on a group itself (a search's fee terms). delivery is up to six stages a "
+                                 "won record moves through afterwards; a stage's win_probability (0 to 100) feeds the "
+                                 "forecast. map_group says where a company added from a market map goes: 'map' when a "
+                                 "group is something the team runs and one map feeds it (a search, a campaign, a lead "
+                                 "list for a client), 'company' when each company is a group of its own (an account)."}
             if action == "save":
                 playbook = library.save(str(args.get("yaml") or ""))
                 out = {"ok": True, "saved": playbook.name, "stages": [s["label"] for s in playbook.stages]}
@@ -2248,16 +2254,37 @@ class Desk:
         return out
 
     # -- gtm_export -----------------------------------------------------------------------------
+    def export_scope(self, ref: Any) -> tuple:
+        """``(group keys, what to call it, error)`` for an export of part of the desk: one group by name, or every
+        group a client has. ``(None, "", None)`` for the whole desk."""
+        if not str(ref or "").strip():
+            return None, "", None
+        names = self._group_names()
+        name, error = self._resolve_group(ref, names)
+        if not error:
+            return {st.group_key(name)}, name, None
+        if "several" in error["error"]:
+            return None, "", error
+        key = st.org_key(ref)
+        mine = [group for group in self.store.grps() if key and group["client"] and st.org_key(group["client"]) == key]
+        if mine:                                    # not a group's name but a client's: everything that is for them
+            return {group["key"] for group in mine}, mine[0]["client"], None
+        return None, "", error
+
     def export(self, args: dict) -> dict:
         action = str(args.get("action") or "export").lower()
         playbook = self.playbook()
+        scope, label, error = self.export_scope(args.get("group"))
+        if error and action in ("export", "table"):
+            return dict(error, error=error["error"] + ". Nothing was written.")
         if action == "export":
             try:
+                stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
                 path = self.export_path(args.get("path") or args.get("name"),
-                                        "pipeline-%s.csv" % dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+                                        "%s-%s.csv" % (st.slugify(label)[:60] if label else "pipeline", stamp))
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
-            header, rows = self.store.export_rows([f["key"] for f in playbook.fields])
+            header, rows = self.store.export_rows([f["key"] for f in playbook.fields], scope)
             header = ["group" if h == "grp" else h for h in header]
             partial = path.with_name(".%s.%d.part" % (path.name, os.getpid()))     # written beside it, then moved into place
             try:
@@ -2269,18 +2296,24 @@ class Desk:
             finally:
                 if partial.exists():
                     partial.unlink()
-            return {"ok": True, "path": str(path), "rows": len(rows), "columns": header,
-                    "note": "A plain CSV in the plugin's exports folder. It opens in Google Sheets or Excel as is."}
+            out = {"ok": True, "path": str(path), "rows": len(rows), "columns": header,
+                   "note": "A plain CSV in the plugin's exports folder. It opens in Google Sheets or Excel as is."}
+            if label:
+                out["only"] = label
+            return out
         if action == "import":
             path, refused = self.csv_path(args.get("path"))
             if refused:
                 return refused
             return self.import_csv(path, dry_run=bool(args.get("dry_run")))
         if action == "table":
-            return self.table(_int(args.get("limit") or 1000, 1000, 1, 5000))
+            out = self.table(_int(args.get("limit") or 1000, 1000, 1, 5000), scope)
+            if label:
+                out["only"] = label
+            return out
         return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["export", "import", "table"]}
 
-    def table(self, limit: int = 1000) -> dict:
+    def table(self, limit: int = 1000, groups: Optional[set] = None) -> dict:
         """The pipeline as a header row and rows, in the words of the playbook: what goes into a
         spreadsheet tab. The same table read back through gtm_intake changes nothing, and an edit
         made in the spreadsheet comes back as exactly that edit (the ID column says which record)."""
@@ -2289,7 +2322,7 @@ class Desk:
         columns = (["ID", terms["deal"].capitalize(), terms["company"], terms["group"].capitalize(), "Stage", terms["value"],
                     terms["owner"].capitalize(), "Next step", "Due", "Email", "LinkedIn"]
                    + [field["label"] for field in playbook.fields] + ["Updated"])
-        deals = sorted(self.store.list(status="all"),
+        deals = sorted((d for d in self.store.list(status="all") if groups is None or st.group_key(d["grp"]) in groups),
                        key=lambda d: (playbook.position(d["stage"]) if d["status"] == "open" else 99, d["grp"].lower(), d["name"].lower()))
         rows = [[d["id"], d["name"], d["company"], d["grp"], playbook.label(d["stage"]), d["value"] or "", d["owner"], d["next_step"],
                  d["next_due"], d["email"], d["linkedin"]] + [str(d["fields"].get(field["key"], "")) for field in playbook.fields]

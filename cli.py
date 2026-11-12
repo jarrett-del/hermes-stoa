@@ -33,6 +33,7 @@ def setup(subparser) -> None:
                         help="Remove the sample records a version before 0.10 put in your own desk (and leave the tour, if one is on)")
     export = subs.add_parser("export", help="Write the pipeline to a CSV file in the plugin's exports folder")
     export.add_argument("path", nargs="?", default="", metavar="name", help="A file name (optional). It is written to the exports folder.")
+    export.add_argument("--group", default="", help="Only one group (a search, an account) by name, or everything that is for one client")
     imp = subs.add_parser("import", help="Add records from a CSV file")
     imp.add_argument("path")
     imp.add_argument("--dry-run", action="store_true")
@@ -132,7 +133,7 @@ def run(desk, args) -> None:
         print("Everything in it is made up and kept in a file of its own; your own desk is untouched and comes back with "
               "`hermes stoa demo --leave`. `hermes stoa demo %s` shows the other example." % other)
     elif command == "export":
-        result = desk.export({"action": "export", "path": args.path or None})
+        result = desk.export({"action": "export", "path": args.path or None, "group": getattr(args, "group", "")})
         print("Wrote %d records to %s" % (result["rows"], result["path"]) if result.get("ok") else result.get("error"))
     elif command == "import":
         path, refused = desk.csv_path(args.path, trusted=True)        # typed by a person at a terminal: any folder, CSV only

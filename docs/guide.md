@@ -5,9 +5,9 @@ How the desk works day to day. For everything in the plugin, tool by tool, see [
 ## Any pipeline, and two worked examples
 
 A playbook describes a pipeline: what a record is called, the stages it moves through, what the
-buttons say, and what Hermes drafts at each step. It can be any pipeline. Four playbooks ship:
+buttons say, and what Hermes drafts at each step. It can be any pipeline. Five playbooks ship:
 clients and revenue (`b2b-sales`, the default), recruiting and search (`recruiting`), agency and
-consulting (`agency`), and partnerships and fundraising (`partnerships`). Hermes will write one
+consulting (`agency`), lead searches run for clients (`client-leads`), and partnerships and fundraising (`partnerships`). Hermes will write one
 for your business from a short conversation.
 
 The first time you open the page it asks how you sell, and offers a look around first:

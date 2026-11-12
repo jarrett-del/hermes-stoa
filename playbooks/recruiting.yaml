@@ -14,6 +14,7 @@ terms:
 currency: USD
 stale_days: 5
 enrich: person
+map_group: map      # a company added from a market map: joins the group named after the map
 
 stages:
   - id: sourced

@@ -232,6 +232,14 @@ notes, and the facts the playbook names for it (a search's fee terms).
   name=..., email=..., role="hiring manager")`. Their mail is then recognised by
   `gtm_contact(action="match")` as being about that group, with the records it could concern.
   Someone who matters to one record only goes on that record, as before.
+- **From a market map.** A company added to the pipeline from a map goes where the playbook says:
+  into the group named after the map (a search, a campaign), or into a group of its own (an
+  account). The answer names the group each one went to; say it. To put them somewhere else, pass
+  `group` to `gtm_market(action="track", ...)`. One map per search: name the map as the search
+  ("Fintech CFOs · Acme"), then set its client with `gtm_group`.
+- **The list for one client.** `gtm_export(action="export", group="<search>")` writes only that
+  search; a client's name in `group` writes everything that is for them. Never hand a client the
+  whole desk: it has other clients' leads on it.
 - When a record shows a `client`, that is who an invoice for it goes to. Say the client's name,
   not the record's company, when you talk about who owes what.
 

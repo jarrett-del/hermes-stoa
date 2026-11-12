@@ -525,7 +525,10 @@ class Markets:
             if named:        # start from what the map knows about that person, then apply what was passed now
                 person = dict(next((p for p in target["detail"].get("people") or [] if p["name"].lower() == named.lower()), {}))
                 person.update({k: _clean(args.get(k), 200) for k in ("title", "email", "linkedin") if _clean(args.get(k), 200)})
-            group = target["company"] if playbook.terms["group"].lower() in ACCOUNT_WORDS else owner_market["name"]
+            # Where it goes: the group asked for; else what the playbook says; else, for a playbook that does not say,
+            # a guess from its word for a group (an "account" is the company itself, a "search" is the map).
+            rule = playbook.map_group or ("company" if playbook.terms["group"].lower() in ACCOUNT_WORDS else "map")
+            group = self.desk._group_spelling(_clean(args.get("group"), 200) or (target["company"] if rule == "company" else owner_market["name"]))
             keys = {f["key"] for f in playbook.fields}
             deal = self.store.add(
                 contact or target["company"], playbook.first_stage(), actor=actor, company=target["company"], grp=group,
@@ -543,12 +546,12 @@ class Markets:
             with self.store._conn() as conn:
                 conn.execute("UPDATE targets SET status = 'tracked', deal_id = ?, updated_at = ? WHERE id = ?",
                              (deal["id"], st.now(), target["id"]))
-            made.append({"company": target["company"], "deal": deal["id"], "market_id": target["market_id"], "contact": contact})
+            made.append({"company": target["company"], "deal": deal["id"], "market_id": target["market_id"], "contact": contact, "group": group})
         for market_id in {m["market_id"] for m in made}:
             self._refresh(market_id)
         out = {"ok": bool(made or already),
-               "added_to_pipeline": [{k: v for k, v in (("company", m["company"]), ("deal", m["deal"]), ("contact", m["contact"])) if v}
-                                     for m in made]}
+               "added_to_pipeline": [{k: v for k, v in (("company", m["company"]), ("deal", m["deal"]), ("contact", m["contact"]),
+                                                         ("group", m["group"])) if v} for m in made]}
         if already:
             out["already_in_pipeline"] = already
         if unknown:

@@ -46,6 +46,9 @@ class Playbook:
         self.lost: dict = self.data["lost"]
         self.fields: list = self.data.get("fields") or []
         self.group_fields: list = self.data.get("group_fields") or []      # the facts kept on a group (a search's fee terms)
+        # A company added from a market map joins the group named after the map ("map": a search, a campaign), or
+        # becomes a group of its own ("company": an account). "" when the playbook does not say: older playbooks.
+        self.map_group: str = self.data.get("map_group") or ""
         self.drafts: dict = self.data.get("drafts") or {}
         self.default_stale: int = int(self.data.get("stale_days") or 7)
         self.delivery: list = self.data.get("delivery") or []      # what happens after a win, in order: [{id, label}]
@@ -265,6 +268,11 @@ def validate(data: Any) -> dict:
         if isinstance(raw, dict) and raw.get("key"):
             group_fields.append({"key": str(raw["key"]), "label": str(raw.get("label") or raw["key"])})
     out["group_fields"] = group_fields[:12]
+    rule = str(data.get("map_group") or "").strip().lower()
+    if rule not in ("", "map", "company"):
+        raise PlaybookError("map_group is 'map' (a company added from a market map joins the group named after the map) "
+                            "or 'company' (it becomes a group of its own)")
+    out["map_group"] = rule
     after = data.get("delivery") or []
     if not isinstance(after, list) or len(after) > 6:
         raise PlaybookError("delivery must be a list of at most 6 stages (what happens after a win)")

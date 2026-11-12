@@ -100,9 +100,9 @@ class StoreTests(unittest.TestCase):
 class PlaybookTests(unittest.TestCase):
     def test_builtins_load_and_validate(self):
         library = Library()
-        self.assertEqual(library.names(), ["agency", "b2b-sales", "partnerships", "recruiting"])
+        self.assertEqual(library.names(), ["agency", "b2b-sales", "client-leads", "partnerships", "recruiting"])
         self.assertEqual([entry["door"] for entry in library.catalog()],             # what the first-launch chooser calls each
-                         ["Agency and consulting", "Clients and revenue", "Partnerships and fundraising", "Recruiting and search"])
+                         ["Agency and consulting", "Clients and revenue", "Lead searches for clients", "Partnerships and fundraising", "Recruiting and search"])
         for name in library.names():
             playbook = library.load(name)
             self.assertGreaterEqual(len(playbook.stages), 2)
@@ -950,7 +950,7 @@ class TourTests(unittest.TestCase):
         self.desk.tour_end()
         self.assertNotIn("Sample data", self.desk.prompt_section())
         self.assertIn("stays on the desk", self.desk.prompt_section())            # off tour: a desk change is not mirrored elsewhere unasked
-        for name in ("b2b-sales", "recruiting", "agency", "partnerships"):
+        for name in ("b2b-sales", "recruiting", "agency", "partnerships", "client-leads"):
             self.assertLessEqual(len(make_desk(tempfile.mkdtemp(), playbook=name).prompt_section()), 900, name)
 
     def test_sample_records_an_earlier_version_left_in_the_desk_can_be_taken_out(self):
@@ -1752,6 +1752,73 @@ class GroupTests(unittest.TestCase):
         self.desk.contact({"action": "remove", "group": self.search, "person": "helen park"})
         self.assertEqual(self.desk.store.grp_people(self.search), [])
         self.assertFalse(self.desk.contact({"action": "add", "group": "No Such Search", "name": "X"})["ok"])
+
+    def test_one_group_or_one_clients_groups_are_exported_by_themselves(self):
+        self.desk.group({"action": "set", "group": self.search, "client": "Northwind"})
+        self.desk.group({"action": "set", "group": "Head of Growth · Ostrava", "client": "Ostrava"})
+        self.desk.group({"action": "set", "group": "Principal Engineer · Northwind", "new": True, "client": "Northwind"})
+        self.desk.deal({"action": "add", "name": "Ada Quill", "group": "Principal Engineer · Northwind"})
+        one = self.desk.export({"action": "export", "group": "staff backend"})
+        self.assertEqual((one["ok"], one["rows"], one["only"]), (True, 3, self.search))
+        self.assertIn("staff-backend-northwind-", Path(one["path"]).name)
+        text = Path(one["path"]).read_text()
+        self.assertIn("Dana Whitfield", text)
+        self.assertNotIn("Wei-Lin Chao", text)                                     # another client's: not in this file
+        client = self.desk.export({"action": "export", "group": "Northwind", "path": "northwind.csv"})
+        self.assertIn("several", client.get("error", ""))                          # a part of two names: it asks, it does not guess
+        client = self.desk.export({"action": "export", "group": "Ostrava"})
+        self.assertEqual((client["rows"], client["only"]), (2, "Head of Growth · Ostrava"))
+        self.desk.group({"action": "rename", "group": "Principal Engineer · Northwind", "to": "Principal Engineer"})
+        self.desk.group({"action": "rename", "group": self.search, "to": "Staff Backend"})
+        both = self.desk.export({"action": "export", "group": "Northwind"})         # no group is called that now: a client's name
+        self.assertEqual((both["rows"], both["only"]), (4, "Northwind"))
+        table = self.desk.export({"action": "table", "group": "Staff Backend"})
+        self.assertEqual((table["count"], table["only"]), (3, "Staff Backend"))
+        self.assertEqual(self.desk.export({"action": "table"})["count"], 8)
+        self.assertEqual(self.desk.export({"action": "export"})["rows"], 8)
+        missing = self.desk.export({"action": "export", "group": "Nobody We Know"})
+        self.assertFalse(missing["ok"])
+        self.assertIn("Nothing was written", missing["error"])
+
+    def test_a_company_from_a_map_goes_where_the_playbook_says_and_the_answer_says_where(self):
+        base = Library(Path(self.tmp.name) / "none").source("agency")              # its group is a "client": the company itself
+        market = {"action": "define", "name": "Fintech CFOs · Acme", "brief": "Fintechs with a new CFO."}
+        rows = {"action": "add", "market": "Fintech CFOs · Acme", "companies": [{"company": "Ledgerline", "fit": 4}, {"company": "Paystream", "fit": 3}]}
+        for rule, expected in (("company", "Ledgerline"), ("map", "Fintech CFOs · Acme")):
+            desk = make_desk(tempfile.mkdtemp(), playbook="agency")
+            text = base.replace("name: agency", "name: for-clients").replace("map_group: company", "map_group: " + rule)
+            self.assertTrue(desk.playbook_tool({"action": "save", "yaml": text, "activate": True})["ok"])
+            desk.market(market, {})
+            desk.market(rows, {})
+            out = desk.market({"action": "track", "market": "Fintech CFOs · Acme", "targets": ["Ledgerline"]}, {})
+            self.assertEqual(out["added_to_pipeline"][0]["group"], expected, rule)
+            chosen = desk.market({"action": "track", "market": "Fintech CFOs · Acme", "targets": ["Paystream"], "group": "Warm intros · Acme"}, {})
+            self.assertEqual(chosen["added_to_pipeline"][0]["group"], "Warm intros · Acme")
+        old = base.replace("name: agency", "name: older").replace("map_group: company      # a company added from a market map: is a group of its own\n", "")
+        self.assertNotIn("map_group", old)
+        desk = make_desk(tempfile.mkdtemp(), playbook="agency")                    # a playbook written before the key existed: guessed from its word, as before
+        desk.playbook_tool({"action": "save", "yaml": old, "activate": True})
+        desk.market(market, {})
+        desk.market(rows, {})
+        self.assertEqual(desk.market({"action": "track", "market": "Fintech CFOs · Acme", "targets": ["Ledgerline"]}, {})["added_to_pipeline"][0]["group"], "Ledgerline")
+        with self.assertRaises(PlaybookError):
+            validate(dict(Library(Path(self.tmp.name) / "none").load("agency").data, map_group="wherever"))
+
+    def test_the_client_lead_desk_files_a_map_into_its_search_and_drafts_in_the_clients_name(self):
+        desk = make_desk(tempfile.mkdtemp(), playbook="client-leads")
+        playbook = desk.playbook()
+        self.assertEqual((playbook.terms["deal"], playbook.terms["group"], playbook.map_group, playbook.won["label"]), ("lead", "search", "map", "Handed over"))
+        desk.group({"action": "set", "group": "Fintech CFOs · Acme", "client": "Acme", "fields": {"What the client sells": "Forecasting for finance teams"}})
+        desk.market({"action": "define", "name": "Fintech CFOs · Acme", "brief": "Fintechs with a new CFO."}, {})
+        desk.market({"action": "add", "market": "Fintech CFOs · Acme", "companies": [{"company": "Ledgerline", "fit": 4, "location": "Austin, TX"}]}, {})
+        out = desk.market({"action": "track", "market": "Fintech CFOs · Acme", "targets": ["Ledgerline"], "contact": "Rosa Lind", "title": "CFO"}, {})
+        lead = desk.store.get(out["added_to_pipeline"][0]["deal"])
+        self.assertEqual((lead["grp"], lead["fields"].get("title"), lead["fields"].get("location")), ("Fintech CFOs · Acme", "CFO", "Austin, TX"))
+        self.assertEqual(desk.view(lead)["client"], "Acme")
+        moved = desk.click("advance", lead["id"], lead["stage"], "tester")           # Identified -> Researched: the research note is asked for
+        self.assertIn("Acme", moved["followup"])
+        self.assertNotIn("{client}", moved["followup"])
+        self.assertEqual(desk.export({"action": "export", "group": "Acme"})["rows"], 1)
 
     def test_a_scheduled_job_changes_a_group_only_at_the_highest_level(self):
         cron = {"platform": "cron"}
@@ -2632,6 +2699,13 @@ class DashboardApiTests(unittest.TestCase):
         with self.assertRaises(api.HTTPException):
             api.approvals({"verb": "maybe", "items": []})
         self.assertIn("count", api.setup()["data"]["backups"])
+        part = api.export_part({"group": "Staff Platform · Northwind"})              # the page's export of one search
+        self.assertEqual((part["only"], part["rows"]), ("Staff Platform · Northwind", len(part["csv"].strip().splitlines()) - 1))
+        self.assertIn("staff-platform-northwind-", part["filename"])
+        self.assertNotIn("Wei-Lin Chao", part["csv"])
+        self.assertGreater(api.export()["rows"], part["rows"])
+        with self.assertRaises(api.HTTPException):
+            api.export_part({"group": "No such search"})
 
     def test_the_page_keeps_the_people_on_a_record_and_shows_a_company(self):
         dana = self.desk.store.find("Dana Whitfield")["id"]

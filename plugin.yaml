@@ -1,5 +1,5 @@
 name: stoa
-version: 0.14.0
+version: 0.14.1
 manifest_version: 2
 api_version: 1
 description: >-
@@ -32,7 +32,7 @@ config_schema:
     type: str
     default: b2b-sales
     label: Playbook
-    description: "Which playbook the desk runs on: b2b-sales, recruiting, agency, partnerships, or one you saved."
+    description: "Which playbook the desk runs on: b2b-sales, recruiting, agency, client-leads, partnerships, or one you saved."
   channels:
     type: list
     default: []

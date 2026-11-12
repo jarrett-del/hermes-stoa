@@ -1287,7 +1287,7 @@ async function tour(action, example) {
 }
 
 const an = word => (/^[aeiou]/i.test(word) ? 'an ' : 'a ') + word
-const DOOR_ORDER = ['b2b-sales', 'agency', 'recruiting', 'partnerships'] // the shipped ones, most general first; a team's own come after
+const DOOR_ORDER = ['b2b-sales', 'agency', 'client-leads', 'recruiting', 'partnerships'] // the shipped ones, most general first; a team's own come after
 
 function Doors({ playbooks, active, pick, busy }) {
   const place = item => { const at = DOOR_ORDER.indexOf(item.name); return at < 0 ? DOOR_ORDER.length : at }
@@ -1727,6 +1727,11 @@ function GroupPanel({ name, state, close, openRecord, onRenamed }) {
   }
   const enter = event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) addPerson() }
   const field = key => event => setV({ ...v, [key]: event.target.value })
+  const exportIt = () => send('/export', { group: group.name }).then(file => {
+    if (!file) return
+    download(file.filename, file.csv, 'text/csv')
+    host.notify({ kind: 'success', message: plural(file.rows, pb.terms.deal, pb.terms.deals) + ' exported: only ' + group.name + '.' })
+  })
   const stats = [['Open', data.open ? data.open + (data.open_value ? ' · ' + money(data.open_value, pb.currency) : '') : '0'],
     [pb.won.label, data.won ? data.won + (data.won_value ? ' · ' + money(data.won_value, pb.currency) : '') : '0'],
     [pb.lost.label, String(data.lost)], ['Last touch', ago(data.last_touch) || '—']]
@@ -1739,7 +1744,10 @@ function GroupPanel({ name, state, close, openRecord, onRenamed }) {
       h(Btn, { kind: 'quiet', onClick: close, 'aria-label': 'Close' }, '×')),
     h('div', { className: 'stoa-facts' }, stats.map(pair => h('div', { key: pair[0] }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, pair[1])))),
     h('div', { className: 'stoa-log' },
-      h('small', { className: 'stoa-eyebrow' }, cap(pb.terms.deals) + ' in it'),
+      h('div', { className: 'stoa-sechead', style: { padding: 0, alignItems: 'center' } },
+        h('small', { className: 'stoa-eyebrow' }, cap(pb.terms.deals) + ' in it'),
+        data.records.length ? h(Btn, { kind: 'quiet', disabled: busy, title: 'A CSV of the ' + pb.terms.deals + ' in this ' + term + ' and nothing else: the list to hand over',
+          onClick: exportIt }, 'Export as CSV') : null),
       data.records.length ? data.records.map(record => h('button', { type: 'button', key: record.id, className: 'stoa-row', style: { padding: '5px 6px', margin: '0 -6px', width: 'calc(100% + 12px)', opacity: record.status === 'open' ? 1 : 0.6 },
         onClick: () => openRecord(record.id) },
       h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name stoa-clip', style: { display: 'block' } }, record.name),

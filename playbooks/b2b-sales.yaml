@@ -13,6 +13,7 @@ terms:
 currency: USD
 stale_days: 7
 enrich: person
+map_group: company      # a company added from a market map: is a group of its own
 
 stages:
   - id: lead
