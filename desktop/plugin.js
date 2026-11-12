@@ -564,7 +564,7 @@ const CSS = `
 .stoa-door .stoa-btns { margin-top: auto; padding-top: 10px; }
 .stoa-chain { margin: 8px 0 6px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; letter-spacing: .04em; line-height: 1.7; color: var(--ui-text-secondary); }
 .stoa-setup { columns: 2 380px; column-gap: 14px; max-width: 1120px; }
-.stoa-setbox { break-inside: avoid; margin: 0 0 14px; }
+.stoa-setbox { break-inside: avoid; padding-bottom: 14px; }      /* padding, not a margin: a margin at the foot of a column is dropped, and boxes touched */
 .stoa-setbox[data-wide="1"] { column-span: all; }
 .stoa-check, .stoa-setrow { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
 .stoa-sechead + .stoa-check, .stoa-sechead + .stoa-setrow { border-top: 0; padding-top: 0; }
@@ -1382,13 +1382,13 @@ function Setup({ state, go }) {
   }
   const exportAll = () => wait(rest('/export').then(file => { download(file.filename, file.csv, 'text/csv'); host.notify({ kind: 'success', message: plural(file.rows, 'record', 'records') + ' exported.' }) })
     .catch(error => host.notifyError(error, 'Stoa could not export')))
-  const box = (title, right, children, wide) => h('div', { className: 'stoa-box stoa-setbox', 'data-wide': wide ? '1' : '0' },
+  const box = (title, right, children, wide) => h('div', { className: 'stoa-setbox', 'data-wide': wide ? '1' : '0' }, h('div', { className: 'stoa-box' },
     h('div', { className: 'stoa-sechead', style: { padding: '0 0 8px' } }, h('span', { className: 'stoa-eyebrow' }, title), right ? h('span', { className: 'stoa-sub' }, right) : null),
-    children)
+    children))
   return h('div', { className: 'stoa-setup' },
-    (setup.problems || []).length ? h('div', { className: 'stoa-box stoa-setbox', 'data-wide': '1', style: { borderColor: 'var(--ui-orange)' } },
+    (setup.problems || []).length ? h('div', { className: 'stoa-setbox', 'data-wide': '1' }, h('div', { className: 'stoa-box', style: { borderColor: 'var(--ui-orange)' } },
       h('div', { className: 'stoa-name' }, 'Some of this could not be read'),
-      setup.problems.map((line, index) => h('p', { key: index, className: 'stoa-sub', style: { margin: '4px 0 0', overflowWrap: 'anywhere' } }, line))) : null,
+      setup.problems.map((line, index) => h('p', { key: index, className: 'stoa-sub', style: { margin: '4px 0 0', overflowWrap: 'anywhere' } }, line)))) : null,
     box('Get started', left ? left + ' left' : 'all done', setup.checklist.map(item => h('div', { key: item.id, className: 'stoa-check', 'data-done': item.done ? '1' : '0' },
       h('i', { className: 'stoa-tick', 'aria-hidden': true }, item.done ? '✓' : ''),
       h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name', style: { display: 'block' } }, item.title), h('span', { className: 'stoa-sub' }, item.detail)),
