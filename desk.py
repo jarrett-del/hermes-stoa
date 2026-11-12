@@ -9,13 +9,15 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import cards, sources
+from . import cards, demo, sources
 from . import store as st
 from .intake import Intake
 from .market import Markets
@@ -28,6 +30,10 @@ GRANOLA_KEY = "GRANOLA_API_KEY"
 LOG_KINDS = ("note", "call", "email", "meeting", "task")
 HANDOFF_FRESH = 90  # seconds a "Drafting..." line is believed without news (a restart loses the watcher that clears it)
 DESKTOP_FRESH = 90  # seconds since the Desktop app or Webapp half last checked in for it to count as open
+TOUR_MARKER = "tour.json"       # in the data folder while sample data is on show; it names the example and its file
+TOUR_FILE = re.compile(r"^tour-[0-9a-f]{8}\.db$")
+TOUR_NOTE = ("The desk is showing sample data (a tour): every person and company on it is made up, and the "
+             "team's own records are out of sight until the tour ends.")
 
 
 def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
@@ -40,9 +46,12 @@ def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
 
 
 def _due(args: dict) -> tuple:
-    """``(args with next_due as YYYY-MM-DD, error)``. A due date that cannot be read is an error, not a guess."""
+    """``(args with next_due as YYYY-MM-DD, error)``. A due date that cannot be read is an error, not a
+    guess; an empty one means "no date", which is how a date is taken off."""
     if args.get("next_due") is None:
         return args, None
+    if not str(args["next_due"]).strip():
+        return dict(args, next_due=""), None
     due = st.parse_due(args["next_due"])
     if due is None:
         return args, {"ok": False, "error": "next_due should be a date such as %s (tomorrow, friday, +3d and 12/01/2026 "
@@ -67,6 +76,8 @@ class Desk:
         self._actor = actor or (lambda: "")
         self.http = http
         self._stores: dict = {}
+        self._tour_seen: tuple = (None, {})     # the tour marker as last read: ((path, modified), what it said)
+        self.can_configure = True          # False where settings cannot be saved (the page's own stand-in desk)
         self.home: Optional[Path] = None   # the Hermes profile this desk belongs to, when Hermes built it
         self.slack = None  # set by __init__ when the Slack half is wired
         self.announce: Callable[[], None] = lambda: None   # tells an open Desktop app or Webapp that the desk changed
@@ -79,12 +90,92 @@ class Desk:
     def data_dir(self) -> Path:
         return Path(self._data_dir())
 
-    @property
-    def store(self) -> st.Store:
-        path = str(self.data_dir / "desk.db")
+    def _store_at(self, name: str) -> st.Store:
+        path = str(self.data_dir / name)
         if path not in self._stores:
             self._stores[path] = st.Store(path)
         return self._stores[path]
+
+    @property
+    def store(self) -> st.Store:
+        """The ledger in use: the sample one during a tour, otherwise the team's own."""
+        tour = self.tour()
+        return self._store_at(tour["file"] if tour else "desk.db")
+
+    @property
+    def own_store(self) -> st.Store:
+        """The team's own ledger, whatever is on show."""
+        return self._store_at("desk.db")
+
+    # -- the tour: sample data, in a file of its own ----------------------------------------------
+    def tour(self) -> dict:
+        """``{"example", "file", "since"}`` while the desk is showing sample data, else ``{}``.
+
+        The marker is a small file in the plugin's data folder, so every process that serves this
+        profile (the gateway, the dashboard, a terminal) agrees on it. While it is there the team's
+        own ``desk.db`` is not read or written by anything but the Setup tab's counts.
+        """
+        marker = self.data_dir / TOUR_MARKER
+        try:
+            key = (str(marker), marker.stat().st_mtime_ns)
+        except OSError:
+            self._tour_seen = (None, {})
+            return {}
+        if self._tour_seen[0] != key:
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            good = isinstance(data, dict) and data.get("example") in demo.EXAMPLES and TOUR_FILE.match(str(data.get("file") or ""))
+            self._tour_seen = (key, {"example": data["example"], "file": data["file"],
+                                     "since": str(data.get("since") or "")} if good else {})
+        return self._tour_seen[1]
+
+    def tour_start(self, which: str = "") -> dict:
+        """Show a worked example in place of the team's own desk. Every tour starts from a fresh copy."""
+        which = str(which or "").strip().lower() or demo.which_for(self.own_playbook())
+        if which not in demo.EXAMPLES:
+            return {"ok": False, "error": "no example named '%s'" % which[:40], "examples": sorted(demo.EXAMPLES)}
+        self.tour_end()
+        folder = self.data_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        partial = folder / (".%s.%d.part" % (TOUR_MARKER, os.getpid()))
+        partial.write_text(json.dumps({"example": which, "file": "tour-%s.db" % os.urandom(4).hex(), "since": st.now()}),
+                           encoding="utf-8")
+        os.replace(partial, folder / TOUR_MARKER)
+        self._tour_seen = (None, {})
+        added = demo.load(self, which)
+        return {"ok": True, "example": which, "title": demo.EXAMPLES[which]["title"], "added": added,
+                "summary": demo.summary(self, which)}
+
+    def tour_end(self) -> bool:
+        """Back to the team's own desk; the sample file is thrown away. Returns whether a tour was on."""
+        folder = self.data_dir
+        was = bool(self.tour())
+        try:
+            (folder / TOUR_MARKER).unlink()
+        except OSError:
+            pass
+        self._tour_seen = (None, {})
+        for path in folder.glob("tour-*.db*"):
+            if not TOUR_FILE.match(path.name.split(".db")[0] + ".db"):
+                continue
+            self._stores.pop(str(path), None)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        return was
+
+    def stray_samples(self) -> int:
+        """Sample records sitting in the team's own ledger: versions before 0.10 loaded the examples there."""
+        return self.own_store.tally(demo.SOURCE)["samples"]
+
+    def tidy_samples(self) -> dict:
+        """Take those sample records (and the sample maps) out of the team's own ledger."""
+        if self.tour():
+            return {"ok": False, "error": "Leave the tour first; then the sample records in your own desk can be removed."}
+        return {"ok": True, "removed": demo.clear(self)}
 
     @property
     def library(self) -> Library:
@@ -103,8 +194,16 @@ class Desk:
         except Exception:
             return ""
 
-    def playbook(self) -> Playbook:
+    def own_playbook(self) -> Playbook:
+        """The playbook the team chose (the ``playbook`` setting)."""
         return self.library.load_or_default(str(self.setting("playbook", DEFAULT)))
+
+    def playbook(self) -> Playbook:
+        """The playbook in use: the example's own during a tour, otherwise the team's."""
+        tour = self.tour()
+        if tour:
+            return self.library.load_or_default(demo.EXAMPLES[tour["example"]]["playbook"])
+        return self.own_playbook()
 
     def actor(self) -> str:
         try:
@@ -117,9 +216,11 @@ class Desk:
         allow = self.setting("channels", []) or []
         if isinstance(allow, str):
             allow = [c.strip() for c in allow.split(",") if c.strip()]
+        session = session or {}
+        if session.get("platform") == "cron" and self.tour():
+            return False        # scheduled jobs wait while sample data is on show: they are for the team's own records
         if not allow:
             return True
-        session = session or {}
         if session.get("platform", "") in ("", "cli", "tui", "desktop", "local"):
             return True
         if session.get("platform") == "cron":        # scheduled jobs have no chat: they are opted in by name
@@ -214,7 +315,7 @@ class Desk:
 
     def can_enrich(self, playbook: Optional[Playbook] = None) -> bool:
         """Whether a record can be enriched: the key is set and the playbook has not switched it off."""
-        return bool(self.secret(PDL_KEY)) and (playbook or self.playbook()).enrich != "none"
+        return bool(self.secret(PDL_KEY)) and (playbook or self.playbook()).enrich != "none" and not self.tour()
 
     # -- shared helpers -------------------------------------------------------------------------
     def _resolve(self, ref: Any) -> tuple:
@@ -276,6 +377,8 @@ class Desk:
         view = str(args.get("view") or "board").lower()
         if view == "brief":
             return self.brief()
+        if view == "today":
+            return self.today()
         if view == "activity":
             days = _int(args.get("days") or 7, 7, 1, 3650)
             since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -346,6 +449,171 @@ class Desk:
             "notes_waiting": len(notes.get("notes") or []),
         }
 
+    def today(self, full: bool = True) -> dict:
+        """What wants a person today, most pressing first: next steps overdue and due, lists and drafts
+        waiting on them, records gone quiet, and new ones with nothing planned. A snoozed record is on
+        none of the lists until its date. ``full`` gives each record as the model sees it; without it
+        a row is the record's id and the fact that put it on the list (the page has the rest)."""
+        playbook = self.playbook()
+        date, day = st.today(), dt.date.today()
+        week_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        soon = (day + dt.timedelta(days=7)).isoformat()
+        touches, pending = self.store.touches(), self.store.meta_prefix("pending:")
+        lists = {key: [] for key in ("overdue", "due_today", "quiet", "new", "coming", "snoozed", "drafts")}
+        by_id = {}
+        for deal in self.store.list(status="open"):
+            by_id[deal["id"]] = deal
+            due, touch = cards.due_date(deal), touches.get(deal["id"], "")
+            if pending.get(deal["id"]):
+                lists["drafts"].append({"id": deal["id"]})
+            if cards.snoozed(deal):
+                lists["snoozed"].append({"id": deal["id"], "until": deal["snoozed_until"]})
+            elif due and due < date:
+                lists["overdue"].append({"id": deal["id"], "days": (day - dt.date.fromisoformat(due)).days})
+            elif due == date:
+                lists["due_today"].append({"id": deal["id"]})
+            elif cards.is_stale(playbook, deal, touch):
+                lists["quiet"].append({"id": deal["id"], "days": int(st.days_since(touch or deal["updated_at"]) or 0),
+                                       "expected": playbook.stale_days(deal["stage"])})
+            elif not deal["next_step"].strip() and deal["created_at"] >= week_ago:
+                lists["new"].append({"id": deal["id"], "days": int(st.days_since(deal["created_at"]) or 0)})
+            elif due and due <= soon:
+                lists["coming"].append({"id": deal["id"], "due": due})
+        lists["overdue"].sort(key=lambda row: -row["days"])
+        lists["quiet"].sort(key=lambda row: -row["days"])
+        lists["new"].sort(key=lambda row: row["days"])
+        lists["coming"].sort(key=lambda row: row["due"])
+        lists["snoozed"].sort(key=lambda row: row["until"])
+        approvals = self.intake.waiting()
+        counts = dict({key: len(rows) for key, rows in lists.items()}, approvals=len(approvals))
+        needs = sum(counts[key] for key in ("overdue", "due_today", "quiet", "new", "drafts", "approvals"))
+        if full:
+            lists = {key: [dict(self.view(by_id[row["id"]], playbook, touches=touches), **{k: v for k, v in row.items() if k != "id"})
+                           for row in rows[:15]] for key, rows in lists.items()}
+        out = dict(lists, ok=True, view="today", date=date, playbook=playbook.name, approvals=approvals, counts=counts, needs=needs)
+        if full:
+            out["terms"] = playbook.terms
+            if self.tour():
+                out["note"] = TOUR_NOTE
+        return out
+
+    def today_text(self) -> str:
+        data, playbook = self.today(), self.playbook()
+        lines = ["Today · %s · %s" % (data["date"], playbook.title)]
+        if self.tour():
+            lines.append("Sample data: nothing here is real.")
+        counts = data["counts"]
+
+        def section(title: str, key: str, row) -> None:
+            if data[key]:
+                lines.extend(["", "%s (%d)" % (title, counts[key])] + ["  " + row(item) for item in data[key]])
+
+        section("Overdue", "overdue", lambda d: "%s — %s (%dd overdue)" % (d["name"], d.get("next_step", "next step"), d["days"]))
+        section("Due today", "due_today", lambda d: "%s — %s" % (d["name"], d.get("next_step", "next step")))
+        if data["approvals"]:
+            lines += ["", "Waiting for your approval (%d)" % counts["approvals"]] + [
+                "  " + self.intake.headline(self.store.intake_get(item["id"])) for item in data["approvals"]]
+        section("Writing waiting to be picked up", "drafts", lambda d: "%s — %s" % (d["name"], d["stage_label"]))
+        section("Gone quiet", "quiet", lambda d: "%s — %s, quiet %dd (a nudge is due after %dd)"
+                % (d["name"], d["stage_label"], d["days"], d["expected"]))
+        section("New, nothing planned yet", "new", lambda d: "%s — %s" % (d["name"], d.get("company") or d["stage_label"]))
+        section("Coming up this week", "coming", lambda d: "%s — %s (%s)" % (d["name"], d.get("next_step", ""), d["due"]))
+        if counts["snoozed"]:
+            lines += ["", "%d snoozed" % counts["snoozed"]]
+        if not data["needs"]:
+            lines.append("Nothing needs you today.")
+        return "\n".join(lines)
+
+    def setup(self) -> dict:
+        """What is set up, what is not, and the rules in force, for the Setup tab. A key or a token is
+        reported as set or not set; its value never leaves the server."""
+        from . import blueprints
+        tour, playbook, own = self.tour(), self.playbook(), self.own_playbook()
+        tally = self.own_store.tally(demo.SOURCE)
+        real = tally["open"] + tally["won"] + tally["lost"] - tally["samples"]
+        chosen = self.setting("playbook", None) is not None
+        slack = None if self.slack is None else bool(getattr(self.slack, "available", False))
+        pdl, granola = bool(self.secret(PDL_KEY)), bool(self.secret(GRANOLA_KEY))
+        notes_dir = str(self.setting("notes_dir", "") or "")
+        cap = _int(self.setting("pdl_monthly_cap", 50), 50, 0, 10 ** 6)
+        used = _int(self.own_store.meta_get("pdl_calls:" + st.today()[:7], "0"), 0, 0, 10 ** 9)
+        allow = self.setting("channels", []) or []
+        if isinstance(allow, str):
+            allow = [c.strip() for c in allow.split(",") if c.strip()]
+        chats = [str(c) for c in allow if str(c) != "cron"]
+        users = sorted(self.slack_users())
+        terms = own.terms
+        try:
+            size = (self.data_dir / "desk.db").stat().st_size
+        except OSError:
+            size = 0
+        checklist = [
+            {"id": "playbook", "done": chosen or real > 0, "title": "Pick the playbook that fits how you sell",
+             "detail": "You are on %s: %s." % (own.title, " → ".join(s["label"] for s in own.stages) + " → " + own.won["label"])},
+            {"id": "records", "done": real > 0, "title": "Put your first %s on the desk" % terms["deals"],
+             "detail": ("%d on the desk." % real) if real else "Add one by hand, tell Hermes about one, or drop a CSV on the page."},
+            {"id": "slack", "done": bool(slack), "title": "Connect Slack",
+             "detail": "Connected: cards with buttons, and !gtm in any chat the desk is allowed in." if slack
+             else "Once Hermes is in your Slack, records post there as cards whose buttons move the pipeline."},
+            {"id": "sweep", "done": tally["from_sweeps"] > 0, "title": "Have Hermes log email, calls and Slack for you",
+             "detail": ("%d entries logged from your inbox, calls and Slack so far." % tally["from_sweeps"]) if tally["from_sweeps"]
+             else "Type /blueprint in a chat and switch on “%s”. It logs what it finds and asks before any stage change."
+             % blueprints.titled("activity-sweep")},
+            {"id": "notes", "done": granola or bool(notes_dir), "title": "Point it at your meeting notes",
+             "detail": "Connected." if granola or notes_dir else "Set a notes folder or a Granola key in the plugin's settings, and call notes "
+                                                               "are filed on the right record with the next step they imply."},
+        ]
+        connections = [
+            {"id": "slack", "label": "Slack", "on": slack,
+             "detail": "Cards with buttons, market maps and list reviews post here." if slack
+             else "Not visible from this page." if slack is None else "Not connected for this agent."},
+            {"id": "lookup", "label": "People Data Labs lookups", "on": pdl and own.enrich != "none",
+             "detail": ("%d of %d lookups used this month." % (used, cap) if cap else "%d lookups used this month; no cap." % used) if pdl and own.enrich != "none"
+             else "Switched off in the %s playbook." % own.name if pdl else "No key set (PDL_API_KEY). Optional."},
+            {"id": "granola", "label": "Granola meeting notes", "on": granola,
+             "detail": "Key set." if granola else "No key set (GRANOLA_API_KEY). Optional."},
+            {"id": "notes", "label": "Meeting notes folder", "on": bool(notes_dir), "detail": notes_dir or "Not set (notes_dir). Optional."},
+            {"id": "google", "label": "Gmail, Calendar and Sheets", "on": None,
+             "detail": "Stoa uses Hermes's own Google tools when they are connected; it holds no Google access itself."},
+        ]
+        rules = [
+            {"label": "Where the desk answers",
+             "value": "Only in these chats: %s (and the Desktop app, Webapp and terminal)." % ", ".join(chats) if chats
+             else "In every chat this agent is in."},
+            {"label": "Who may press a Slack button",
+             "value": "These Slack members: %s." % ", ".join(users) if users else "Only the person a card was posted for."},
+            {"label": "Stage changes Hermes finds on its own", "value": "Proposed for your approval. A sweep never moves a record."},
+            {"label": "Lists (a CSV, a Sheet, pasted rows)", "value": "Held as a review. Nothing is written until you apply."},
+            {"label": "Scheduled jobs",
+             "value": "Paused while sample data is on show." if tour
+             else "Cannot use the desk: add cron to the channels setting." if allow and "cron" not in allow
+             else "May use the desk."},
+            {"label": "Files it may read", "value": "CSV and TSV only, from: %s." % ", ".join(str(root) for root in self.import_roots())},
+            {"label": "Files it writes", "value": "Exports and saved maps, in %s." % (self.data_dir / "exports")},
+            {"label": "Paid lookups", "value": ("At most %d a month." % cap if cap else "No monthly cap.") if pdl else "None: no lookup key is set."},
+        ]
+        return {
+            "ok": True, "version": _version(),
+            "tour": {"example": tour["example"], "title": demo.EXAMPLES[tour["example"]]["title"], "since": tour["since"]} if tour else None,
+            "examples": [{"id": key, "title": example["title"], "playbook": example["playbook"]} for key, example in demo.EXAMPLES.items()],
+            "playbook": {"name": own.name, "title": own.title, "door": own.door, "summary": own.summary, "origin": own.origin,
+                         "chosen": chosen, "shown": playbook.name},
+            "playbooks": [dict(entry, active=entry["name"] == own.name) for entry in self.library.catalog()],
+            "can_switch": bool(self.can_configure),
+            "checklist": checklist, "connections": connections, "rules": rules,
+            "automations": [{"name": bp["name"], "title": bp["title"], "description": bp["description"]} for bp in blueprints.BLUEPRINTS],
+            "data": {"path": str(self.data_dir / "desk.db"), "size": size, "records": real, "open": tally["open"], "won": tally["won"],
+                     "lost": tally["lost"], "samples": tally["samples"], "activities": tally["activities"], "maps": tally["maps"],
+                     "lists_waiting": tally["lists_waiting"], "exports": str(self.data_dir / "exports")},
+            "playbook_sets": {
+                "words": "%s, %s" % (terms["deal"], terms["group"]),
+                "stages": [s["label"] for s in own.stages] + [own.won["label"]],
+                "quiet": [{"stage": s["label"], "days": own.stale_days(s["id"])} for s in own.stages],
+                "lost_reasons": own.lost["reasons"], "fields": [f["label"] for f in own.fields],
+                "drafts": [own.label(key) for key, text in (own.drafts.get("on_enter") or {}).items() if text],
+                "lookup": own.enrich},
+        }
+
     def flow(self, deals: Optional[list] = None, playbook: Optional[Playbook] = None) -> dict:
         """How records have moved through the playbook, for a Sankey diagram.
 
@@ -389,7 +657,7 @@ class Desk:
         playbook = self.playbook()
         actor = actor or self.actor()
         args, error = _due(args)
-        if error and action in ("add", "update", "log"):
+        if error and action in ("add", "update", "log", "done"):
             return error
         if action == "add":
             return self._add(args, playbook, actor)
@@ -449,11 +717,27 @@ class Desk:
             if follow:
                 self.store.update(deal["id"], actor=actor, **follow)
             deal = self.store.get(deal["id"])
+        elif action == "done":
+            step = deal["next_step"].strip()
+            text = str(args.get("text") or "").strip() or ("Done: %s" % step if step else "")
+            if not text:
+                return {"ok": False, "error": "%s has no next step to mark done. Use log to record what happened." % deal["name"]}
+            self.store.log(deal["id"], "task", text[:4000], actor=actor)
+            self.store.update(deal["id"], actor=actor, next_step=str(args.get("next_step") or ""), next_due=args.get("next_due") or "")
+            deal = self.store.get(deal["id"])
         elif action == "snooze":
-            deal = self.store.snooze(deal["id"], _int(args.get("days") if args.get("days") is not None else 3, 3, 0, 365), actor=actor)
+            until = ""
+            if args.get("until") not in (None, ""):
+                until = st.parse_due(args["until"]) or ""
+                if not until or until <= st.today():
+                    return {"ok": False, "error": "until should be a date after today such as %s (friday and +10d also work); "
+                                                  "got '%s'. Nothing was changed."
+                                                  % ((dt.date.today() + dt.timedelta(days=7)).isoformat(), str(args["until"])[:40])}
+            deal = self.store.snooze(deal["id"], _int(args.get("days") if args.get("days") is not None else 3, 3, 0, 365),
+                                     until=until, actor=actor)
         else:
             return {"ok": False, "error": "unknown action '%s'" % action,
-                    "actions": ["get", "add", "update", "move", "close", "reopen", "log", "snooze"]}
+                    "actions": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze"]}
         self._changed(deal)
         return {"ok": True, "action": action, "deal": self.view(deal, playbook, activities=3)}
 
@@ -652,6 +936,9 @@ class Desk:
 
     # -- gtm_enrich -----------------------------------------------------------------------------
     def enrich(self, args: dict) -> dict:
+        if self.tour():
+            return {"ok": False, "error": "Lookups are switched off on the sample desk, so no credits are spent on "
+                                          "made-up people. Leave the tour to look up real records."}
         key = self.secret(PDL_KEY)
         if not key:
             return {"ok": False, "error": "People Data Labs is not set up. Add PDL_API_KEY in the plugin's settings "
@@ -976,7 +1263,7 @@ class Desk:
                         % playbook.terms["deal"])
             return cards.board_text(playbook, self.store.list(status="open"))
         if word == "help":
-            return ("/gtm — the pipeline board\n/gtm brief — what needs you today\n/gtm stale — records gone quiet\n"
+            return ("/gtm — the pipeline board\n/gtm today — what needs you, most pressing first\n/gtm brief — the morning brief\n/gtm stale — records gone quiet\n"
                     "/gtm due — next steps due\n/gtm map [market] — a market map\n/gtm <name> — one record's card\n"
                     "/gtm playbooks — available playbooks\nIn Slack, type !gtm: Slack keeps the slash for its own commands.")
         if word == "map" or word.startswith("map "):
@@ -989,6 +1276,8 @@ class Desk:
             return shown["error"] + ("\n" + "\n".join("  " + n for n in names) if names else "")
         if word == "brief":
             return self.brief_text()
+        if word == "today":
+            return self.today_text()
         if word in ("stale", "due"):
             data = self.pipeline({"view": word})
             if not data["deals"]:
@@ -1041,8 +1330,18 @@ class Desk:
                 "person, company or record, look it up with gtm_deal(action=\"get\") before saying it cannot be "
                 "found, whatever else you can search; to show one, use gtm_card. %s "
                 "Say \"%s\" and \"%s\", not \"deal\" or \"group\", unless those are the words. "
-                "For how to run the desk, load the skill stoa:desk. To map a market or find new leads, load stoa:market-map."
-                % (playbook.describe(), playbook.terms["deal"], playbook.terms["group"]))
+                "For how to run the desk, load the skill stoa:desk. To map a market or find new leads, load stoa:market-map.%s"
+                % (playbook.describe(), playbook.terms["deal"], playbook.terms["group"],
+                   " Sample data is on show (a tour): everything on the desk is made up. Say so when you report from it."
+                   if self.tour() else ""))
+
+
+def _version() -> str:
+    try:
+        found = re.search(r"^version:\s*[\"']?([0-9][^\"'\s]*)", (Path(__file__).parent / "plugin.yaml").read_text(encoding="utf-8"), re.M)
+    except OSError:
+        found = None
+    return found.group(1) if found else ""
 
 
 def _profile_line(kind: str, profile: dict) -> str:

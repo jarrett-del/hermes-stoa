@@ -1,0 +1,78 @@
+# Partnerships and fundraising: resellers, integrations, referral partners and investors. The thing
+# that moves is a relationship with an organization, and what you are after is a signed agreement.
+name: partnerships
+title: Partnerships desk
+door: Partnerships and fundraising
+summary: Resellers, integration partners and investors. One relationship per record, grouped by program or round.
+terms:
+  deal: partner
+  deals: partners
+  group: program
+  groups: programs
+  company: Organization
+  value: Expected value
+currency: USD
+stale_days: 10
+enrich: company
+
+stages:
+  - id: identified
+    label: Identified
+    stale_days: 7
+    advance: Get an intro
+  - id: intro
+    label: Intro made
+    stale_days: 5
+    advance: Book first meeting
+  - id: meeting
+    label: First meeting
+    stale_days: 7
+    advance: Start evaluation
+  - id: evaluating
+    label: Evaluating
+    stale_days: 10
+    advance: Send terms
+  - id: terms
+    label: Terms
+    stale_days: 5
+    advance: Mark signed
+
+won:
+  id: signed
+  label: Signed
+lost:
+  id: passed
+  label: Passed
+  reasons: [No strategic fit, Timing, Terms, Chose someone else, Went quiet]
+
+fields:
+  - {key: kind, label: Kind}
+  - {key: champion, label: Champion}
+  - {key: they_bring, label: What they bring}
+  - {key: they_need, label: What they need}
+  - {key: intro_via, label: Intro via}
+
+drafts:
+  follow_up: >
+    Draft a short follow-up to {name} at {company}. Lead with something useful to them (a
+    number, a customer, a milestone since we last spoke), then one clear ask. Under 90 words.
+  on_enter:
+    intro: >
+      Draft the forwardable intro blurb for {company}: who we are in one line, why the two of us
+      fit, and the specific ask. Short enough to forward without editing.
+    meeting: >
+      Write a first-meeting plan for {name} at {company}: what each side gets from this, what we
+      need to learn, and the one question that tells us whether it is real.
+    evaluating: >
+      List what {company} needs from us to decide (materials, references, numbers, a technical
+      check) from the activity log, with an owner and a date for each, and draft the note to
+      {name} that sends the first of them.
+    terms: >
+      Summarise the terms on the table with {company} from the activity log, mark the open
+      points, and draft a reply to {name} that proposes a date to close them.
+    signed: >
+      Draft the kickoff note to {name} with the first three joint steps, and a one-paragraph
+      internal summary of what was agreed.
+  lost: >
+    Draft a gracious close-out note to {name} that keeps the relationship warm and names when
+    it would make sense to talk again. The reason we recorded: {reason}.

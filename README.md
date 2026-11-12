@@ -2,7 +2,7 @@
 
 # Stoa
 
-**A lightweight CRM you talk to, inside [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
+**The CRM for [Hermes Agent](https://github.com/NousResearch/hermes-agent): a lightweight one you talk to. Hermes runs it; you approve.**
 
 
 A two-person sales team does not need a CRM with forty tabs. It needs to know who to sell to,
@@ -31,7 +31,7 @@ rebuilt as a plugin anyone can install.
 hermes plugins install stoa                        # from the Hermes plugin catalog
 hermes plugins install jarrett-del/hermes-stoa     # or straight from this repository
 hermes plugins enable stoa
-hermes stoa demo saas     # optional: a worked example to try it on (or: hermes stoa demo recruiting)
+hermes stoa demo saas     # optional: look around a worked example first (or: hermes stoa demo recruiting)
 hermes gateway restart    # so the Slack buttons bind
 ```
 
@@ -42,22 +42,30 @@ In Slack the command is `!gtm` (Slack keeps the slash for its own commands), and
 ## Any pipeline, and two worked examples
 
 A playbook describes a pipeline: what a record is called, the stages it moves through, what the
-buttons say, and what Hermes drafts at each step. It can be any pipeline. Three playbooks ship
-(`b2b-sales`, `recruiting`, `agency`), and Hermes will write one for your business from a short
-conversation.
+buttons say, and what Hermes drafts at each step. It can be any pipeline. Four playbooks ship:
+clients and revenue (`b2b-sales`, the default), recruiting and search (`recruiting`), agency and
+consulting (`agency`), and partnerships and fundraising (`partnerships`). Hermes will write one
+for your business from a short conversation.
+
+The first time you open the page it asks how you sell, and offers a look around first:
+
+![The first time you open the desk](docs/desktop-welcome.jpg)
 
 The sample data shows two businesses at a realistic size. Everything in it is made up.
 
 | | A recruiting agency | A B2B software company selling a fraud prevention tool |
 |---|---|---|
-| **Load it** | `hermes stoa demo recruiting` | `hermes stoa demo saas` |
+| **Tour it** | `hermes stoa demo recruiting` | `hermes stoa demo saas` |
 | **A record is** | a candidate in a client's search | a deal with a buyer at an account |
 | **Stages** | Sourced → Contacted → Screened → Submitted → Client interview → Offer → Placed | Lead → Qualified → Discovery → Proposal → Negotiation → Closed won |
 | **On the desk** | 24 open candidates across 8 searches, **$1.2M** in fees, plus 3 placed and 5 passed | 28 open deals, **$2.5M**, plus 4 won and 6 lost |
 | **Its market map** | Where the candidates for one search work now: 10 companies, and adding one puts its named person in that search | Fintechs and marketplaces exposed to payment fraud: 14 companies, what each uses today, and who to call first |
 
-Loading one switches the desk to its playbook and replaces the other, so the board always reads
-as one business. `hermes stoa demo --clear` removes the sample data and leaves your own records.
+A tour never touches your own desk. The sample data lives in a file of its own, with its own
+playbook; every surface says it is sample data while it is on show; lookups are off and scheduled
+jobs wait. **Leave the tour** on the page, or `hermes stoa demo --leave`, brings your desk back
+exactly as it was and throws the sample file away. (Versions before 0.10 loaded the examples into
+the desk itself. If yours did, the Setup tab offers to take them out, and so does `--leave`.)
 
 The recruiting agency:
 
@@ -81,8 +89,24 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   and the draft comes back in the conversation.
 - **Cards in the conversation.** Ask *"show me Dana"* and the reply contains the live card, with
   its buttons, not a description of it. *"Show me the market map"* draws the map the same way.
-- **A page of its own.** **Stoa** in the sidebar opens the funnel with its conversion rates, the
-  pipeline board with the same filters, the market map with its reading, and the activity log.
+- **A page of its own.** **Stoa** in the sidebar opens on **Today**, then the funnel with its
+  conversion rates and the pipeline board with the same filters, the market map with its reading,
+  the activity log, and **Setup**.
+- **Today.** What needs you, most pressing first: next steps overdue and due today, lists waiting
+  for your approval, records gone quiet, and new ones with nothing planned. Each row has one move.
+  **Done** logs the step and asks what comes next, **Draft it** has Hermes write what the step
+  needs, **Snooze** puts it aside for a few days or until a date you pick, and until then it is on
+  no list. What is coming up this week sits beside it.
+
+![Today: what needs you, and one move for each](docs/desktop-today.jpg)
+
+- **Setup.** One tab that says where things stand: a short get-started list that ticks itself off,
+  what is connected (a key shows as set or not set, never its value), the rules in force (which
+  chats the desk answers in, who may press a Slack button, which folders it reads), the
+  automations you can switch on, your playbook and the others, your data with a CSV export, and a
+  cheat sheet of things to say, press and type.
+
+![Setup: what is connected, the rules in force, and how to work the desk](docs/desktop-setup.jpg)
 - **Talk to the page.** A dock at the foot of the page takes the same sentences the chat does:
   *"Add Nadia Rahim from Larkspur to the Northwind search"*, *"what needs me today?"*. The
   conversation opens above the dock and the board redraws behind it. The page keeps its own
@@ -267,6 +291,11 @@ Marcus, he wants 210 base, follow up Thursday." "We lost Lumen on price."* The a
 of those to the desk in the same turn; the bundled skill teaches it to treat the desk, not its
 memory, as the source of truth.
 
+Every record carries one next step and a date. *"What needs me today?"* (or `/gtm today`) answers
+with the same list the Today tab shows. *"Done, I sent the references"* logs the step and sets
+the next one. *"Park Kestrel until the 20th"* snoozes it: a snoozed record is on neither the due
+list nor the quiet list, in the page, the morning brief or Slack, until its date.
+
 ### Playbooks
 
 A playbook is a short YAML file:
@@ -287,7 +316,8 @@ drafts:
 ```
 
 `stale_days` decides when a record counts as gone quiet at that stage. `advance` is the label on
-the button. `drafts.on_enter` is what Hermes writes when a record arrives at a stage.
+the button. `drafts.on_enter` is what Hermes writes when a record arrives at a stage. An optional
+`door` is the short name the first-launch chooser shows for it.
 
 To make your own, tell Hermes how you sell: *"We install commercial solar. Set the desk up for
 us."* It asks a few questions, shows you the stages, and saves the playbook. Or copy one from
@@ -441,8 +471,18 @@ What the plugin does that you would want to know before installing it:
   DOM or other plugins' storage, and it checks in with the backend every 30 seconds while open so
   the agent knows a card can be drawn in the conversation.
 - **Web dashboard.** The tab's backend adds routes under `/api/plugins/stoa/`, behind the
-  dashboard's own sign-in. They read and change the pipeline; they call no model and no outside
+  dashboard's own sign-in. They read and change the pipeline, start and end a tour of the sample
+  data, hand the pipeline to your browser as a CSV download when you press Export, and switch the
+  active playbook (the plugin's own `playbook` setting, saved through `ctx.set_config`; where the
+  page cannot save it, it asks Hermes to in the dock instead). They call no model and no outside
   service, except that the Enrich button makes the same People Data Labs lookup as in Slack.
+- **The Setup tab.** It shows, to anyone signed in to your Hermes, which chats and Slack members
+  the desk is limited to, the folders it reads and writes, where its database file is, and whether
+  each key is set. It never shows a key or a token.
+- **Sample data.** A tour writes two things in the plugin's own data folder: `tour.json`, which
+  says a tour is on, and one `tour-<id>.db` holding the made-up records. Both are deleted when
+  you leave. While they are there the plugin does not read or write your own `desk.db`, apart
+  from counting what is in it for the Setup tab.
 - **Files outside the plugin's own data.** It reads Markdown and text files in the folder you
   set as `notes_dir`. By path it reads only `.csv` and `.tsv` files, and only from the plugin's
   own `imports/` folder, the folder you name in `import_dir`, and the working directory when that
@@ -456,7 +496,7 @@ What the plugin does that you would want to know before installing it:
   sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.9
+## Limits in 0.10
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -475,6 +515,11 @@ What the plugin does that you would want to know before installing it:
   list the people who may press such cards in `slack_users`, or ask for the card again.
 - The activity sweep is only as good as the tools your Hermes has connected and the model reading
   the mail. It summarises; check the record's log against the email when it matters.
+- Setup cannot tell which automations you have switched on, so it lists them all and says how.
+  Today and Setup are in the Desktop app and Webapp page; the web dashboard tab has Setup, the
+  tour and its own due and quiet lists, but no Done or snooze-until-a-date yet.
+- On a tour, what you do is thrown away when you leave, Slack cards posted from it stop working,
+  lookups are off, and scheduled jobs do nothing until it ends.
 - The dock on the page runs a turn of your agent's model, the same as typing in a chat. It takes
   CSV and small text files; a PDF, an image or a spreadsheet goes through the full chat, which is
   one click away. Dictation is not available in the Desktop app; the full chat's microphone is.
@@ -484,7 +529,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 132 tests, no network
+python3 -m unittest discover -s tests     # 150 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

@@ -8,13 +8,15 @@ GTM_PIPELINE = {
         "Read the team's pipeline from the Stoa desk: the board, the brief, due, quiet. "
         "Use it before answering any question about the "
         "pipeline, who is at which stage, what is due, or what has gone quiet. view='board' gives every open record by "
-        "stage; 'brief' gives what needs attention today (due next steps, records gone quiet, this week's movement); "
-        "'stale' and 'due' filter to those; 'list' is a flat filtered list; 'activity' is the recent activity log."
+        "stage; 'today' gives what needs the person now, most pressing first (overdue, due today, lists waiting for "
+        "approval, gone quiet, new with nothing planned, coming up; snoozed records are left out); 'brief' is the "
+        "morning summary (due, quiet, this week's movement); 'stale' and 'due' filter to those; 'list' is a flat "
+        "filtered list; 'activity' is the recent activity log."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "view": {"type": "string", "enum": ["board", "brief", "list", "stale", "due", "activity"], "description": "Default board."},
+            "view": {"type": "string", "enum": ["board", "today", "brief", "list", "stale", "due", "activity"], "description": "Default board."},
             "group": {"type": "string", "description": "Filter by group (account, search, client: whatever the playbook calls it)."},
             "stage": {"type": "string", "description": "Filter by stage id or label."},
             "owner": {"type": "string", "description": "Filter by owner."},
@@ -34,14 +36,16 @@ GTM_DEAL = {
         "you can search. A record is a deal, candidate or opportunity, depending on the playbook. "
         "Actions: get (full record plus activity log), add, update (fields, value, owner, next step), move (to a stage, "
         "or stage='next'), close (outcome won or lost, with a reason), reopen, log (record a note, call, email or "
-        "meeting, optionally setting the next step), snooze (hide from the stale list for N days). Call this whenever "
+        "meeting, optionally setting the next step), done (the next step was done: logs it, and sets the next_step and "
+        "next_due you pass as what comes next), snooze (put it aside for N days or until a date: it is on neither the "
+        "due list nor the quiet list until then). Call this whenever "
         "the user tells you something happened with a prospect, so the desk stays the source of truth. Any card "
         "already posted in Slack for the record updates itself."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["get", "add", "update", "move", "close", "reopen", "log", "snooze"]},
+            "action": {"type": "string", "enum": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze"]},
             "deal": _DEAL_REF,
             "name": {"type": "string", "description": "add/update: the person or deal name."},
             "company": {"type": "string"},
@@ -57,11 +61,12 @@ GTM_DEAL = {
             "fields": {"type": "object", "description": "Extra facts keyed by the playbook's field keys; an empty value removes a key."},
             "note": {"type": "string", "description": "add: an opening note for the activity log."},
             "kind": {"type": "string", "enum": ["note", "call", "email", "meeting", "task"], "description": "log: what happened."},
-            "text": {"type": "string", "description": "log: what was said or done, in a sentence or three."},
+            "text": {"type": "string", "description": "log: what was said or done, in a sentence or three. done: optional, in place of 'Done: <the next step>'."},
             "ref": {"type": "string", "description": "log: an id for the thing being logged (an email, message or call id). The same ref is logged only once."},
             "outcome": {"type": "string", "enum": ["won", "lost"], "description": "close: the outcome."},
             "reason": {"type": "string", "description": "close/move to lost: why."},
             "days": {"type": "integer", "description": "snooze: how many days (0 clears)."},
+            "until": {"type": "string", "description": "snooze: put aside until this date instead: YYYY-MM-DD (friday and +10d also work)."},
             "force": {"type": "boolean", "description": "add: create even if an open record with this name and group exists."},
         },
         "required": ["action"],

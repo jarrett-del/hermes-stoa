@@ -99,7 +99,9 @@ class StoreTests(unittest.TestCase):
 class PlaybookTests(unittest.TestCase):
     def test_builtins_load_and_validate(self):
         library = Library()
-        self.assertEqual(library.names(), ["agency", "b2b-sales", "recruiting"])
+        self.assertEqual(library.names(), ["agency", "b2b-sales", "partnerships", "recruiting"])
+        self.assertEqual([entry["door"] for entry in library.catalog()],             # what the first-launch chooser calls each
+                         ["Agency and consulting", "Clients and revenue", "Partnerships and fundraising", "Recruiting and search"])
         for name in library.names():
             playbook = library.load(name)
             self.assertGreaterEqual(len(playbook.stages), 2)
@@ -879,6 +881,236 @@ class SampleDataTests(unittest.TestCase):
         self.assertEqual(desk.markets.list_markets(), [])
 
 
+class TourTests(unittest.TestCase):
+    """Sample data lives in a file of its own: a tour never touches the team's own desk."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name, playbook="agency", secrets={"PDL_API_KEY": "k"})
+        self.mine = self.desk.deal({"action": "add", "name": "A real opportunity", "value": 5000})["deal"]
+
+    def files(self):
+        return sorted(path.name for path in Path(self.tmp.name).glob("tour*"))
+
+    def test_a_tour_shows_the_example_and_leaves_the_real_desk_alone(self):
+        started = self.desk.tour_start("recruiting")
+        self.assertEqual((started["ok"], started["example"], started["added"]), (True, "recruiting", len(demo.EXAMPLES["recruiting"]["rows"])))
+        self.assertEqual(self.desk.playbook().name, "recruiting")                     # the example brings its own playbook...
+        self.assertEqual(self.desk.own_playbook().name, "agency")                     # ...and the team's choice is not touched
+        self.assertNotIn("A real opportunity", [d["name"] for d in self.desk.store.list(status="all")])
+        self.assertEqual([d["name"] for d in self.desk.own_store.list(status="all")], ["A real opportunity"])
+        self.assertEqual(len(self.desk.markets.list_markets()), 1)
+        self.desk.deal({"action": "add", "name": "Tried it out"})                     # what is done on tour stays on tour
+        self.assertTrue(self.desk.tour_end())
+        self.assertEqual(self.files(), [])
+        self.assertEqual([d["name"] for d in self.desk.store.list(status="all")], ["A real opportunity"])
+        self.assertEqual((self.desk.playbook().name, self.desk.markets.list_markets()), ("agency", []))
+        self.assertFalse(self.desk.tour_end())                                        # nothing to leave the second time
+
+    def test_each_tour_starts_fresh_and_a_second_process_sees_it(self):
+        self.desk.tour_start("saas")
+        first = self.desk.tour()["file"]
+        self.desk.deal({"action": "add", "name": "Left over from the first tour"})
+        other = make_desk(self.tmp.name, playbook="agency")                           # the dashboard, say: same folder, its own objects
+        self.assertEqual((other.tour()["example"], other.playbook().name), ("saas", "b2b-sales"))
+        other.tour_start("saas")
+        self.assertNotEqual(self.desk.tour()["file"], first)
+        self.assertEqual(self.files(), ["tour-%s" % self.desk.tour()["file"][5:], "tour.json"])
+        self.assertNotIn("Left over from the first tour", [d["name"] for d in self.desk.store.list(status="all")])
+        other.tour_end()
+        self.assertEqual((self.desk.tour(), self.desk.playbook().name), ({}, "agency"))
+        self.assertEqual(self.desk.tour_start("nonsense")["ok"], False)
+        self.assertEqual(self.desk.tour(), {})
+
+    def test_a_marker_that_does_not_hold_together_is_not_a_tour(self):
+        marker = Path(self.tmp.name) / "tour.json"
+        for text in ("not json", "[]", '{"example": "saas", "file": "../desk.db"}', '{"example": "nope", "file": "tour-0123abcd.db"}'):
+            marker.write_text(text)
+            self.desk._tour_seen = (None, {})
+            self.assertEqual(self.desk.tour(), {}, text)
+            self.assertEqual(self.desk.store.path, str(Path(self.tmp.name) / "desk.db"))
+
+    def test_on_tour_nothing_is_spent_and_scheduled_jobs_wait(self):
+        self.assertTrue(self.desk.can_enrich())
+        self.assertTrue(self.desk.allowed({"platform": "cron"}))
+        self.desk.tour_start("saas")
+        self.assertFalse(self.desk.can_enrich())
+        self.assertIn("switched off on the sample desk", self.desk.enrich({"deal": "anyone"})["error"])
+        self.assertFalse(self.desk.allowed({"platform": "cron"}))
+        self.assertTrue(self.desk.allowed({"platform": "slack", "chat_id": "C1"}))
+        self.assertIn("Sample data is on show", self.desk.prompt_section())
+        self.assertLessEqual(len(self.desk.prompt_section()), 900)
+        self.assertIn("sample data", self.desk.today()["note"])
+        self.desk.tour_end()
+        self.assertNotIn("Sample data", self.desk.prompt_section())
+
+    def test_sample_records_an_earlier_version_left_in_the_desk_can_be_taken_out(self):
+        self.desk._set_config("playbook", "b2b-sales")
+        demo.load(self.desk)                                                          # how versions before 0.10 did it
+        self.assertEqual(self.desk.stray_samples(), len(demo.EXAMPLES["saas"]["rows"]))
+        self.desk.tour_start("saas")
+        self.assertFalse(self.desk.tidy_samples()["ok"])                              # not while the real desk is out of sight
+        self.desk.tour_end()
+        self.assertEqual(self.desk.tidy_samples(), {"ok": True, "removed": len(demo.EXAMPLES["saas"]["rows"])})
+        self.assertEqual([d["name"] for d in self.desk.store.list(status="all")], ["A real opportunity"])
+
+    def test_the_demo_command_takes_the_tour_and_leaves_it(self):
+        from stoa import cli
+        import contextlib
+        import io
+
+        def run(**args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.run(self.desk, types.SimpleNamespace(stoa_command="demo", **args))
+            return out.getvalue()
+
+        self.assertIn("On tour: the example of a recruiting agency", run(which="recruiting", clear=False))
+        self.assertEqual(self.desk.tour()["example"], "recruiting")
+        self.assertIn("your own desk is untouched", run(which="", clear=False))       # no name: the one that fits the team's playbook
+        self.assertEqual(self.desk.tour()["example"], "saas")
+        self.assertIn("Left the tour", run(which="", clear=True))
+        self.assertEqual((self.desk.tour(), self.desk.store.count()), ({}, 1))
+        self.assertIn("No tour was on", run(which="", clear=True))
+
+
+class TodayTests(unittest.TestCase):
+    """The Today list: what wants a person now, most pressing first."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name)
+        fixture.load(self.desk)
+
+    def names(self, key, data=None):
+        return [row["name"] for row in (data or self.desk.today())[key]]
+
+    def test_every_open_record_lands_on_the_one_list_that_fits(self):
+        data = self.desk.today()
+        self.assertEqual(self.names("overdue", data), ["Ingrid Solberg", "Marcus Oyelaran"])       # most overdue first
+        self.assertEqual([row["days"] for row in data["overdue"]], [2, 1])
+        self.assertEqual(sorted(self.names("due_today", data)), ["Dana Whitfield", "Wei-Lin Chao"])
+        self.assertEqual(self.names("quiet", data), ["Tomás Ibarra"])                              # no next step, and past the stage's patience
+        self.assertEqual((data["quiet"][0]["days"], data["quiet"][0]["expected"]), (6, self.desk.playbook().stale_days("sourced")))
+        self.assertEqual(self.names("coming", data), ["Priya Raman", "Callum Reyes"])              # soonest first
+        self.assertEqual((data["counts"]["overdue"], data["needs"]), (2, 5))
+        added = self.desk.deal({"action": "add", "name": "Ada Quill"})["deal"]
+        self.assertEqual(self.names("new"), ["Ada Quill"])                                         # just arrived, nothing planned
+        self.desk.deal({"action": "update", "deal": added["id"], "next_step": "Say hello", "next_due": "+3d"})
+        self.assertEqual((self.names("new"), "Ada Quill" in self.names("coming")), ([], True))
+
+    def test_snoozing_takes_a_record_off_every_list_until_the_date(self):
+        ingrid = self.desk.store.find("Ingrid Solberg")["id"]
+        until = (dt.date.today() + dt.timedelta(days=10)).isoformat()
+        out = self.desk.deal({"action": "snooze", "deal": ingrid, "until": "+10d"})
+        self.assertEqual((out["ok"], out["deal"]["snoozed_until"], out["deal"].get("due")), (True, until, None))
+        data = self.desk.today()
+        self.assertNotIn("Ingrid Solberg", self.names("overdue", data))
+        self.assertEqual([(row["name"], row["until"]) for row in data["snoozed"]], [("Ingrid Solberg", until)])
+        self.assertNotIn("Ingrid Solberg", [d["name"] for d in self.desk.brief()["due"]])          # the morning brief agrees
+        self.assertNotIn("Ingrid Solberg", [d["name"] for d in self.desk.pipeline({"view": "due"})["deals"]])
+        self.assertFalse(self.desk.deal({"action": "snooze", "deal": ingrid, "until": "yesterday"})["ok"])
+        self.assertFalse(self.desk.deal({"action": "snooze", "deal": ingrid, "until": "whenever"})["ok"])
+        self.assertEqual(self.desk.store.get(ingrid)["snoozed_until"], until)                      # a refusal changes nothing
+        self.desk.deal({"action": "snooze", "deal": ingrid, "days": 0})
+        self.assertIn("Ingrid Solberg", self.names("overdue"))
+
+    def test_done_logs_the_step_and_sets_what_comes_next(self):
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        out = self.desk.deal({"action": "done", "deal": dana, "next_step": "Prep her for the client call", "next_due": "+2d"})
+        self.assertEqual((out["ok"], out["deal"]["next_step"]), (True, "Prep her for the client call"))
+        log = self.desk.store.activities(dana, limit=3)
+        self.assertIn(("task", "Done: Send submission note to Northwind"), [(a["kind"], a["text"]) for a in log])
+        self.assertNotIn("Dana Whitfield", self.names("due_today"))
+        self.desk.deal({"action": "done", "deal": dana})                                           # done, and nothing planned after it
+        record = self.desk.store.get(dana)
+        self.assertEqual((record["next_step"], record["next_due"]), ("", ""))
+        self.assertIn("no next step to mark done", self.desk.deal({"action": "done", "deal": dana})["error"])
+        self.assertFalse(self.desk.deal({"action": "done", "deal": "Priya Raman", "next_due": "the 45th"})["ok"])
+        self.assertEqual(self.desk.store.find("Priya Raman")["next_step"], "Debrief after onsite")
+
+    def test_a_due_date_can_be_taken_off(self):
+        priya = self.desk.store.find("Priya Raman")["id"]
+        self.assertTrue(self.desk.deal({"action": "update", "deal": priya, "next_due": ""})["ok"])
+        self.assertEqual(self.desk.store.get(priya)["next_due"], "")
+
+    def test_lists_and_drafts_waiting_are_on_it_and_the_text_reads_top_down(self):
+        self.desk.intake.propose_file("badge scans.csv", "Name,Company\nAda Quill,Fathom Data\n")
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        self.desk.park_followup(dana, "Write the follow-up")
+        data = self.desk.today()
+        self.assertEqual((data["counts"]["approvals"], self.names("drafts", data), data["needs"]), (1, ["Dana Whitfield"], 7))
+        text = self.desk.slash("today")
+        order = [text.index(title) for title in ("Overdue (2)", "Due today (2)", "Waiting for your approval (1)", "Gone quiet (1)",
+                                                 "Coming up this week (2)")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("badge scans.csv", text)
+        self.assertIn("Ingrid Solberg — Chase Halcyon for feedback (2d overdue)", text)
+        self.assertEqual(self.desk.pipeline({"view": "today"})["view"], "today")
+        slim = self.desk.today(full=False)                                                         # what the page polls: ids and the one fact
+        self.assertEqual(sorted(slim["overdue"][0]), ["days", "id"])
+
+    def test_an_empty_desk_says_so(self):
+        desk = make_desk(tempfile.mkdtemp(dir=self.tmp.name))
+        self.assertEqual((desk.today()["needs"], desk.today_text().splitlines()[-1]), (0, "Nothing needs you today."))
+
+
+class SetupTests(unittest.TestCase):
+    """The Setup tab's data: what is connected, the rules in force, and what is left to do."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def fresh(self, config=None, secrets=None):
+        settings = dict(config or {})
+        return Desk(data_dir=lambda: Path(self.tmp.name), get_config=lambda k, default=None: settings.get(k, default),
+                    set_config=settings.__setitem__, get_secret=lambda n: (secrets or {}).get(n), actor=lambda: "tester",
+                    http=lambda *a, **k: (0, {}))
+
+    def test_a_new_desk_has_everything_still_to_do(self):
+        data = self.fresh().setup()
+        self.assertEqual({item["id"]: item["done"] for item in data["checklist"]},
+                         {"playbook": False, "records": False, "slack": False, "sweep": False, "notes": False})
+        self.assertEqual((data["playbook"]["name"], data["playbook"]["chosen"], data["tour"], data["can_switch"]), ("b2b-sales", False, None, True))
+        self.assertEqual(len(data["automations"]), 7)
+        self.assertEqual(sorted(example["id"] for example in data["examples"]), ["recruiting", "saas"])
+        self.assertEqual(data["playbook_sets"]["stages"][-1], "Closed won")
+        self.assertRegex(data["version"], r"^\d+\.\d+\.\d+$")
+
+    def test_it_reports_what_is_set_without_showing_any_key(self):
+        desk = self.fresh({"playbook": "recruiting", "channels": ["C1"], "slack_users": ["U1", "U2"], "pdl_monthly_cap": 80,
+                           "notes_dir": "/notes"}, {"PDL_API_KEY": "pdl-secret-value", "GRANOLA_API_KEY": "granola-secret-value"})
+        desk.slack = types.SimpleNamespace(available=True, refresh=lambda deal_id: None)
+        desk.deal({"action": "add", "name": "Ada Quill", "email": "ada@fathom.example"})
+        desk.deal({"action": "log", "deal": "Ada Quill", "kind": "email", "text": "She replied.", "ref": "gmail:1"})
+        desk.store.bump("pdl_calls:" + dt.date.today().isoformat()[:7], 3)
+        data = desk.setup()
+        text = json.dumps(data)
+        self.assertNotIn("pdl-secret-value", text)
+        self.assertNotIn("granola-secret-value", text)
+        self.assertTrue(all(item["done"] for item in data["checklist"]))
+        on = {item["id"]: (item["on"], item["detail"]) for item in data["connections"]}
+        self.assertEqual(on["lookup"], (True, "3 of 80 lookups used this month."))
+        self.assertEqual((on["slack"][0], on["granola"][0], on["notes"]), (True, True, (True, "/notes")))
+        rules = {rule["label"]: rule["value"] for rule in data["rules"]}
+        self.assertIn("Only in these chats: C1", rules["Where the desk answers"])
+        self.assertEqual(rules["Who may press a Slack button"], "These Slack members: U1, U2.")
+        self.assertEqual(rules["Scheduled jobs"], "Cannot use the desk: add cron to the channels setting.")
+        self.assertEqual((data["data"]["records"], data["data"]["samples"], data["data"]["activities"] > 0), (1, 0, True))
+
+    def test_on_tour_it_still_counts_the_real_desk(self):
+        desk = self.fresh({"playbook": "recruiting"})
+        desk.deal({"action": "add", "name": "Ada Quill"})
+        desk.tour_start("saas")
+        data = desk.setup()
+        self.assertEqual((data["tour"]["example"], data["data"]["records"], data["playbook"]["name"], data["playbook"]["shown"]),
+                         ("saas", 1, "recruiting", "b2b-sales"))
+        self.assertEqual({rule["label"]: rule["value"] for rule in data["rules"]}["Scheduled jobs"], "Paused while sample data is on show.")
+
+
 class HardeningTests(unittest.TestCase):
     """One test per thing a review found: each of these was a way to lose data, spend money or hang."""
 
@@ -1266,6 +1498,18 @@ class RegisterTests(unittest.TestCase):
         self.assertIn("not available", json.loads(self.ctx.tools["gtm_pipeline"]({}))["error"])
         self.assertIn("not available", self.ctx.commands["gtm"](""))
 
+    def test_scheduled_jobs_wait_while_sample_data_is_on_show(self):
+        desk = stoa.LIVE_DESKS[-1]
+        self.ctx.settings["channels"] = ["C1", "cron"]
+        self.session(platform="cron")
+        self.assertTrue(json.loads(self.ctx.tools["gtm_pipeline"]({}))["ok"])
+        desk.tour_start("recruiting")
+        self.addCleanup(desk.tour_end)
+        refused = json.loads(self.ctx.tools["gtm_pipeline"]({"view": "today"}))
+        self.assertEqual(refused["ok"], False)
+        self.assertIn("scheduled jobs are paused", refused["error"])
+        self.assertIn("[SILENT]", refused["error"])
+
     def test_the_desk_introduces_itself_where_it_is_allowed(self):
         section, limit = self.ctx.sections["stoa.desk"]
         self.session(platform="slack", chat_id="C1")
@@ -1314,6 +1558,38 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual({a["actor"] for a in self.desk.store.activities(nadia, limit=20)}, {"dashboard"})    # typed by a person, not the agent
         with self.assertRaises(self.api.HTTPException):
             self.api.act(nadia, {"verb": "move", "stage": "no-such-stage"})
+
+    def test_the_page_gets_today_the_tour_and_setup(self):
+        state = self.api.state()
+        self.assertEqual((state["tour"], state["fresh"], state["today"]["counts"]["overdue"]), (None, False, 2))
+        self.assertEqual(sorted(state["today"]["overdue"][0]), ["days", "id"])
+        ingrid = self.desk.store.find("Ingrid Solberg")["id"]
+        until = (dt.date.today() + dt.timedelta(days=14)).isoformat()
+        self.assertEqual(self.api.act(ingrid, {"verb": "snooze", "until": until}), {"ok": True})
+        self.assertEqual(self.desk.store.get(ingrid)["snoozed_until"], until)
+        with self.assertRaises(self.api.HTTPException):
+            self.api.act(ingrid, {"verb": "snooze", "until": "2001-01-01"})
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        self.assertEqual(self.api.act(dana, {"verb": "done", "next_step": "Prep call", "next_due": "2031-01-07"}), {"ok": True})
+        self.assertEqual(self.desk.store.get(dana)["next_step"], "Prep call")
+        self.assertEqual(self.api.setup()["playbook"]["name"], "recruiting")
+        started = self.api.tour({"action": "start", "example": "saas"})
+        self.assertEqual((started["example"], self.api.state()["tour"]["example"], self.api.state()["playbook"]["name"]), ("saas", "saas", "b2b-sales"))
+        self.assertEqual(self.api.tour({"action": "leave"}), {"ok": True, "left": True})
+        self.assertEqual((self.api.state()["tour"], self.api.state()["playbook"]["name"]), (None, "recruiting"))
+        with self.assertRaises(self.api.HTTPException):
+            self.api.tour({"action": "start", "example": "nonsense"})
+        exported = self.api.export()
+        self.assertEqual((exported["rows"], exported["csv"].splitlines()[0].split(",")[:3]), (7, ["id", "name", "company"]))
+
+    def test_the_page_switches_playbook_or_hands_it_to_hermes(self):
+        self.assertEqual(self.api.use_playbook({"name": "agency"})["active"], "agency")
+        self.assertEqual(self.desk.own_playbook().name, "agency")
+        with self.assertRaises(self.api.HTTPException):
+            self.api.use_playbook({"name": "no-such-playbook"})
+        self.desk.can_configure = False                                              # the page's stand-in desk cannot save a setting
+        self.assertEqual(self.api.use_playbook({"name": "recruiting"}), {"ok": False, "ask": "Switch the Stoa desk to the recruiting playbook."})
+        self.assertEqual(self.desk.own_playbook().name, "agency")
 
     def test_a_csv_dropped_on_the_page_becomes_a_review_without_a_model(self):
         before = self.desk.store.count()

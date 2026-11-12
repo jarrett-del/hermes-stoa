@@ -287,3 +287,9 @@
 @media (prefers-reduced-motion: reduce) {
   .stoa *, .stoa-drawer, .stoa-scrim { animation: none !important; transition: none !important; }
 }
+/* sample data on show, and the Setup tab */
+.stoa-tour { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; border-style: dashed; }
+.stoa-setup { padding: 16px 18px 12px; margin-bottom: 12px; }
+.stoa-setup .stoa-check span { overflow-wrap: anywhere; }
+.stoa-setup-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.stoa-setup-foot { color: var(--st-mute); font-size: 12px; text-align: center; margin: 6px 0 0; }

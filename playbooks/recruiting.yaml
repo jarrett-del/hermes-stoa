@@ -2,6 +2,7 @@
 # candidate and the "account" is a client search.
 name: recruiting
 title: Recruiting desk
+door: Recruiting and search
 summary: Agency or in-house recruiting. One candidate per record, grouped by the search they are in.
 terms:
   deal: candidate

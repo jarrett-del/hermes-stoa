@@ -387,6 +387,68 @@
     }));
   }
 
+  // -- setup: what is connected, the rules in force, and sample data ---------------------------
+  function saveFile(name, text, type) {
+    var url = URL.createObjectURL(new Blob([text], { type: type || "text/plain" }));
+    var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  function SetupView(props) {
+    var _d = useState(null), data = _d[0], setData = _d[1];
+    var _b = useState(false), busy = _b[0], setBusy = _b[1];
+    var fail = function (e) { props.say(String(e && e.message || e)); };
+    var load = function () { return get("/setup").then(setData).catch(fail); };
+    useEffect(function () { load(); }, [props.stamp, props.touring]);
+    if (!data) return h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, "Opening…"));
+    function run(promise) { setBusy(true); return promise.catch(fail).then(function () { setBusy(false); }); }
+    function tour(action, example) {
+      return run(post("/tour", { action: action, example: example || "" }).then(function (r) {
+        props.say(action === "start" ? "Sample data: " + r.title + ". Your own desk is untouched." : action === "leave" ? "Back on your own desk." : (r.removed || 0) + " sample records removed from your desk.");
+        return props.refresh().then(load);
+      }));
+    }
+    function use(item) {
+      return run(post("/playbook", { name: item.name }).then(function (r) {
+        props.say(r.ask ? "This page cannot save that. Ask Hermes: “" + r.ask + "”" : r.warning || "The desk now runs on " + item.title + ".");
+        return props.refresh().then(load);
+      }));
+    }
+    function panel(title, note, children) {
+      return h("div", { className: "stoa-panel stoa-setup" }, h("div", { className: "stoa-h" }, title, note ? h("em", null, note) : null), children);
+    }
+    function line(key, on, mark, title, detail, extra) {
+      return h("div", { className: "stoa-check", "data-on": on ? "1" : "0", key: key }, h("i", null, mark), h("div", null, h("span", null, title), h("small", null, detail), extra || null));
+    }
+    var left = data.checklist.filter(function (c) { return !c.done; }).length, d = data.data;
+    return h("div", null,
+      h("div", { className: "stoa-grid2" },
+        panel("Get started", left ? left + " left" : "all done", data.checklist.map(function (c) { return line(c.id, c.done, c.done ? "✓" : "○", c.title, c.detail); })),
+        panel("Connected", "", data.connections.map(function (c) { return line(c.id, c.on === true, c.on === true ? "●" : "○", c.label, c.detail); }))),
+      h("div", { className: "stoa-grid2" },
+        panel("Rules in force", "plugin settings", data.rules.map(function (r) { return line(r.label, true, "·", r.label, r.value); })),
+        h("div", null,
+          panel("Your data", d.records ? d.records + " records" : "empty", [
+            line("where", true, "·", d.open + " open · " + d.won + " won · " + d.lost + " lost · " + d.activities + " log entries", "One SQLite file on the machine Hermes runs on: " + d.path),
+            line("tour", true, "·", data.tour ? "Sample data is on show" : "Sample data",
+              data.tour ? cap(data.tour.title) + ", kept in a file of its own. Your desk is untouched and comes back when you leave."
+                : "See a full pipeline without touching yours: made-up people and companies in a file of their own.",
+              h("div", { className: "stoa-setup-btns" },
+                data.tour ? h(Btn, { kind: "primary", disabled: busy, onClick: function () { tour("leave"); } }, "Leave the tour")
+                  : data.examples.map(function (x) { return h(Btn, { key: x.id, disabled: busy, onClick: function () { tour("start", x.id); } }, cap(x.title)); }),
+                h(Btn, { kind: "ghost", disabled: busy, onClick: function () { run(get("/export").then(function (f) { saveFile(f.filename, f.csv, "text/csv"); props.say(f.rows + " records exported."); })); } }, "Export CSV"))),
+            d.samples && !data.tour ? line("stray", true, "!", d.samples + " sample records are mixed into your own desk", "An earlier version of Stoa put them there.",
+              h("div", { className: "stoa-setup-btns" }, h(Btn, { disabled: busy, onClick: function () { tour("tidy"); } }, "Remove them from my desk"))) : null]),
+          panel("Playbook", data.playbook.title, data.playbooks.filter(function (x) { return !x.error; }).map(function (x) {
+            return line(x.name, x.active, x.active ? "●" : "○", x.door || x.title, x.stages.concat([x.won]).join(" → "),
+              x.active ? null : h("div", { className: "stoa-setup-btns" }, h(Btn, { kind: "ghost", disabled: busy, onClick: function () { use(x); } }, "Use this")));
+          })))),
+      panel("Automations", "type /blueprint in a Hermes chat to switch one on", h("div", { className: "stoa-grid2", style: { marginBottom: 0, gap: "0 28px" } }, data.automations.map(function (a) {
+        return line(a.name, true, "·", a.title, a.description);
+      }))),
+      h("p", { className: "stoa-setup-foot" }, "Stoa " + data.version + ". The Today list, snoozing to a date and the cheat sheet are on the Stoa page in the Hermes app."));
+  }
+
   // -- drawers ----------------------------------------------------------------------------------
   function Shell(props) {
     useEffect(function () {
@@ -588,8 +650,11 @@
       body = h("div", { className: "stoa-panel stoa-blank" }, h("h3", null, error ? "No answer" : "Opening…"),
         error ? h("p", null, error) : null);
     } else {
-      var tabs = [["pipeline", "Pipeline", state.totals.open], ["market", "Market map", state.totals.mapped], ["activity", "Activity", null]];
+      var tabs = [["pipeline", "Pipeline", state.totals.open], ["market", "Market map", state.totals.mapped], ["activity", "Activity", null], ["setup", "Setup", null]];
       body = h(React.Fragment, null,
+        state.tour ? h("div", { className: "stoa-note stoa-tour", role: "status" },
+          h("span", null, h("b", null, "Sample data"), " · " + state.tour.title + ". Everyone on it is made up, and your own desk is untouched."),
+          h(Btn, { onClick: function () { post("/tour", { action: "leave" }).then(function () { setPanel(null); say("Back on your own desk."); return refresh(); }).catch(function (e) { say(String(e && e.message || e)); }); } }, "Leave the tour")) : null,
         h(Hero, { state: state, live: live, mode: mode, flip: flip }),
         h(Attention, { state: state, open: openDeal }),
         h("div", { className: "stoa-bar" },
@@ -599,12 +664,13 @@
           view === "market" && state.markets.length > 1 ? h("select", { className: "stoa-select", value: marketId || state.markets[0].id, onChange: function (e) { setMarketId(e.target.value); } },
             state.markets.map(function (m) { return h("option", { key: m.id, value: m.id }, m.name); })) : null,
           h("span", { className: "stoa-grow" }),
-          view !== "activity" ? h("input", { className: "stoa-input", style: { width: 220 }, placeholder: "Filter…", value: query, onChange: function (e) { setQuery(e.target.value); } }) : null,
+          view !== "activity" && view !== "setup" ? h("input", { className: "stoa-input", style: { width: 220 }, placeholder: "Filter…", value: query, onChange: function (e) { setQuery(e.target.value); } }) : null,
           h(Btn, { kind: "primary", onClick: function () { setPanel({ kind: "new" }); } }, "New")),
         view === "pipeline" ? h(Board, { state: state, query: query, open: openDeal, moved: moved }) : null,
         view === "market" ? h(MarketView, { state: state, query: query, marketId: marketId, say: say, selected: panel && panel.kind === "target" ? panel.target.id : "",
           openTarget: function (c) { setPanel({ kind: "target", target: c }); } }) : null,
         view === "activity" ? h(Feed, { state: state, open: openDeal }) : null,
+        view === "setup" ? h(SetupView, { stamp: state.stamp, touring: state.tour ? state.tour.example : "", refresh: refresh, say: say }) : null,
         panel && panel.kind === "deal" ? h(DealDrawer, { key: panel.id, id: panel.id, state: state, stamp: state.stamp, close: close, refresh: refresh, say: say }) : null,
         panel && panel.kind === "target" ? h(TargetDrawer, { key: panel.target.id, target: panel.target, state: state, close: close, refresh: refresh, say: say, openDeal: openDeal }) : null,
         panel && panel.kind === "new" ? h(NewDrawer, { state: state, close: close, refresh: refresh, say: say, openDeal: openDeal }) : null);

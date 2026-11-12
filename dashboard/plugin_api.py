@@ -61,6 +61,7 @@ def desk():
             continue
     if str(home) not in _own_desks:
         _own_desks[str(home)] = package.build_desk(_settings, lambda key, value: None)
+        _own_desks[str(home)].can_configure = False     # no way to save a setting from here: the page hands that to Hermes
     return _own_desks[str(home)]
 
 
@@ -78,6 +79,7 @@ def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Opti
     view["updated_at"] = deal["updated_at"]
     view["advance"] = playbook.advance_label(deal["stage"]) if deal["status"] == "open" and playbook.next_stage(deal["stage"]) else ""
     view["pending"] = bool(pending.get(deal["id"]) if pending is not None else d.store.meta_get("pending:" + deal["id"]))
+    view["created_at"] = deal["created_at"]
     return view
 
 
@@ -131,7 +133,13 @@ def state() -> dict:
     activity = [{"id": a["id"], "deal": a["deal_id"], "name": names.get(a["deal_id"], a["deal_id"]), "at": a["at"],
                  "kind": a["kind"], "text": a["text"], "by": a["actor"]} for a in d.store.activities(limit=40)]
     open_deals = [x for x in deals if x["status"] == "open"]
+    tour = d.tour()
     return {
+        "version": _mod("desk")._version(),
+        # sample data on show, and whether this is a desk nobody has set up yet (the page then offers the way in)
+        "tour": {"example": tour["example"], "title": _mod("demo").EXAMPLES[tour["example"]]["title"]} if tour else None,
+        "fresh": not tour and not deals and d.setting("playbook", None) is None,
+        "today": d.today(full=False),
         "playbook": {"name": playbook.name, "title": playbook.title, "terms": playbook.terms, "currency": playbook.currency,
                      "stages": [{"id": s["id"], "label": s["label"], "stale_days": playbook.stale_days(s["id"])} for s in playbook.stages],
                      "won": playbook.won, "lost": {"id": playbook.lost["id"], "label": playbook.lost["label"],
@@ -185,7 +193,8 @@ def add_deal(body: dict = Body(...)) -> dict:
 @router.post("/deal/{deal_id}/act")
 def act(deal_id: str, body: dict = Body(...)) -> dict:
     """advance | draft | lost | reopen | snooze3 | snooze7 | enrich go through the same path as a
-    Slack button; log, update and move go through the same path as the agent's tool."""
+    Slack button; log, update, move, done and snooze (days, or until a date) go through the same path
+    as the agent's tool."""
     d = desk()
     verb = str((body or {}).get("verb") or "")
     if d.store.get(deal_id) is None:
@@ -199,8 +208,9 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
         d.announce()
         return {"ok": True, "notice": result.get("notice") or "", "parked": bool(result.get("followup")),
                 "ask": _ask(d, deal_id, verb) if result.get("followup") else ""}
-    if verb in ("log", "update", "move"):
-        allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage")
+    if verb in ("log", "update", "move", "done", "snooze"):
+        allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage",
+                   "days", "until")
         args = {k: body[k] for k in allowed if k in body}
         result = d.deal(dict(args, action=verb, deal=deal_id), actor="dashboard")
         if not result.get("ok"):
@@ -208,6 +218,60 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
         d.announce()
         return {"ok": True}
     raise HTTPException(400, "unknown action")
+
+
+@router.get("/setup")
+def setup() -> dict:
+    """What is set up and the rules in force, for the Setup tab. Keys are reported as set or not set only."""
+    return desk().setup()
+
+
+@router.post("/tour")
+def tour(body: dict = Body(...)) -> dict:
+    """start: show a worked example (sample data in a file of its own). leave: back to the team's own
+    desk. tidy: take sample records out of the team's own desk (versions before 0.10 loaded them there)."""
+    d = desk()
+    action = str((body or {}).get("action") or "")
+    if action == "start":
+        result = d.tour_start(str(body.get("example") or ""))
+    elif action == "leave":
+        result = {"ok": True, "left": d.tour_end()}
+    elif action == "tidy":
+        result = d.tidy_samples()
+    else:
+        raise HTTPException(400, "unknown action")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not do that")
+    d.announce()
+    return result
+
+
+@router.post("/playbook")
+def use_playbook(body: dict = Body(...)) -> dict:
+    """Switch the active playbook. Where this page cannot save a setting, it says so and the page asks Hermes instead."""
+    d = desk()
+    name = str((body or {}).get("name") or "")
+    if not d.can_configure:
+        return {"ok": False, "ask": "Switch the Stoa desk to the %s playbook." % name}
+    result = d.playbook_tool({"action": "use", "name": name})
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not switch")
+    d.announce()
+    return {"ok": True, "active": result["active"], "warning": result.get("warning") or ""}
+
+
+@router.get("/export")
+def export() -> dict:
+    """The whole pipeline as CSV text, for the page to hand to the browser as a download."""
+    import csv
+    import io
+    d = desk()
+    header, rows = d.store.export_rows([field["key"] for field in d.playbook().fields])
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["group" if name == "grp" else name for name in header])
+    writer.writerows(rows)
+    return {"filename": "stoa-%s.csv" % time.strftime("%Y%m%d"), "csv": out.getvalue(), "rows": len(rows)}
 
 
 @router.post("/intake")

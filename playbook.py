@@ -38,6 +38,7 @@ class Playbook:
         self.name: str = self.data["name"]
         self.title: str = self.data.get("title") or self.name
         self.summary: str = self.data.get("summary") or ""
+        self.door: str = self.data.get("door") or self.title     # what the first-launch chooser calls it
         self.terms: dict = dict(TERM_DEFAULTS, **(self.data.get("terms") or {}))
         self.currency: str = self.data.get("currency") or "USD"
         self.stages: list = self.data["stages"]
@@ -183,7 +184,7 @@ def validate(data: Any) -> dict:
         clean.append(stage)
     out = dict(data, name=name, stages=clean)
     out["stale_days"] = _days(data.get("stale_days"), "stale_days") or 7
-    for key, limit in (("title", 80), ("summary", 300), ("currency", 8)):
+    for key, limit in (("title", 80), ("door", 40), ("summary", 300), ("currency", 8)):
         out[key] = _text(data.get(key), key, limit)
     terms = data.get("terms") or {}
     if not isinstance(terms, dict):
@@ -251,8 +252,9 @@ class Library:
         for name, (origin, path) in sorted(self._files().items()):
             try:
                 pb = Playbook(_load_yaml(path.read_text(encoding="utf-8")), origin)
-                out.append({"name": name, "title": pb.title, "summary": pb.summary, "origin": origin,
-                            "stages": [s["label"] for s in pb.stages]})
+                out.append({"name": name, "title": pb.title, "door": pb.door, "summary": pb.summary, "origin": origin,
+                            "stages": [s["label"] for s in pb.stages], "won": pb.won["label"],
+                            "words": "%s, %s" % (pb.terms["deal"], pb.terms["group"])})
             except Exception as exc:  # a broken custom file should not hide the rest
                 out.append({"name": name, "origin": origin, "error": str(exc)})
         return out

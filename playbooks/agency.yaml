@@ -1,6 +1,7 @@
 # Agency new business: studios, consultancies and freelancers selling projects and retainers.
 name: agency
 title: Agency new-business desk
+door: Agency and consulting
 summary: Studios, consultancies and freelancers. One opportunity per record, grouped by client.
 terms:
   deal: opportunity

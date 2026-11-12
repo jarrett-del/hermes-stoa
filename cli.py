@@ -18,11 +18,12 @@ def setup(subparser) -> None:
     market.add_argument("--share", action="store_true", help="With --export: leave out buyers and pipeline status")
     use = subs.add_parser("use", help="Switch the active playbook")
     use.add_argument("name")
-    sample = subs.add_parser("demo", help="Load a worked example: a recruiting agency, or a B2B software company")
+    sample = subs.add_parser("demo", help="Take a tour: show a worked example in place of your own desk, which is left untouched")
     sample.add_argument("which", nargs="?", default="", choices=["", "recruiting", "saas"],
                         help="recruiting: an agency with about $1.2M in open fees. saas: a company selling a fraud prevention "
                              "tool, about $2.5M of pipeline. Left out: the one that fits the active playbook")
-    sample.add_argument("--clear", action="store_true", help="Remove the sample records instead")
+    sample.add_argument("--clear", "--leave", dest="clear", action="store_true",
+                        help="Leave the tour: back to your own desk, and any sample records an earlier version put in it are removed")
     export = subs.add_parser("export", help="Write the pipeline to a CSV file in the plugin's exports folder")
     export.add_argument("path", nargs="?", default="", metavar="name", help="A file name (optional). It is written to the exports folder.")
     imp = subs.add_parser("import", help="Add records from a CSV file")
@@ -37,12 +38,15 @@ def run(desk, args) -> None:
         deals = desk.store.list(status="all")
         open_deals = [d for d in deals if d["status"] == "open"]
         print("Stoa desk")
+        tour = desk.tour()
+        if tour:
+            print("  ON TOUR       sample data (%s); your own desk is untouched. Leave with: hermes stoa demo --leave" % tour["example"])
         print("  playbook      %s (%s)" % (playbook.name, playbook.title))
         print("  records       %d open, %d closed" % (len(open_deals), len(deals) - len(open_deals)))
         value = sum(d["value"] for d in open_deals)
         if value:
             print("  open value    %s" % cards.money(value, playbook.currency))
-        print("  data          %s" % (desk.data_dir / "desk.db"))
+        print("  data          %s" % (desk.data_dir / (tour["file"] if tour else "desk.db")))
         print("  enrichment    %s" % ("People Data Labs connected" if desk.can_enrich() else "off (set PDL_API_KEY)"))
         notes_dir = desk.setting("notes_dir", "")
         print("  notes folder  %s" % (notes_dir or "not set (notes_dir)"))
@@ -71,23 +75,18 @@ def run(desk, args) -> None:
             print(result["warning"])
     elif command == "demo":
         if args.clear:
-            print("Removed %d sample records." % demo.clear(desk))
+            was = desk.tour_end()
+            removed = demo.clear(desk)            # sample records an earlier version loaded into the desk itself
+            print("%s%s" % ("Left the tour: this is your own desk again." if was else "No tour was on.",
+                            " Removed %d sample records from your desk." % removed if removed else ""))
             return
-        which = args.which or demo.which_for(desk.playbook())
-        example = demo.EXAMPLES[which]
-        if args.which and desk.playbook().name != example["playbook"]:      # asked for by name: the desk becomes that example
-            demo.clear(desk)
-            desk.playbook_tool({"action": "use", "name": example["playbook"]})
-        other = "saas" if which == "recruiting" else "recruiting"
-        if any(d["source"] == demo.SOURCE for d in desk.store.list(status="all")) and \
-                desk.markets._market(demo.EXAMPLES[other]["market"]["name"]) is not None:
-            demo.clear(desk)                                                # one example at a time, so the board reads as one business
-        added = demo.load(desk, which)
-        print("%s: %s, and a market map of %d companies." % (
-            "Loaded the example of " + example["title"] if added else "Already loaded, " + example["title"],
-            demo.summary(desk, which), len(example["companies"])))
-        print("Everything in it is made up. `hermes stoa demo %s` loads the other example; `hermes stoa demo --clear` "
-              "removes the sample data." % other)
+        result = desk.tour_start(args.which)
+        example = demo.EXAMPLES[result["example"]]
+        other = "saas" if result["example"] == "recruiting" else "recruiting"
+        print("On tour: the example of %s. %s, and a market map of %d companies." % (
+            example["title"], result["summary"], len(example["companies"])))
+        print("Everything in it is made up and kept in a file of its own; your own desk is untouched and comes back with "
+              "`hermes stoa demo --leave`. `hermes stoa demo %s` shows the other example." % other)
     elif command == "export":
         result = desk.export({"action": "export", "path": args.path or None})
         print("Wrote %d records to %s" % (result["rows"], result["path"]) if result.get("ok") else result.get("error"))

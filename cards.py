@@ -54,10 +54,13 @@ def meter(playbook, deal: dict) -> str:
     return "%s%s  %s · %d of %d" % ("▰" * (pos + 1), "▱" * (total - pos - 1), playbook.label(deal["stage"]), pos + 1, total)
 
 
+def snoozed(deal: dict) -> bool:
+    """Put aside until a date: until then it is on neither the due list nor the quiet list."""
+    return bool(deal.get("snoozed_until")) and deal["snoozed_until"] > st.today()
+
+
 def is_stale(playbook, deal: dict, last_touch: str = "") -> bool:
-    if deal["status"] != "open":
-        return False
-    if deal.get("snoozed_until") and deal["snoozed_until"] > st.today():
+    if deal["status"] != "open" or snoozed(deal):
         return False
     days = st.days_since(last_touch or deal["updated_at"])
     return days is not None and days > playbook.stale_days(deal["stage"])
@@ -71,7 +74,7 @@ def due_date(deal: dict) -> str:
 
 def is_due(deal: dict) -> bool:
     due = due_date(deal)
-    return deal["status"] == "open" and bool(due) and due <= st.today()
+    return deal["status"] == "open" and bool(due) and due <= st.today() and not snoozed(deal)
 
 
 def facts(playbook, deal: dict) -> list:
@@ -137,7 +140,7 @@ def card_blocks(playbook, deal: dict, activities: Optional[list] = None, last_to
         flags.append(":small_orange_diamond: next step due")
     if is_stale(playbook, deal, last_touch):
         flags.append(":hourglass: quiet %s" % age(last_touch or deal["updated_at"]).replace(" ago", ""))
-    if deal.get("snoozed_until") and deal["snoozed_until"] > st.today() and deal["status"] == "open":
+    if snoozed(deal) and deal["status"] == "open":
         flags.append(":zzz: snoozed to %s" % deal["snoozed_until"])
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": title + "\n`%s`" % meter(playbook, deal)}}]
     pairs = facts(playbook, deal)

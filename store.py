@@ -409,9 +409,15 @@ class Store:
                          (deal_id, stamp, "stage", actor, text))
         return self.get(deal_id)
 
-    def snooze(self, deal_id: str, days: int, *, actor: str = "") -> dict:
-        days = max(0, min(int(days), 3650))
-        until = (dt.date.today() + dt.timedelta(days=days)).isoformat() if days else ""
+    def snooze(self, deal_id: str, days: int = 0, *, until: str = "", actor: str = "") -> dict:
+        """Put a record aside for ``days``, or until the date ``until`` (YYYY-MM-DD). Neither clears it."""
+        if until and not ISO_DATE.match(until):
+            raise ValueError("until must be YYYY-MM-DD")
+        if not until:
+            days = max(0, min(int(days), 3650))
+            until = (dt.date.today() + dt.timedelta(days=days)).isoformat() if days else ""
+        elif until <= today():
+            until = ""
         stamp = now()
         with self._conn() as conn:
             if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
@@ -626,6 +632,19 @@ class Store:
             conn.execute("UPDATE intakes SET status = ?, result = ? WHERE id = ?", (status, json.dumps(result or {}), intake_id))
             if rows is not None:
                 conn.execute("UPDATE intakes SET rows = ? WHERE id = ?", (json.dumps(rows), intake_id))
+
+    def tally(self, sample_source: str = "") -> dict:
+        """How much is in the ledger, for the Setup tab."""
+        with self._conn() as conn:
+            one = lambda sql, *params: conn.execute(sql, params).fetchone()[0]      # noqa: E731
+            return {"open": one("SELECT count(*) FROM deals WHERE status = 'open'"),
+                    "won": one("SELECT count(*) FROM deals WHERE status = 'won'"),
+                    "lost": one("SELECT count(*) FROM deals WHERE status = 'lost'"),
+                    "samples": one("SELECT count(*) FROM deals WHERE source = ?", sample_source) if sample_source else 0,
+                    "activities": one("SELECT count(*) FROM activities"),
+                    "from_sweeps": one("SELECT count(*) FROM activities WHERE ref != ''"),
+                    "maps": one("SELECT count(*) FROM markets"),
+                    "lists_waiting": one("SELECT count(*) FROM intakes WHERE status = 'open'")}
 
     # -- CSV ------------------------------------------------------------------------------------
     def export_rows(self, field_keys: Iterable[str] = ()) -> tuple:
