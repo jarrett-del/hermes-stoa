@@ -581,8 +581,8 @@ What the plugin does that you would want to know before installing it:
   click that calls for writing it sends one line into the open chat through `host.composer.submit`,
   the same as typing it. The dock on the page keeps one conversation of its own, named **Stoa
   desk**: it is created and resumed through the gateway (`host.request`: `session.create`,
-  `session.resume`, `prompt.submit`), it is sent only what you type or dictate there (with one line
-  of context on its first message, which you can read in that conversation), and the page listens
+  `session.resume`, `prompt.submit`), it is sent only what you type or dictate there (with a short
+  note of context on its first message, which you can read in that conversation), and the page listens
   to the gateway's events for that conversation alone to show you the reply. A file is read only
   when you pick it or drop it on the page: a CSV's text goes to the plugin's backend to be held as a
   review, and a small text file goes to the agent with your message. It does not touch the app's

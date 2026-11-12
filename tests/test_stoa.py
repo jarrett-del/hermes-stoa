@@ -949,6 +949,9 @@ class TourTests(unittest.TestCase):
         self.assertIn("sample data", self.desk.today()["note"])
         self.desk.tour_end()
         self.assertNotIn("Sample data", self.desk.prompt_section())
+        self.assertIn("stays on the desk", self.desk.prompt_section())            # off tour: a desk change is not mirrored elsewhere unasked
+        for name in ("b2b-sales", "recruiting", "agency", "partnerships"):
+            self.assertLessEqual(len(make_desk(tempfile.mkdtemp(), playbook=name).prompt_section()), 900, name)
 
     def test_sample_records_an_earlier_version_left_in_the_desk_can_be_taken_out(self):
         self.desk._set_config("playbook", "b2b-sales")

@@ -182,7 +182,8 @@ const $attached = atom(null) // a small text file waiting to go with the next me
 const talkSession = { runtime: '', stored: '', primed: false, turn: 0 }
 const setTalk = patch => $talk.set({ ...$talk.get(), ...patch })
 const PRIME = 'This conversation is the talk box on the Stoa desk page. Act on the Stoa desk with the gtm tools, and answer in a few '
-  + 'short lines: the page already shows the pipeline.\n\n'
+  + 'short lines: the page already shows the pipeline. What is said here is for the desk: do not also write it to another system '
+  + '(a spreadsheet, another CRM, email) unless asked to.\n\n'
 
 /** Change the turn being answered, which is always the last one. */
 function setTurn(patch) {

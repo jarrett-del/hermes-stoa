@@ -2096,7 +2096,8 @@ class Desk:
                 % (playbook.describe(), playbook.terms["deal"], playbook.terms["group"],
                    " Sample data is on show (a tour): everything on the desk is made up. Say so when you report from it, "
                    "and copy none of it into another system."
-                   if self.tour() else ""))
+                   if self.tour() else
+                   " A change to the desk stays on the desk: do not also write it to another system (a sheet, another CRM) unless asked."))
 
 
 def _version() -> str:
