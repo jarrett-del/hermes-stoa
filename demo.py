@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+from . import store as st
+
 SOURCE = "stoa-demo"
 DEFAULT = "saas"
 RETIRED_MAPS = ("Regional freight brokers (demo)",)     # the sample map of earlier versions: `clear` takes it away too
@@ -523,7 +525,7 @@ def summary(desk, which: str = "") -> str:
     deals = [d for d in desk.store.list(status="all") if d["source"] == SOURCE]
     live = [d for d in deals if d["status"] == "open"]
     return ("%d open %s worth %s across %d %s, %d %s and %d %s" % (
-        len(live), playbook.terms["deals"], cards.money(sum(d["value"] for d in live), playbook.currency),
+        len(live), playbook.terms["deals"], cards.money(st.total(live), playbook.currency),
         len({d["grp"] for d in live}), playbook.terms["groups"], len([d for d in deals if d["status"] == "won"]),
         playbook.won["label"].lower(), len([d for d in deals if d["status"] == "lost"]), playbook.lost["label"].lower()))
 

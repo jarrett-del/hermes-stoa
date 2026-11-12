@@ -130,11 +130,23 @@ def state() -> dict:
             "first_calls": summary["first_calls"],
             "counts": {"mapped": summary["numbers"]["companies"], "tracked": summary["numbers"]["in_pipeline"],
                        "dismissed": summary["numbers"]["dismissed"]}})
-    last = d.store.undoables()      # per record, the action that can still be taken back
-    activity = [{"id": a["id"], "deal": a["deal_id"], "name": names.get(a["deal_id"], a["deal_id"]), "at": a["at"],
-                 "kind": a["kind"], "text": a["text"], "by": a["actor"], "op": a.get("op") or "", "undone": bool(a.get("undone")),
-                 "can_undo": bool(a.get("before")) and not a.get("undone") and last.get(a["deal_id"]) == a.get("op")}
-                for a in d.store.activities(limit=40)]
+    last = d.store.undoables()      # per record, the last action that still stands
+    offered = set()                 # one Undo per action, on its first line
+    gone: dict = {}                 # records taken off the desk that still have lines in the log: their names, and one offer each to put them back
+    activity = []
+    for a in d.store.activities(limit=40):
+        can = bool(a.get("op")) and not a.get("undone") and last.get(a["deal_id"]) == a.get("op") and a["deal_id"] in names
+        if a["deal_id"] not in names and a["deal_id"] not in gone:
+            gone[a["deal_id"]] = {"name": (d.store.get(a["deal_id"], archived=True) or {}).get("name", ""), "offered": False}
+        off = gone.get(a["deal_id"])
+        activity.append({"id": a["id"], "deal": a["deal_id"], "name": names.get(a["deal_id"]) or (off or {}).get("name") or a["deal_id"],
+                         "at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"], "op": a.get("op") or "",
+                         "undone": bool(a.get("undone")), "can_undo": can and a["op"] not in offered,
+                         "can_restore": bool(off and off["name"] and not off["offered"])})
+        if can:
+            offered.add(a["op"])
+        if off:
+            off["offered"] = True
     open_deals = [x for x in deals if x["status"] == "open"]
     tour = d.tour()
     return {
@@ -154,9 +166,9 @@ def state() -> dict:
         "intakes": d.intake.waiting(),
         "activity": activity,
         "flow": d.flow(deals, playbook),
-        "totals": {"open": len(open_deals), "open_value": sum(x["value"] for x in open_deals),
+        "totals": {"open": len(open_deals), "open_value": _mod("store").total(open_deals),
                    "won": len([x for x in deals if x["status"] == "won"]),
-                   "won_value": sum(x["value"] for x in deals if x["status"] == "won"),
+                   "won_value": _mod("store").total(x for x in deals if x["status"] == "won"),
                    "lost": len([x for x in deals if x["status"] == "lost"]),
                    "mapped": sum(m["counts"]["mapped"] for m in markets),
                    "tracked": sum(m["counts"]["tracked"] for m in markets),
@@ -212,11 +224,22 @@ def undo(deal_id: str, body: Optional[dict] = Body(None)) -> dict:
     if d.store.get(deal_id) is None:
         raise HTTPException(404, "no such record")
     result = d.undo(deal_id, op=str((body or {}).get("op") or ""), actor="dashboard")
-    if not result.get("ok"):
+    if not result.get("ok"):      # nothing to take back, or it would overwrite a later change (the error says which)
         raise HTTPException(409, result.get("error") or "nothing to take back")
     d.announce()
     return {"ok": True, "undid": result["undid"], "removed": result["removed"], "name": result["name"],
             "last": None if result["removed"] else _last(d, deal_id)}
+
+
+@router.post("/deal/{deal_id}/restore")
+def restore(deal_id: str) -> dict:
+    """Put back a record that was taken off the desk when its add was undone."""
+    d = desk()
+    result = d.restore(deal_id, actor="dashboard")
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error") or "nothing to put back")
+    d.announce()
+    return {"ok": True, "deal": result["deal"]["id"], "name": result["deal"]["name"]}
 
 
 @router.post("/deal/{deal_id}/person")

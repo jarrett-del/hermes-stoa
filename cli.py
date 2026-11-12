@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import cards, demo
+from . import store as st
 
 
 def setup(subparser) -> None:
@@ -18,6 +19,9 @@ def setup(subparser) -> None:
     market.add_argument("--share", action="store_true", help="With --export: leave out buyers and pipeline status")
     use = subs.add_parser("use", help="Switch the active playbook")
     use.add_argument("name")
+    history = subs.add_parser("history", help="The ledger: every change, what it replaced and what it left (for one record, or the whole desk)")
+    history.add_argument("record", nargs="*", default=[])
+    history.add_argument("--limit", type=int, default=30)
     auto = subs.add_parser("autonomy", help="What a scheduled job may change by itself: ask, routine or full (no level: show it)")
     auto.add_argument("level", nargs="?", default="", choices=["", "ask", "routine", "full"])
     sample = subs.add_parser("demo", help="Take a tour: show a worked example in place of your own desk, which is left untouched")
@@ -45,7 +49,7 @@ def run(desk, args) -> None:
             print("  ON TOUR       sample data (%s); your own desk is untouched. Leave with: hermes stoa demo --leave" % tour["example"])
         print("  playbook      %s (%s)" % (playbook.name, playbook.title))
         print("  records       %d open, %d closed" % (len(open_deals), len(deals) - len(open_deals)))
-        value = sum(d["value"] for d in open_deals)
+        value = st.total(open_deals)
         if value:
             print("  open value    %s" % cards.money(value, playbook.currency))
         print("  data          %s" % (desk.data_dir / (tour["file"] if tour else "desk.db")))
@@ -75,6 +79,30 @@ def run(desk, args) -> None:
         print(result.get("summary") or result.get("error"))
         if result.get("warning"):
             print(result["warning"])
+    elif command == "history":
+        ref = " ".join(args.record)
+        deal = None
+        if ref:
+            try:
+                deal = desk.store.find(ref) or desk.store.find(ref, archived=True)
+            except st.Ambiguous as exc:
+                print("'%s' matches several records: %s" % (ref, ", ".join(d["id"] for d in exc.matches)))
+                return
+            if deal is None:
+                print("no record matches '%s'" % ref)
+                return
+            print("%s (%s)" % (deal["name"], deal["id"]))
+        playbook = desk.playbook()
+        shown = lambda key, value: (cards.money(int(value or 0) / 100, playbook.currency) or "0") if key == "value_cents" \
+            else ("nothing" if value in (None, "") else str(value))          # noqa: E731
+        lines = desk.store.ledger(deal["id"] if deal else "", limit=max(1, min(int(args.limit or 30), 500)))
+        for line in reversed(lines):
+            changed = ["%s: %s → %s" % (key.replace("value_cents", "value"), shown(key, line["before"].get(key)), shown(key, line["after"][key]))
+                       for key in line["after"] if line["op"] in ("update", "undo") and key in line["before"]]
+            print("%s  %-7s %-8s %s%s%s" % (line["at"][:16].replace("T", " "), line["op"], line["entity"], line["summary"],
+                                            "  [%s]" % "; ".join(changed) if changed else "", "  by " + line["actor"] if line["actor"] else ""))
+        if not lines:
+            print("Nothing on the ledger yet." if not deal else "Nothing on the ledger for this record: it has not changed since 0.12.")
     elif command == "autonomy":
         from .desk import AUTONOMY
         if args.level:
@@ -112,4 +140,4 @@ def run(desk, args) -> None:
         else:
             print(result.get("error"))
     else:
-        print("Usage: hermes stoa <status|board|brief|map|playbooks|use|autonomy|demo|export|import>")
+        print("Usage: hermes stoa <status|board|brief|map|playbooks|use|autonomy|history|demo|export|import>")

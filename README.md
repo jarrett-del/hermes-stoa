@@ -221,15 +221,15 @@ change are one database transaction, so it holds across Slack, the web tab and t
 |---|---|
 | **10 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_contact`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
 | **Approvals** | What Hermes suggests waits for your yes or no, one decision each, with its evidence; a no is remembered; a scheduled job changes only what you allow |
-| **Undo** | The last change on any record can be taken back, and the one before it, whoever made it |
-| **People and companies** | Several people on a record, mail matched to the right record by whoever sent it, and one view per company |
+| **Undo and a ledger** | Every change is kept with what it replaced, never altered; an action can be taken back unless that would overwrite a later change |
+| **People and companies** | Several people on a record, each kept once across records, mail matched to the right record by whoever sent it, and one view per company |
 | **Intake** | Send a list in any form; review what is new and what would change; apply what you tick |
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
 | **Desktop app and Webapp** | A live pane beside the chat, a Stoa page (Today, pipeline, companies, market map, activity, setup), and cards and maps drawn inside the conversation |
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
 | **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
-| **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
+| **`hermes stoa`** | Status, board, brief, map, the ledger (`history`), autonomy, sample data, CSV import and export from a terminal |
 | **7 automations** | Morning brief, email-call-and-Slack activity sweep, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
 | **4 playbooks** | `b2b-sales`, `recruiting`, `agency`, `partnerships`, plus any you or the agent write |
@@ -308,8 +308,18 @@ list once. A CSV on disk is read by the desk itself, in Excel's encoding too.
 ### The pipeline
 
 Everything lives in one SQLite file under `<hermes home>/plugin-data/stoa/desk.db`: records,
-their activity log, which cards were posted where, and the enrichment cache. It is per profile,
-it survives plugin updates, and you can open it with any SQLite tool.
+the people on them, their activity log, which cards were posted where, and the enrichment cache.
+It is per profile, it survives plugin updates, and you can open it with any SQLite tool.
+
+- **A ledger of every change.** Beside the log a person reads, the file keeps a ledger: one line
+  per change to a record or a person, with who made it, what it replaced and what it left. The
+  database itself refuses to alter or remove a line, so it is the account of what happened, and
+  it is what Undo reads. `hermes stoa history [record]` prints it.
+- **Money in whole cents.** Amounts are stored as integers and added up as integers, so a
+  pipeline total is exact. (The old decimal column is still written beside it, so an older
+  version of the plugin can read the same file.)
+- **Nothing a person does destroys a record.** Taking back an add takes the record off the
+  desk and keeps it; *"bring Ada back"* (`gtm_deal(action="restore")`) returns it with its log.
 
 Talk to it in plain language. *"Add Dana from Kestrel to the Northwind search." "I spoke to
 Marcus, he wants 210 base, follow up Thursday." "We lost Lumen on price."* The agent writes each
@@ -341,16 +351,21 @@ In a chat you are there, so Hermes does what you ask. The rest is for when you a
 - **A no is remembered.** A declined proposal is kept for 90 days and the same one is left out
   if it comes again. It is the same one only while the record has not moved: once the stage or
   the value it would replace changes, it counts as new. **Forget them** on Setup clears the memory.
-- **Everything can be taken back.** Each change stores what it replaced, and one action (a click,
-  a tool call, an approved proposal) is undone as one: *"undo that"*, the Undo offer on the page,
-  or `gtm_deal(action="undo")`. It takes back the last action on a record, then the one before;
-  undoing an add removes the record. It will not reach past something that happened later.
+- **Everything can be taken back.** One action (a click, a tool call, an approved proposal) is
+  undone as one: *"undo that"*, the Undo offer on the page, or `gtm_deal(action="undo")`. It takes
+  back the last action on a record, then the one before. An undo never overwrites a later change:
+  if something the action set has been changed again since, nothing is taken back and you are told
+  what stands in the way (*"Deal size is now $60k; that action left it at $50k"*). An earlier
+  action whose values are untouched still goes back, whatever was logged after it. Undoing an add
+  takes the record off the desk, and it can be put back.
 
 ### People and companies
 
 *"Add their CFO, Lena Ortiz, to the Kestrel deal." "Who do we know at Kestrel?" "What do we have
-going with Northwind?"* A record keeps its own person and any number of others, each with a
-title and their part in it. `gtm_contact(action="match")` tells the agent whose an email address
+going with Northwind?"* A record keeps its own person and any number of others. A person is kept
+once and linked to each record they are on: add someone by an email the desk already knows and
+they are linked, not entered twice; their title and email are theirs everywhere, and their role
+is their part in one record. `gtm_contact(action="match")` tells the agent whose an email address
 is: the record it belongs to, through anyone on it, or, for a stranger, the company their domain
 belongs to and that company's open records, so a sweep files mail in the right place and can
 propose adding the sender. A company is not something you set up: it is every record that names
@@ -555,14 +570,16 @@ What the plugin does that you would want to know before installing it:
   instruction for the agent in the card's thread. The agent drafts; it is told not to send.
 - **Stored data.** Names, emails, notes and enrichment results for the people in your pipeline,
   and for the other people you add to a record, sit unencrypted in `plugin-data/stoa/desk.db`.
-  So that a change can be taken back, the value it replaced stays in that file with the log entry;
-  what you declined is kept there for 90 days; evidence quoted in a proposal is kept with it.
-  Treat that file like the customer list it is.
+  Every change is kept on a ledger in that file with the values before and after it, and the
+  ledger is never trimmed; a record or a person taken off the desk is archived there, not erased;
+  what you declined is kept for 90 days; evidence quoted in a proposal is kept with it. To erase
+  someone for good, delete the file or edit it with a SQLite tool. Treat it like the customer
+  list it is.
 - **What runs without you.** A scheduled job reaches the desk only if you list `cron` in
   `channels`, and then changes only what the autonomy setting allows; the rest is held for you.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.11
+## Limits in 0.12
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -586,10 +603,11 @@ What the plugin does that you would want to know before installing it:
   dashboard tab has the pipeline, the map, the log and Setup.
 - The autonomy setting governs scheduled jobs. In a chat the agent can still change something you
   did not ask for; the skill tells it to propose instead, and whatever it does can be taken back.
-- Undo covers changes made since 0.11. It takes back the last action on a record, not an older
-  one out of order. Changes to a market map, and a proposal you declined, are not undone by it.
-- A person belongs to one record. The same human on two deals is entered on each; the company
-  view shows them together.
+- Undo covers changes made since 0.12, when the ledger began. Changes to a market map, notes on
+  a company, and a proposal you declined are not undone by it.
+- A record's own person (its name and email) is not yet a shared contact: the same buyer on two
+  deals is linked only where they were added as an extra person. The company view shows both.
+- The ledger grows for as long as the desk is used. It is small, and nothing prunes it.
 - A proposal is as good as the evidence the agent quotes. Read it before you approve.
 - On a tour, what you do is thrown away when you leave, Slack cards posted from it stop working,
   lookups are off, and scheduled jobs do nothing until it ends.
@@ -602,7 +620,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 172 tests, no network
+python3 -m unittest discover -s tests     # 190 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

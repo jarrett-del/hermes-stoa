@@ -51,6 +51,17 @@ function offerUndo(last) {
   lastTimer = setTimeout(() => { if ($last.get() === last) $last.set(null) }, 14000)
 }
 
+/** A record taken off the desk (its add was undone) comes back, log and all. */
+async function putBack(dealId) {
+  try {
+    const result = await rest('/deal/' + encodeURIComponent(dealId) + '/restore', { method: 'POST', body: {} })
+    refresh()
+    host.notify({ kind: 'success', message: result.name + ' is back on the desk.' })
+  } catch (error) {
+    host.notifyError(error, 'Stoa could not put that back')
+  }
+}
+
 async function undo(dealId, op) {
   try {
     const result = await rest('/deal/' + encodeURIComponent(dealId) + '/undo', { method: 'POST', body: { op: op || '' } })
@@ -61,7 +72,7 @@ async function undo(dealId, op) {
   } catch (error) {
     $last.set(null)
     refresh()
-    host.notifyError(error, 'Nothing to take back')
+    host.notifyError(error, 'Not taken back')     // nothing left to undo, or it would overwrite a later change (the message says which)
     return null
   }
 }
@@ -1270,9 +1281,11 @@ const BY_HAND = ['Drag a card to another column to move it; drop it on the last 
   'Use the microphone in the box at the foot of the page to dictate.']
 const TYPED = [['/gtm', 'the board, in any Hermes chat'], ['/gtm today', 'what needs you, most pressing first'], ['/gtm brief', 'the morning brief'], ['/gtm <name>', 'one record as a card'],
   ['/gtm map', 'your market map'], ['!gtm …', 'the same in Slack, which keeps the slash for itself'], ['/blueprint', 'switch on an automation'], ['hermes stoa status', 'in a terminal: what is connected']]
-const ALWAYS = ['Keeps one ledger: every record, the people on it, and everything that happens to it.', 'Gives each record one next step and a date, and tells you when the date comes.',
+const ALWAYS = ['Keeps one ledger: every change to a record or a person, what it replaced and what it left. Lines are never altered.',
+  'Keeps each person once, however many records they are on.', 'Gives each record one next step and a date, and tells you when the date comes.',
   'Calls a record quiet when nothing has happened for longer than its stage allows.', 'Holds any list, and anything Hermes suggests, for your yes or no, with what it rests on.',
-  'Remembers a no, and does not ask again.', 'Lets you take back the last change on any record, whoever made it.',
+  'Remembers a no, and does not ask again.', 'Lets you take a change back, whoever made it, unless that would overwrite a later one.',
+  'Takes a record off the desk without destroying it, so it can be put back.',
   'Logs what it finds in your email, calls and Slack on the right record, whoever on it sent it.', 'Posts cards in Slack whose buttons act at once, and only for the people allowed to press them.',
   'Lets you snooze anything until a date, and export everything at any time.']
 
@@ -1328,7 +1341,8 @@ function Setup({ state, go }) {
         pick: item => wait(switchPlaybook(item.name, item.title).then(ok => { if (ok) setSwitching(false) })) })) : null,
     box('Your data', data.records ? plural(data.records, 'record', 'records') : 'empty', [
       h('div', { key: 'counts', className: 'stoa-facts', style: { marginTop: 0, paddingTop: 0, borderTop: 0 } },
-        [['Open', data.open], ['Won', data.won], ['Lost', data.lost], ['Log entries', data.activities], ['Market maps', data.maps], ['Lists waiting', data.lists_waiting]].map(pair =>
+        [['Open', data.open], ['Won', data.won], ['Lost', data.lost], ['Log entries', data.activities], ['Market maps', data.maps], ['Lists waiting', data.lists_waiting],
+          ['Changes on the ledger', data.ledger], ['Taken off the desk', data.archived]].map(pair =>
           h('div', { key: pair[0] }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, String(pair[1]))))),
       h('div', { key: 'where', className: 'stoa-sub', style: { marginTop: 10, overflowWrap: 'anywhere' } }, 'One SQLite file on the machine Hermes runs on: ' + data.path),
       h('div', { key: 'btns', className: 'stoa-btns' }, h(Btn, { disabled: busy, onClick: exportAll }, setup.tour ? 'Export the sample data as CSV' : 'Export everything as CSV')),
@@ -1461,7 +1475,8 @@ function People({ deal, term }) {
       h('span', { className: 'stoa-grow' },
         h('span', { className: 'stoa-name' }, person.name),
         person.role || person.title ? h('span', { className: 'stoa-sub' }, '  ' + [person.role, person.title].filter(Boolean).join(' · ')) : null,
-        person.email ? h('span', { className: 'stoa-sub', style: { display: 'block', overflowWrap: 'anywhere' } }, person.email) : null),
+        person.email || person.also_on ? h('span', { className: 'stoa-sub', style: { display: 'block', overflowWrap: 'anywhere' } },
+          [person.email, person.also_on ? 'also on ' + plural(person.also_on, 'other record', 'other records') : ''].filter(Boolean).join(' · ')) : null),
       h('button', { type: 'button', className: 'stoa-icon', style: { width: 24, height: 24 }, disabled: busy, title: 'Take ' + person.name + ' off this record',
         'aria-label': 'Remove ' + person.name, onClick: () => send({ verb: 'remove', person: String(person.id) }) }, h(Icon, { name: 'x', size: 12 })))),
     !people.length && !adding ? h('div', { className: 'stoa-sub' }, 'Nobody else yet. Add the people around it, and what they send is filed here too.') : null,
@@ -1796,7 +1811,8 @@ function Page() {
         h('span', { className: 'stoa-name' }, entry.name), h('span', { style: entry.undone ? { textDecoration: 'line-through' } : undefined }, '  ' + entry.text),
         h('span', { className: 'stoa-sub', style: { display: 'block' } }, ago(entry.at) + ' · ' + (entry.undone ? 'taken back' : entry.kind) + (entry.by ? ' · ' + entry.by : ''))),
       entry.can_undo ? h(Btn, { kind: 'quiet', title: 'This is the last change on ' + entry.name + ': put it back as it was', onClick: () => undo(entry.deal, entry.op) },
-        h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } }, h(Icon, { name: 'back', size: 13 }), 'Undo')) : null))
+        h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } }, h(Icon, { name: 'back', size: 13 }), 'Undo')) : null,
+      entry.can_restore ? h(Btn, { kind: 'quiet', title: entry.name + ' was taken off the desk, not destroyed', onClick: () => putBack(entry.deal) }, 'Put back') : null))
       : h('p', { className: 'stoa-sub' }, 'Everything that happens on the desk is logged here: who did it, when, and what changed.')) : null,
     tab === 'setup' ? h(Setup, { state, go: what => { if (what === 'add') add() } }) : null),
   h(Dock, { state }))

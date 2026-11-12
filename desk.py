@@ -407,7 +407,7 @@ class Desk:
             deals = sorted([d for d in deals if cards.is_due(d)], key=cards.due_date)
         limit = _int(args.get("limit") or 60, 60, 1, 500)
         out = {"ok": True, "view": view, "playbook": playbook.name, "count": len(deals),
-               "open_value": sum(d["value"] for d in deals if d["status"] == "open")}
+               "open_value": st.total(d for d in deals if d["status"] == "open")}
         if view == "board":
             out["board"] = cards.board_text(playbook, deals)
             out["by_stage"] = self._by_stage(playbook, deals)
@@ -424,7 +424,7 @@ class Desk:
         rows = []
         for stage in playbook.stages:
             here = [d for d in deals if d["stage"] == stage["id"] and d["status"] == "open"]
-            rows.append({"stage": stage["id"], "label": stage["label"], "count": len(here), "value": sum(d["value"] for d in here)})
+            rows.append({"stage": stage["id"], "label": stage["label"], "count": len(here), "value": st.total(here)})
         return rows
 
     def brief(self) -> dict:
@@ -450,7 +450,7 @@ class Desk:
         return {
             "ok": True, "view": "brief", "playbook": playbook.name, "date": st.today(),
             "terms": playbook.terms,
-            "open": len(open_deals), "open_value": sum(d["value"] for d in open_deals),
+            "open": len(open_deals), "open_value": st.total(open_deals),
             "by_stage": self._by_stage(playbook, open_deals),
             "due": sorted(due, key=lambda d: d.get("next_due", ""))[:15],
             "stale": sorted(stale, key=lambda d: -d["quiet_days"])[:15],
@@ -623,7 +623,7 @@ class Desk:
             "automations": [{"name": bp["name"], "title": bp["title"], "description": bp["description"]} for bp in blueprints.BLUEPRINTS],
             "data": {"path": str(self.data_dir / "desk.db"), "size": size, "records": real, "open": tally["open"], "won": tally["won"],
                      "lost": tally["lost"], "samples": tally["samples"], "activities": tally["activities"], "maps": tally["maps"],
-                     "people": tally["people"],
+                     "people": tally["people"], "ledger": tally["ledger"], "archived": tally["archived"],
                      "lists_waiting": tally["lists_waiting"], "exports": str(self.data_dir / "exports")},
             "playbook_sets": {
                 "words": "%s, %s" % (terms["deal"], terms["group"]),
@@ -646,18 +646,19 @@ class Desk:
         reached, here, lost = [0] * count, [0] * count, [0] * count
         value = [0.0] * count
         won = from_map = 0
-        won_value = 0.0
+        won_value = 0          # money is added up in cents and turned into an amount at the end
+        value = [0] * count
         for deal in (deals if deals is not None else self.store.list(status="all")):
             if deal["status"] == "open":
                 far = playbook.position(deal["stage"])
                 if far < 0:
                     continue
                 here[far] += 1
-                value[far] += deal["value"]
+                value[far] += deal["value_cents"]
             elif deal["status"] == "won":
                 far = count - 1
                 won += 1
-                won_value += deal["value"]
+                won_value += deal["value_cents"]
             else:
                 far = max(0, playbook.position(str(deal["fields"].get("_prev_stage") or "")))
                 lost[far] += 1
@@ -666,32 +667,88 @@ class Desk:
             for index in range(far + 1):
                 reached[index] += 1
         return {"stages": [{"id": s["id"], "label": s["label"], "reached": reached[i], "here": here[i], "lost": lost[i],
-                            "value": value[i]} for i, s in enumerate(stages)],
-                "won": won, "won_value": won_value, "won_label": playbook.won["label"], "lost": sum(lost),
+                            "value": value[i] / 100} for i, s in enumerate(stages)],
+                "won": won, "won_value": won_value / 100, "won_label": playbook.won["label"], "lost": sum(lost),
                 "lost_label": playbook.lost["label"], "from_map": from_map, "total": reached[0] if reached else 0}
 
     # -- gtm_deal -------------------------------------------------------------------------------
     def deal(self, args: dict, actor: str = "") -> dict:
         """``actor`` names who is doing this when it is not the agent's own tool call (a form on the page).
         Whatever one call changes is one action on the log, taken back as one."""
-        if str(args.get("action") or "").lower() == "undo":
+        action = str(args.get("action") or "").lower()
+        if action == "undo":
             return self.undo(args.get("deal"), actor=actor)
+        if action == "restore":
+            return self.restore(args.get("deal"), actor=actor)
         with self.store.operation():
             return self._deal(args, actor)
 
     def undo(self, ref: Any, op: str = "", actor: str = "") -> dict:
-        """Take back the last action on a record (and the one before it, if asked again)."""
+        """Take back the last action on a record (and the one before it, if asked again), or the action
+        ``op``. Nothing is taken back when a value it set has been changed again since: the answer says
+        which, so a later edit is never overwritten."""
         deal, error = self._resolve(ref)
         if error:
             return error
-        result = self.store.undo(deal["id"], op=str(op or ""), actor=actor or self.actor())
+        with self.store.operation():
+            result = self.store.undo(deal["id"], op=str(op or ""), actor=actor or self.actor())
         if result is None:
-            return {"ok": False, "error": "Nothing to take back on %s: something else has happened to it since, or its last "
-                                          "change was made before changes could be taken back." % deal["name"]}
+            return {"ok": False, "error": "Nothing to take back on %s: that has been taken back already, or it was done before "
+                                          "changes were kept on the ledger." % deal["name"]}
+        if result["conflicts"]:
+            said = self._conflicts(result["conflicts"])
+            return {"ok": False, "undid": "", "conflicts": said,
+                    "error": "Not taken back, because it would overwrite a later change on %s: %s. Nothing was changed."
+                             % (deal["name"], "; ".join(said))}
         if result["deal"]:
             self._changed(result["deal"])
-        return {"ok": True, "action": "undo", "undid": result["text"], "removed": result["deleted"], "name": deal["name"],
-                "deal": self.view(result["deal"], activities=3) if result["deal"] else None}
+        return {"ok": True, "action": "undo", "undid": result["text"], "removed": result["archived"], "name": deal["name"],
+                "deal": self.view(result["deal"], activities=3) if result["deal"] else None,
+                "note": "%s is off the desk, not destroyed: gtm_deal(action=\"restore\") puts it back." % deal["name"]
+                if result["archived"] else ""}
+
+    def _conflicts(self, conflicts: list) -> list:
+        """Each conflict as a line a person can read: what the action left, and what is there now."""
+        playbook = self.playbook()
+        labels = {"value_cents": playbook.terms["value"], "grp": playbook.terms["group"].capitalize(), "company": playbook.terms["company"],
+                  "owner": playbook.terms["owner"].capitalize(), "next_step": "Next step", "next_due": "Due", "stage": "Stage",
+                  "status": "Status", "name": "Name", "email": "Email", "linkedin": "LinkedIn", "role": "Role", "title": "Title"}
+        labels.update({"fields." + field["key"]: field["label"] for field in playbook.fields})
+
+        def shown(key: str, value: Any) -> str:
+            if key == "value_cents":
+                return cards.money(int(value or 0) / 100, playbook.currency) or "nothing"
+            if key == "stage":
+                return playbook.label(str(value or ""))
+            return str(value) if value not in (None, "") else "nothing"
+
+        out = []
+        for item in conflicts:
+            key = item["field"]
+            if key == "record":
+                out.append("it has been worked on since it was added (take those changes back first)")
+            elif key in ("deal", "contact", "link", "person"):
+                out.append("the %s it changed is %s" % ("person" if key != "deal" else "record", item["now"]))
+            else:
+                out.append("%s is now %s (that action left it at %s)" % (labels.get(key, key.replace("fields.", "")), shown(key, item["now"]),
+                                                                        shown(key, item["then"])))
+        return out
+
+    def restore(self, ref: Any, actor: str = "") -> dict:
+        """Put back a record that was taken off the desk when its add was undone."""
+        ref = str(ref or "").strip()
+        if not ref:
+            return {"ok": False, "error": "say which record: pass `deal` (its id or name)"}
+        try:
+            gone = self.store.find(ref, archived=True)
+        except st.Ambiguous as exc:
+            return {"ok": False, "error": "'%s' matches several records that were taken off the desk; use one of these ids" % ref,
+                    "matches": [{"id": d["id"], "name": d["name"], "company": d["company"]} for d in exc.matches]}
+        if gone is None:
+            return {"ok": False, "error": "nothing named '%s' has been taken off the desk" % ref[:60]}
+        deal = self.store.restore(gone["id"], actor=actor or self.actor())
+        self._changed(deal)
+        return {"ok": True, "action": "restore", "deal": self.view(deal, activities=3)}
 
     # -- what a scheduled job may do by itself ----------------------------------------------------
     def autonomy(self) -> str:
@@ -723,7 +780,7 @@ class Desk:
             action = action or "get"
             if action == "get" or action in allows:
                 return None
-            if action == "undo":
+            if action in ("undo", "restore"):
                 return refused
             return self.hold(action, args or {})
         if tool == "gtm_contact" and action in ("add", "update", "remove") and "person" not in allows:
@@ -876,7 +933,7 @@ class Desk:
                                      until=until, actor=actor)
         else:
             return {"ok": False, "error": "unknown action '%s'" % action,
-                    "actions": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze", "undo"]}
+                    "actions": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze", "undo", "restore"]}
         self._changed(deal)
         return {"ok": True, "action": action, "deal": self.view(deal, playbook, activities=3)}
 
@@ -1053,7 +1110,8 @@ class Desk:
         first = {"primary": True, "name": deal["name"], "email": deal["email"], "linkedin": deal["linkedin"],
                  "title": str((deal.get("fields") or {}).get("title") or ""), "role": ""}
         return [first] + [dict({key: person[key] for key in ("id", "name", "email", "title", "role", "linkedin", "phone", "note")},
-                               primary=False) for person in self.store.people(deal["id"])]
+                               primary=False, also_on=len(self.store.person_records(person["id"])) - 1)
+                          for person in self.store.people(deal["id"])]
 
     def _brief(self, deal: dict, playbook: Playbook) -> dict:
         return {"id": deal["id"], "name": deal["name"], "company": deal["company"], "group": deal["grp"], "status": deal["status"],
@@ -1082,7 +1140,8 @@ class Desk:
             for known in self.people(deal):
                 if (email and (known["email"] or "").lower() == email) or known["name"].lower() == name.lower():
                     return {"ok": True, "exists": True, "deal": deal["id"], "people": self.people(deal)}
-            self.store.person_add(deal["id"], name, actor=actor, **{key: args.get(key) for key in st.PERSON if key != "name"})
+            with self.store.operation():
+                self.store.person_add(deal["id"], name, actor=actor, **{key: args.get(key) for key in st.PERSON if key != "name"})
         elif action in ("update", "remove"):
             want, listed = str(args.get("person") or args.get("name") or "").strip().lower(), self.store.people(deal["id"])
             found = [p for p in listed if str(p["id"]) == want or p["name"].lower() == want or (p["email"] and p["email"].lower() == want)]
@@ -1090,12 +1149,16 @@ class Desk:
                 return {"ok": False, "error": "say which person on %s: pass `person` (a name, an email or an id)" % deal["name"],
                         "people": self.people(deal)}
             if action == "remove":
-                self.store.person_remove(found[0]["id"], actor=actor)
+                self.store.person_remove(found[0]["id"], actor=actor, deal_id=deal["id"])
             else:
                 values = {key: args.get(key) for key in st.PERSON if key != "name" and args.get(key) is not None}
                 if args.get("new_name"):
                     values["name"] = args["new_name"]
-                self.store.person_update(found[0]["id"], actor=actor, **values)
+                try:
+                    with self.store.operation():
+                        self.store.person_update(found[0]["id"], actor=actor, deal_id=deal["id"], **values)
+                except ValueError as exc:
+                    return {"ok": False, "error": str(exc)}
         else:
             return {"ok": False, "error": "unknown action '%s'" % action,
                     "actions": ["find", "match", "people", "add", "update", "remove", "company"]}
@@ -1177,9 +1240,11 @@ class Desk:
     def companies(self) -> list:
         """Every company on the desk, with what is open there: for the page's list of companies."""
         touches, rows = self.store.touches(), {}
-        counts: dict = {}
+        on: dict = {}
         for person in self.store.people():
-            counts[person["deal_id"]] = counts.get(person["deal_id"], 0) + 1
+            on.setdefault(person["deal_id"], set()).add(person["id"])
+        who: dict = {}      # per company, everyone there once: a record's own person, and each contact however many records they are on
+        cents: dict = {}
         for deal in self.store.list(status="all"):
             key = st.org_key(deal["company"])
             if not key:
@@ -1188,9 +1253,12 @@ class Desk:
                                         "lost": 0, "people": 0, "last_touch": ""})
             row[deal["status"]] += 1
             if deal["status"] != "lost":
-                row[deal["status"] + "_value"] += deal["value"]
-            row["people"] += 1 + counts.get(deal["id"], 0)
+                cents[(key, deal["status"])] = cents.get((key, deal["status"]), 0) + deal["value_cents"]
+            who.setdefault(key, set()).update({("record", deal["id"])} | {("person", person) for person in on.get(deal["id"], ())})
             row["last_touch"] = max(row["last_touch"], touches.get(deal["id"], "") or deal["updated_at"])
+        for key, row in rows.items():
+            row["people"] = len(who.get(key, ()))
+            row["open_value"], row["won_value"] = cents.get((key, "open"), 0) / 100, cents.get((key, "won"), 0) / 100
         return sorted(rows.values(), key=lambda row: (-row["open_value"], -row["open"], row["name"].lower()))
 
     def company(self, name: Any, note: Any = None, domain: Any = None) -> dict:
@@ -1210,11 +1278,17 @@ class Desk:
             self.store.org_put(display, note=note, domain=domain)
         org = self.store.org_get(display) or {}
         playbook, touches = self.playbook(), self.store.touches()
-        people = []
+        people, seen = [], {}
         for deal in sorted(here, key=lambda d: (d["status"] != "open", d["name"].lower())):
             for person in self.people(deal):
-                people.append(dict({k: person.get(k) or "" for k in ("name", "email", "title", "role")}, primary=person["primary"],
-                                   record=deal["id"], record_name=deal["name"]))
+                if not person["primary"] and person["id"] in seen:          # the same person, on another record here
+                    seen[person["id"]]["record_name"] += ", " + deal["name"]
+                    continue
+                entry = dict({k: person.get(k) or "" for k in ("name", "email", "title", "role")}, primary=person["primary"],
+                             record=deal["id"], record_name=deal["name"])
+                if not person["primary"]:
+                    seen[person["id"]] = entry
+                people.append(entry)
         guesses: dict = {}
         for person in people:
             found = st.email_domain(person["email"])
@@ -1227,8 +1301,8 @@ class Desk:
         return {"ok": True,
                 "company": {"name": display, "key": key, "domain": org.get("domain") or (max(guesses, key=guesses.get) if guesses else ""),
                             "note": org.get("note") or "", "website": org.get("website") or ""},
-                "open": len(open_here), "open_value": sum(deal["value"] for deal in open_here),
-                "won": len(won), "won_value": sum(deal["value"] for deal in won),
+                "open": len(open_here), "open_value": st.total(open_here),
+                "won": len(won), "won_value": st.total(won),
                 "lost": len([deal for deal in here if deal["status"] == "lost"]),
                 "last_touch": max([touches.get(deal["id"], "") for deal in here] or [""]),
                 "records": [self._brief(deal, playbook) for deal in sorted(here, key=lambda d: (d["status"] != "open", -d["value"]))],

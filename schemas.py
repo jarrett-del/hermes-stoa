@@ -39,14 +39,15 @@ GTM_DEAL = {
         "meeting, optionally setting the next step), done (the next step was done: logs it, and sets the next_step and "
         "next_due you pass as what comes next), snooze (put it aside for N days or until a date: it is on neither the "
         "due list nor the quiet list until then), undo (take back the last change on the record, whoever made it; "
-        "again for the one before). Call this whenever "
+        "again for the one before; it is refused, and says why, if that would overwrite a later change), restore "
+        "(put back a record that was taken off the desk when its add was undone). Call this whenever "
         "the user tells you something happened with a prospect, so the desk stays the source of truth. Any card "
         "already posted in Slack for the record updates itself."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze", "undo"]},
+            "action": {"type": "string", "enum": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze", "undo", "restore"]},
             "deal": _DEAL_REF,
             "name": {"type": "string", "description": "add/update: the person or deal name."},
             "company": {"type": "string"},
@@ -333,7 +334,9 @@ GTM_CONTACT = {
     "description": (
         "Find people and companies on the Stoa desk, and who else is on a record. "
         "A record has its own person (its name and email) and can carry others: the buyer's boss, the CFO, a hiring "
-        "manager. action='match' takes email addresses and says whose they are: the records each belongs to, or, for "
+        "manager. A person is kept once: added to a second record by the same email they are linked, not entered "
+        "again, and a change to their title or email shows on every record they are on (role is their part in one "
+        "record). action='match' takes email addresses and says whose they are: the records each belongs to, or, for "
         "an unknown sender, the company its domain belongs to and that company's open records; use it before logging "
         "an email, a meeting or a thread so the entry lands on the right record. 'find' searches people by name, "
         "email, title or company across the desk. 'people' lists everyone on one record; 'add', 'update' and 'remove' "

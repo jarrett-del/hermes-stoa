@@ -197,7 +197,7 @@ def board_text(playbook, deals: list, title: str = "") -> str:
     """The whole pipeline as a compact text board."""
     lines = [title or playbook.title]
     open_deals = [d for d in deals if d["status"] == "open"]
-    total = sum(d["value"] for d in open_deals)
+    total = st.total(open_deals)
     summary = "%d open %s" % (len(open_deals), playbook.terms["deals"])
     if total:
         summary += " · %s" % money(total, playbook.currency)
@@ -205,7 +205,7 @@ def board_text(playbook, deals: list, title: str = "") -> str:
     known = set(playbook.stage_ids())
     for stage in playbook.stages:
         here = [d for d in open_deals if d["stage"] == stage["id"]]
-        value = sum(d["value"] for d in here)
+        value = st.total(here)
         lines.append("")
         lines.append("%s (%d)%s" % (stage["label"], len(here), "  " + money(value, playbook.currency) if value else ""))
         for deal in here[:12]:

@@ -1,4 +1,5 @@
-"""The desk's ledger: one SQLite file holding deals, their activity log, posted cards and caches.
+"""The desk's storage: one SQLite file holding deals, the people on them, the log, and an append-only
+ledger of every change (what it replaced and what it left), which is what an undo reads.
 
 Pure standard library and no Hermes imports, so it can be tested anywhere. ``Store`` takes a path
 (or ``:memory:``) and opens a short-lived connection per operation: tool handlers, Slack button
@@ -13,6 +14,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Iterable, Optional
 
 SCHEMA = """
@@ -105,20 +107,49 @@ CREATE TABLE IF NOT EXISTS intakes (
   rows TEXT NOT NULL DEFAULT '[]',
   result TEXT NOT NULL DEFAULT '{}'
 );
-CREATE TABLE IF NOT EXISTS people (
+CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  deal_id TEXT NOT NULL,
   name TEXT NOT NULL,
   email TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
-  role TEXT NOT NULL DEFAULT '',
   linkedin TEXT NOT NULL DEFAULT '',
   phone TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS people_deal ON people (deal_id);
+CREATE UNIQUE INDEX IF NOT EXISTS contacts_email ON contacts (lower(email)) WHERE email != '' AND archived_at = '';
+CREATE TABLE IF NOT EXISTS deal_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id TEXT NOT NULL,
+  contact_id INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS deal_contacts_deal ON deal_contacts (deal_id);
+CREATE UNIQUE INDEX IF NOT EXISTS deal_contacts_pair ON deal_contacts (deal_id, contact_id) WHERE archived_at = '';
+CREATE TABLE IF NOT EXISTS ledger (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  batch TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT '',
+  entity TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  deal_id TEXT NOT NULL DEFAULT '',
+  op TEXT NOT NULL,
+  before TEXT NOT NULL DEFAULT '{}',
+  after TEXT NOT NULL DEFAULT '{}',
+  summary TEXT NOT NULL DEFAULT '',
+  reverts INTEGER
+);
+CREATE INDEX IF NOT EXISTS ledger_deal ON ledger (deal_id, seq);
+CREATE INDEX IF NOT EXISTS ledger_batch ON ledger (batch);
+CREATE TRIGGER IF NOT EXISTS ledger_keeps_rows BEFORE DELETE ON ledger
+BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS ledger_keeps_values BEFORE UPDATE ON ledger
+BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
 CREATE TABLE IF NOT EXISTS orgs (
   key TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -140,14 +171,25 @@ ADDED_COLUMNS = {
     "markets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
     "targets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
     "cards": {"session_key": "TEXT NOT NULL DEFAULT ''", "asked_by": "TEXT NOT NULL DEFAULT ''"},
-    # what a change replaced (so it can be taken back), the action it was part of, and when it was taken back
+    # the action a log line was part of (its batch on the ledger), and when it was taken back. `before` is what
+    # 0.11 kept there; the ledger holds it now.
     "activities": {"before": "TEXT NOT NULL DEFAULT ''", "op": "TEXT NOT NULL DEFAULT ''", "undone": "TEXT NOT NULL DEFAULT ''"},
+    # money as whole cents (`value` stays beside it for older versions reading the file), and a record taken off
+    # the desk without being destroyed
+    "deals": {"value_cents": "INTEGER NOT NULL DEFAULT 0", "archived_at": "TEXT NOT NULL DEFAULT ''"},
     "intakes": {"origin": "TEXT NOT NULL DEFAULT 'list'"},    # list: rows someone sent. proposal: changes Hermes suggests
 }
 
 EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source")
-RESTORABLE = EDITABLE + ("stage", "status", "lost_reason", "snoozed_until", "stage_at", "fields")    # what an undo may put back
 PERSON = ("name", "email", "title", "role", "linkedin", "phone", "note")
+CONTACT = ("name", "email", "title", "linkedin", "phone", "note")       # what a person is, on every record they are on
+# A deal's values as the ledger keeps them: its columns, with money in cents and each custom field as fields.<key>.
+TRACKED = ("name", "company", "grp", "email", "linkedin", "value_cents", "owner", "next_step", "next_due", "source",
+           "stage", "status", "lost_reason", "snoozed_until", "stage_at")
+# Put back by an undo only if nothing has touched them since; a difference there never stops the undo.
+SOFT = ("stage_at", "snoozed_until", "lost_reason", "fields._prev_stage")
+UNDOABLE = "('insert', 'update', 'archive')"
+STANDING = ("op IN " + UNDOABLE + " AND seq NOT IN (SELECT reverts FROM ledger WHERE reverts IS NOT NULL)")
 QUIET_KINDS = "('snooze', 'card', 'undo')"      # bookkeeping: on the log, but not a touch and not something to take back
 ORG_TAILS = {"inc", "llc", "ltd", "co", "corp", "corporation", "gmbh", "plc", "limited", "company", "sa", "ag", "bv", "pty"}
 FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "ymail.com",
@@ -192,6 +234,29 @@ def email_domain(address: Any) -> str:
     """The domain of an address when it says something about the company ("" for gmail and the like)."""
     domain = str(address or "").strip().lower().rpartition("@")[2]
     return "" if not domain or "." not in domain or domain in FREE_MAIL else domain
+
+
+def to_cents(value: Any) -> int:
+    """An amount as whole cents. Money is kept in integers so that sums are exact."""
+    try:
+        return int((Decimal(repr(_number(value))) * 100).to_integral_value(ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, OverflowError):
+        return 0
+
+
+def total(deals: Iterable[dict]) -> float:
+    """The sum of the amounts on some deals, added up in cents."""
+    return sum(int(deal.get("value_cents") or 0) for deal in deals) / 100
+
+
+def flat(deal: Optional[dict]) -> dict:
+    """A deal as the ledger keeps it: tracked columns, and each custom field as ``fields.<key>``."""
+    if not deal:
+        return {}
+    out = {key: deal.get(key) for key in TRACKED}
+    for key, value in (deal.get("fields") or {}).items():
+        out["fields." + str(key)] = value
+    return out
 
 
 def slugify(text: str) -> str:
@@ -297,6 +362,35 @@ class Store:
                         except sqlite3.OperationalError as exc:     # another process added it a moment ago
                             if "duplicate column" not in str(exc).lower():
                                 raise
+            # Cents are what counts. `value` is written beside them, so an older version can read the file; where the
+            # two disagree an older version wrote `value` last, and that is taken over.
+            conn.execute("UPDATE deals SET value_cents = CAST(ROUND(value * 100) AS INTEGER) "
+                         "WHERE value_cents != CAST(ROUND(value * 100) AS INTEGER)")
+        self._adopt_people()
+
+    def _adopt_people(self) -> None:
+        """Version 0.11 kept the other people on a record in a table of their own, one row per record. They
+        become contacts, one per person (by email), linked to each record they were on."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")         # two processes opening the file together: one does this, the other waits
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'people'").fetchone():
+                return
+            for row in conn.execute("SELECT * FROM people ORDER BY id").fetchall():
+                person = dict(row)
+                email = (person.get("email") or "").strip().lower()
+                found = conn.execute("SELECT id FROM contacts WHERE lower(email) = ? AND archived_at = ''", (email,)).fetchone() if email else None
+                if found is None:
+                    contact_id = conn.execute(
+                        "INSERT INTO contacts (name, email, title, linkedin, phone, note, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (person["name"], email, person.get("title") or "", person.get("linkedin") or "", person.get("phone") or "",
+                         person.get("note") or "", person.get("created_at") or now(), person.get("updated_at") or now())).lastrowid
+                else:
+                    contact_id = found["id"]
+                if not conn.execute("SELECT 1 FROM deal_contacts WHERE deal_id = ? AND contact_id = ? AND archived_at = ''",
+                                    (person["deal_id"], contact_id)).fetchone():
+                    conn.execute("INSERT INTO deal_contacts (deal_id, contact_id, role, created_at) VALUES (?,?,?,?)",
+                                 (person["deal_id"], contact_id, person.get("role") or "", person.get("created_at") or now()))
+            conn.execute("DROP TABLE people")
 
     # -- connection -----------------------------------------------------------------------------
     class _Session:
@@ -348,6 +442,33 @@ class Store:
     def _op(self) -> str:
         return getattr(self._ops, "id", "") or uuid.uuid4().hex[:12]
 
+    @staticmethod
+    def _entry(conn, batch: str, entity: str, entity_id: Any, deal_id: str, op: str, before: Optional[dict] = None,
+               after: Optional[dict] = None, actor: str = "", summary: str = "", reverts: Optional[int] = None, at: str = "") -> int:
+        """Append one line to the ledger: what changed, what it replaced and what it left. Lines are never
+        changed or removed (the database refuses), so the ledger is the record of what happened."""
+        return conn.execute(
+            "INSERT INTO ledger (at, batch, actor, entity, entity_id, deal_id, op, before, after, summary, reverts) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (at or now(), batch, actor, entity, str(entity_id), deal_id, op, json.dumps(before or {}, sort_keys=True, default=str),
+             json.dumps(after or {}, sort_keys=True, default=str), (summary or "")[:300], reverts)).lastrowid
+
+    def ledger(self, deal_id: str = "", limit: int = 50) -> list:
+        """The ledger, newest first: for one record, or for the whole desk."""
+        sql = "SELECT * FROM ledger" + (" WHERE deal_id = ?" if deal_id else "") + " ORDER BY seq DESC LIMIT ?"
+        with self._conn() as conn:
+            rows = conn.execute(sql, ([deal_id] if deal_id else []) + [int(limit)]).fetchall()
+        out = []
+        for row in rows:
+            entry = dict(row)
+            for key in ("before", "after"):
+                try:
+                    entry[key] = json.loads(entry[key] or "{}")
+                except ValueError:
+                    entry[key] = {}
+            out.append(entry)
+        return out
+
     # -- deals ----------------------------------------------------------------------------------
     @staticmethod
     def _deal(row) -> dict:
@@ -356,29 +477,33 @@ class Store:
             deal["fields"] = json.loads(deal.get("fields") or "{}")
         except ValueError:
             deal["fields"] = {}
+        deal["value_cents"] = int(deal.get("value_cents") or 0)
+        deal["value"] = deal["value_cents"] / 100         # the amount, read from the cents
         return deal
 
-    def get(self, deal_id: str) -> Optional[dict]:
+    def get(self, deal_id: str, archived: bool = False) -> Optional[dict]:
+        """A record by id. One taken off the desk is found only when ``archived`` asks for those."""
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+            row = conn.execute("SELECT * FROM deals WHERE id = ? AND archived_at %s ''" % ("!=" if archived else "="), (deal_id,)).fetchone()
         return self._deal(row) if row else None
 
-    def find(self, ref: str) -> Optional[dict]:
+    def find(self, ref: str, archived: bool = False) -> Optional[dict]:
         """Resolve an id, a name, or a fragment of one. Raises ``Ambiguous`` on several matches."""
         ref = (ref or "").strip()
         if not ref:
             return None
         slug = slugify(ref)
-        exact = self.get(ref) or (self.get(slug) if slug != "deal" or ref.lower() == "deal" else None)
+        exact = self.get(ref, archived) or (self.get(slug, archived) if slug != "deal" or ref.lower() == "deal" else None)
         if exact:
             return exact
+        here = "archived_at %s ''" % ("!=" if archived else "=")
         with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM deals WHERE lower(name) = lower(?) ORDER BY status = 'open' DESC, updated_at DESC",
+            rows = conn.execute("SELECT * FROM deals WHERE " + here + " AND lower(name) = lower(?) ORDER BY status = 'open' DESC, updated_at DESC",
                                 (ref,)).fetchall()
             if not rows:
                 like = "%" + ref.lower().replace("%", "").replace("_", " ") + "%"
                 rows = conn.execute(
-                    "SELECT * FROM deals WHERE lower(name) LIKE ? OR lower(company) LIKE ? OR lower(email) = lower(?) "
+                    "SELECT * FROM deals WHERE " + here + " AND (lower(name) LIKE ? OR lower(company) LIKE ? OR lower(email) = lower(?)) "
                     "ORDER BY status = 'open' DESC, updated_at DESC", (like, like, ref)).fetchall()
         deals = [self._deal(r) for r in rows]
         if not deals:
@@ -396,7 +521,7 @@ class Store:
             raise ValueError("a name is required")
         fields = dict(values.pop("fields", None) or {})
         base = slugify(name + ("-" + values["grp"] if values.get("grp") else ""))
-        stamp = now()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             deal_id, n = base, 1
@@ -405,29 +530,41 @@ class Store:
                 suffix = "-%d" % n
                 deal_id = base[:ID_MAX - len(suffix)] + suffix
             row = {k: values.get(k, "") for k in EDITABLE if k not in ("name", "value")}
+            cents = to_cents(values.get("value"))
             conn.execute(
-                "INSERT INTO deals (id, name, company, grp, email, linkedin, stage, value, owner, next_step, next_due, "
-                "source, fields, created_at, updated_at, stage_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO deals (id, name, company, grp, email, linkedin, stage, value, value_cents, owner, next_step, next_due, "
+                "source, fields, created_at, updated_at, stage_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (deal_id, name, row["company"] or "", row["grp"] or "", row["email"] or "", row["linkedin"] or "", stage,
-                 _number(values.get("value")), row["owner"] or "", row["next_step"] or "", row["next_due"] or "",
+                 cents / 100, cents, row["owner"] or "", row["next_step"] or "", row["next_due"] or "",
                  row["source"] or "", json.dumps(fields), stamp, stamp, stamp))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (deal_id, stamp, "created", actor, "Added at %s" % stage, '{"_created": true}', self._op()))
+            made = self._deal(conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone())
+            self._entry(conn, batch, "deal", deal_id, deal_id, "insert", after=flat(made), actor=actor,
+                        summary="Added at %s" % stage, at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "created", actor, "Added at %s" % stage, batch))
         return self.get(deal_id)
 
     def update(self, deal_id: str, *, actor: str = "", fields: Optional[dict] = None, **values: Any) -> dict:
         deal = self.get(deal_id)
         if deal is None:
             raise KeyError(deal_id)
-        sets, params, changed, before = [], [], [], {}
+        sets, params, changed, before, after = [], [], [], {}, {}
         for key in EDITABLE:
             if key in values and values[key] is not None:
-                new = _number(values[key]) if key == "value" else str(values[key]).strip()
+                if key == "value":
+                    cents = to_cents(values[key])
+                    if cents != deal["value_cents"]:
+                        sets += ["value = ?", "value_cents = ?"]
+                        params += [cents / 100, cents]
+                        changed.append(key)
+                        before["value_cents"], after["value_cents"] = deal["value_cents"], cents
+                    continue
+                new = str(values[key]).strip()
                 if new != deal[key]:
                     sets.append("%s = ?" % key)
                     params.append(new)
                     changed.append(key)
-                    before[key] = deal[key]
+                    before[key], after[key] = deal[key], new
         if fields:
             merged = dict(deal["fields"])
             for key, val in fields.items():
@@ -439,14 +576,17 @@ class Store:
                 sets.append("fields = ?")
                 params.append(json.dumps(merged))
                 changed.append("fields")
-                before["fields"] = deal["fields"]
+                for key in set(merged) | set(deal["fields"]):
+                    if merged.get(key) != deal["fields"].get(key):
+                        before["fields." + key], after["fields." + key] = deal["fields"].get(key), merged.get(key)
         if not sets:
             return deal
-        stamp = now()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
             conn.execute("UPDATE deals SET %s, updated_at = ? WHERE id = ?" % ", ".join(sets), params + [stamp, deal_id])
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (deal_id, stamp, "updated", actor, "Updated " + ", ".join(changed), json.dumps(before), self._op()))
+            self._entry(conn, batch, "deal", deal_id, deal_id, "update", before, after, actor, "Updated " + ", ".join(changed), at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "updated", actor, "Updated " + ", ".join(changed), batch))
         return self.get(deal_id)
 
     def move(self, deal_id: str, stage: str, *, status: str = "open", reason: str = "", actor: str = "",
@@ -457,10 +597,10 @@ class Store:
         the change share one write transaction, so two clicks, two people or two processes acting
         on the same record cannot both move it. Returns ``None`` when someone else got there first.
         """
-        stamp = now()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT stage, status, fields, lost_reason, snoozed_until, stage_at FROM deals WHERE id = ?",
+            row = conn.execute("SELECT stage, status, fields, lost_reason, snoozed_until, stage_at FROM deals WHERE id = ? AND archived_at = ''",
                                (deal_id,)).fetchone()
             if row is None:
                 raise KeyError(deal_id)
@@ -472,7 +612,7 @@ class Store:
             except ValueError:
                 was = {}
             before = {"stage": row["stage"], "status": row["status"], "lost_reason": row["lost_reason"],
-                      "snoozed_until": row["snoozed_until"], "stage_at": row["stage_at"], "fields": was}
+                      "snoozed_until": row["snoozed_until"], "stage_at": row["stage_at"], "fields._prev_stage": was.get("_prev_stage")}
             if status != "open" and row["status"] == "open":    # remember where it was, for a later reopen
                 try:
                     data = json.loads(fields or "{}")
@@ -485,8 +625,17 @@ class Store:
                 text += " (%s)" % reason
             conn.execute("UPDATE deals SET stage = ?, status = ?, lost_reason = ?, snoozed_until = '', fields = ?, stage_at = ?, "
                          "updated_at = ? WHERE id = ?", (stage, status, reason if status == "lost" else "", fields, stamp, stamp, deal_id))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (deal_id, stamp, "stage", actor, text, json.dumps(before), self._op()))
+            try:
+                kept = json.loads(fields or "{}").get("_prev_stage")
+            except ValueError:
+                kept = None
+            after = {"stage": stage, "status": status, "lost_reason": reason if status == "lost" else "", "snoozed_until": "",
+                     "stage_at": stamp, "fields._prev_stage": kept}
+            changed = [key for key in after if after[key] != before[key]]
+            self._entry(conn, batch, "deal", deal_id, deal_id, "update", {key: before[key] for key in changed},
+                        {key: after[key] for key in changed}, actor, text, at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "stage", actor, text, batch))
         return self.get(deal_id)
 
     def snooze(self, deal_id: str, days: int = 0, *, until: str = "", actor: str = "") -> dict:
@@ -498,34 +647,52 @@ class Store:
             until = (dt.date.today() + dt.timedelta(days=days)).isoformat() if days else ""
         elif until <= today():
             until = ""
-        stamp = now()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
-            row = conn.execute("SELECT snoozed_until FROM deals WHERE id = ?", (deal_id,)).fetchone()
+            row = conn.execute("SELECT snoozed_until FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone()
             if row is None:
                 raise KeyError(deal_id)
+            said = "Snoozed until %s" % until if until else "Snooze cleared"
             conn.execute("UPDATE deals SET snoozed_until = ?, updated_at = ? WHERE id = ?", (until, stamp, deal_id))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (deal_id, stamp, "snooze", actor, "Snoozed until %s" % until if until else "Snooze cleared",
-                          json.dumps({"snoozed_until": row["snoozed_until"]}), self._op()))
+            if until != row["snoozed_until"]:
+                self._entry(conn, batch, "deal", deal_id, deal_id, "update", {"snoozed_until": row["snoozed_until"]},
+                            {"snoozed_until": until}, actor, said, at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "snooze", actor, said, batch))
         return self.get(deal_id)
 
-    def delete(self, deal_id: str) -> bool:
+    def delete(self, deal_id: str, actor: str = "") -> bool:
+        """Destroy a record and what hangs off it. Only clearing out sample data does this: everything
+        a person or the agent does takes a record off the desk by archiving it, which can be put right."""
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
-            self._forget(conn, deal_id)
-        return cur.rowcount > 0
+            row = conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+            if row is None:
+                return False
+            self._entry(conn, self._op(), "deal", deal_id, deal_id, "delete", before=flat(self._deal(row)), actor=actor, summary="Removed")
+            conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+            conn.execute("DELETE FROM activities WHERE deal_id = ?", (deal_id,))
+            conn.execute("DELETE FROM deal_contacts WHERE deal_id = ?", (deal_id,))
+            conn.execute("DELETE FROM cards WHERE deal_id = ?", (deal_id,))
+            conn.execute("DELETE FROM meta WHERE k IN (?, ?)", ("pending:" + deal_id, "handoff:" + deal_id))
+        return True
 
-    @staticmethod
-    def _forget(conn, deal_id: str) -> None:
-        """Everything kept about a record that is gone."""
-        conn.execute("DELETE FROM activities WHERE deal_id = ?", (deal_id,))
-        conn.execute("DELETE FROM people WHERE deal_id = ?", (deal_id,))
-        conn.execute("DELETE FROM cards WHERE deal_id = ?", (deal_id,))
-        conn.execute("DELETE FROM meta WHERE k IN (?, ?)", ("pending:" + deal_id, "handoff:" + deal_id))
+    def restore(self, deal_id: str, actor: str = "") -> Optional[dict]:
+        """Put back a record that was taken off the desk (its add was undone)."""
+        stamp = now()
+        with self._conn() as conn:
+            row = conn.execute("SELECT archived_at FROM deals WHERE id = ? AND archived_at != ''", (deal_id,)).fetchone()
+            if row is None:
+                return None
+            conn.execute("UPDATE deals SET archived_at = '', updated_at = ? WHERE id = ?", (stamp, deal_id))
+            self._entry(conn, self._op(), "deal", deal_id, deal_id, "restore", {"archived_at": row["archived_at"]}, {"archived_at": ""},
+                        actor, "Put back on the desk", at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
+                         (deal_id, stamp, "updated", actor, "Put back on the desk"))
+        return self.get(deal_id)
 
     def list(self, *, status: Optional[str] = "open", stage: str = "", grp: str = "", owner: str = "",
              query: str = "") -> list:
-        where, params = [], []
+        where, params = ["archived_at = ''"], []
         if status and status != "all":
             where.append("status = ?")
             params.append(status)
@@ -547,16 +714,18 @@ class Store:
 
     def count(self) -> int:
         with self._conn() as conn:
-            return conn.execute("SELECT count(*) FROM deals").fetchone()[0]
+            return conn.execute("SELECT count(*) FROM deals WHERE archived_at = ''").fetchone()[0]
 
     # -- activity -------------------------------------------------------------------------------
     def log(self, deal_id: str, kind: str, text: str, *, actor: str = "", ref: str = "") -> dict:
-        stamp = now()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
-            if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
+            if not conn.execute("SELECT 1 FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone():
                 raise KeyError(deal_id)
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, ref, before, op) VALUES (?,?,?,?,?,?,?,?)",
-                         (deal_id, stamp, kind, actor, text, ref, '{"_log": true}', self._op()))
+            made = conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, ref, op) VALUES (?,?,?,?,?,?,?)",
+                                (deal_id, stamp, kind, actor, text, ref, batch)).lastrowid
+            self._entry(conn, batch, "activity", made, deal_id, "insert", after={"kind": kind, "text": text[:1000], "ref": ref},
+                        actor=actor, summary=text, at=stamp)
             conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
         return {"deal_id": deal_id, "at": stamp, "kind": kind, "actor": actor, "text": text, "ref": ref}
 
@@ -595,144 +764,252 @@ class Store:
                 "SELECT deal_id, max(at) FROM activities WHERE undone = '' AND kind NOT IN " + QUIET_KINDS + " GROUP BY deal_id")}
 
     # -- taking a change back --------------------------------------------------------------------
-    @staticmethod
-    def _last_action(conn, deal_id: str):
-        """The newest row on a record that is a real change still standing (not bookkeeping, not taken back)."""
-        return conn.execute("SELECT * FROM activities WHERE deal_id = ? AND undone = '' AND kind NOT IN ('card', 'undo') "
-                            "ORDER BY id DESC LIMIT 1", (deal_id,)).fetchone()
-
+    # An undo reads the ledger. What one action wrote (a batch) is taken back together, by appending
+    # the opposite entries; nothing on the ledger is altered. It is refused, whole, when a value it
+    # would put back has been changed again since, so a later edit is never overwritten.
     def undoable(self, deal_id: str) -> Optional[dict]:
-        """The last action on a record, if it can be taken back: ``{op, at, actor, text}``."""
+        """The last action on a record that still stands: ``{op, at, actor, text}`` (``op`` is its batch)."""
         with self._conn() as conn:
-            last = self._last_action(conn, deal_id)
-            if last is None or not last["before"]:
+            last = conn.execute("SELECT batch FROM ledger WHERE deal_id = ? AND " + STANDING + " ORDER BY seq DESC LIMIT 1",
+                                (deal_id,)).fetchone()
+            if last is None:
                 return None
-            first = conn.execute("SELECT text FROM activities WHERE deal_id = ? AND op = ? AND undone = '' AND before != '' "
-                                 "ORDER BY id LIMIT 1", (deal_id, last["op"])).fetchone()
-        return {"op": last["op"], "at": last["at"], "actor": last["actor"], "text": (first or last)["text"]}
+            first = conn.execute("SELECT at, actor, summary FROM ledger WHERE deal_id = ? AND batch = ? AND " + STANDING +
+                                 " ORDER BY seq LIMIT 1", (deal_id, last["batch"])).fetchone()
+        return {"op": last["batch"], "at": first["at"], "actor": first["actor"], "text": first["summary"]}
 
     def undoables(self) -> dict:
-        """``{deal_id: op}`` for every record whose last action can be taken back (one query, for a list)."""
+        """``{deal_id: batch}``: for every record, its last action that still stands (one query, for a list)."""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT a.deal_id, a.op, a.before FROM activities a JOIN (SELECT deal_id, max(id) AS id FROM activities "
-                "WHERE undone = '' AND kind NOT IN ('card', 'undo') GROUP BY deal_id) last ON last.id = a.id").fetchall()
-        return {row["deal_id"]: row["op"] for row in rows if row["before"]}
+            rows = conn.execute("SELECT deal_id, batch FROM ledger WHERE seq IN (SELECT max(seq) FROM ledger WHERE deal_id != '' AND "
+                                + STANDING + " GROUP BY deal_id)").fetchall()
+        return {row["deal_id"]: row["batch"] for row in rows}
 
-    def undo(self, deal_id: str, op: str = "", actor: str = "") -> Optional[dict]:
-        """Take back the last action on a record: put back what it replaced, remove what it added.
-
-        Returns ``{"text", "deleted", "deal"}``, or ``None`` when there is nothing to take back or
-        ``op`` is no longer the record's last action (something else has happened since).
-        """
-        stamp = now()
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            last = self._last_action(conn, deal_id)
-            if last is None or not last["before"] or (op and last["op"] != op):
-                return None
-            rows = conn.execute("SELECT * FROM activities WHERE deal_id = ? AND op = ? AND undone = '' AND before != '' "
-                                "ORDER BY id DESC", (deal_id, last["op"])).fetchall()
-            text, deleted = rows[-1]["text"], False
-            for row in rows:
-                try:
-                    before = json.loads(row["before"])
-                except ValueError:
-                    before = {}
-                if before.get("_created"):
-                    deleted = True
-                    break
-                if before.get("_log"):
-                    conn.execute("DELETE FROM activities WHERE id = ?", (row["id"],))
-                    continue
-                if "_person_added" in before:
-                    conn.execute("DELETE FROM people WHERE id = ?", (before["_person_added"],))
-                elif "_person_removed" in before:
-                    person = before["_person_removed"]
-                    conn.execute("INSERT INTO people (deal_id, name, email, title, role, linkedin, phone, note, created_at, updated_at) "
-                                 "VALUES (?,?,?,?,?,?,?,?,?,?)", [deal_id] + [str(person.get(key) or "") for key in PERSON]
-                                 + [str(person.get("created_at") or stamp), stamp])
-                elif "_person_changed" in before:
-                    person = before["_person_changed"]
-                    keys = [key for key in PERSON if key in person]
-                    if keys:
-                        conn.execute("UPDATE people SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in keys),
-                                     [str(person[key]) for key in keys] + [stamp, person.get("id")])
-                else:
-                    keys = [key for key in before if key in RESTORABLE]
-                    if keys:
-                        conn.execute("UPDATE deals SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in keys),
-                                     [json.dumps(before[key]) if key == "fields" else before[key] for key in keys] + [stamp, deal_id])
-                conn.execute("UPDATE activities SET undone = ? WHERE id = ?", (stamp, row["id"]))
-            if deleted:
-                conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
-                self._forget(conn, deal_id)
-            else:
-                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
-                             (deal_id, stamp, "undo", actor, "Took back: " + text))
-        return {"text": text, "deleted": deleted, "deal": None if deleted else self.get(deal_id)}
-
-    # -- the other people on a record ---------------------------------------------------------------
-    def people(self, deal_id: str = "") -> list:
-        """The extra people on one record, or on every record. (The record's own name and email are its first person.)"""
-        with self._conn() as conn:
-            if deal_id:
-                rows = conn.execute("SELECT * FROM people WHERE deal_id = ? ORDER BY id", (deal_id,)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM people ORDER BY id").fetchall()
-        return [dict(row) for row in rows]
-
-    def person(self, person_id: Any) -> Optional[dict]:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
+    @staticmethod
+    def _live(conn, entry) -> Optional[dict]:
+        """The thing a ledger entry is about, as it is now, in the ledger's own terms."""
+        if entry["entity"] == "deal":
+            row = conn.execute("SELECT * FROM deals WHERE id = ? AND archived_at = ''", (entry["entity_id"],)).fetchone()
+            return flat(Store._deal(row)) if row else None
+        table = {"contact": "contacts", "link": "deal_contacts"}.get(entry["entity"])
+        if table is None:
+            return None
+        row = conn.execute("SELECT * FROM %s WHERE id = ?" % table, (entry["entity_id"],)).fetchone()
         return dict(row) if row else None
 
+    def undo(self, deal_id: str, op: str = "", actor: str = "") -> Optional[dict]:
+        """Take back an action on a record: the last one that stands, or the one whose batch is ``op``.
+
+        Returns ``None`` when there is nothing to take back. Otherwise ``{"text", "archived", "deal",
+        "conflicts"}``: with ``conflicts`` (a list of ``{field, then, now}``) nothing was changed,
+        because something the action set has been changed again since.
+        """
+        stamp, batch = now(), self._op()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            standing = conn.execute("SELECT * FROM ledger WHERE deal_id = ? AND " + STANDING + " ORDER BY seq DESC", (deal_id,)).fetchall()
+            if not standing:
+                return None
+            target = op or standing[0]["batch"]
+            entries = [dict(row) for row in standing if row["batch"] == target]
+            if not entries:
+                return None
+            for entry in entries:
+                entry["before"], entry["after"] = json.loads(entry["before"] or "{}"), json.loads(entry["after"] or "{}")
+            text = entries[-1]["summary"]
+            conflicts = []
+            for entry in entries:
+                if entry["entity"] == "deal" and entry["op"] == "insert":
+                    if any(row["batch"] != target for row in standing):     # the record has been worked on since it was added
+                        conflicts.append({"field": "record", "then": "just added", "now": "changed since"})
+                elif entry["op"] == "update" and entry["entity"] in ("deal", "contact", "link"):
+                    live = self._live(conn, entry)
+                    if live is None or (entry["entity"] != "deal" and live.get("archived_at")):
+                        conflicts.append({"field": entry["entity"], "then": "there", "now": "gone"})
+                        continue
+                    for key, left in entry["after"].items():
+                        if key not in SOFT and live.get(key) != left:
+                            conflicts.append({"field": key, "then": left, "now": live.get(key)})
+                elif entry["entity"] == "link" and entry["op"] == "archive":
+                    live = self._live(conn, entry)
+                    if live and conn.execute("SELECT 1 FROM deal_contacts WHERE deal_id = ? AND contact_id = ? AND archived_at = ''",
+                                             (live["deal_id"], live["contact_id"])).fetchone():
+                        conflicts.append({"field": "person", "then": "removed", "now": "on the record again"})
+            if conflicts:
+                return {"text": text, "archived": False, "deal": self._deal(conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()),
+                        "conflicts": conflicts}
+            archived = False
+            for entry in entries:       # newest first
+                kind, what = entry["entity"], entry["op"]
+                before, after = {}, {}
+                if kind == "deal" and what == "insert":
+                    conn.execute("UPDATE deals SET archived_at = ?, updated_at = ? WHERE id = ?", (stamp, stamp, deal_id))
+                    before, after, archived = {"archived_at": ""}, {"archived_at": stamp}, True
+                elif kind == "deal" and what == "update":
+                    row = self._deal(conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone())
+                    live, fields, sets, params = flat(row), dict(row["fields"]), [], []
+                    for key, was in entry["before"].items():
+                        if key in SOFT and live.get(key) != entry["after"].get(key):
+                            continue                                   # touched since: left as it is
+                        before[key], after[key] = live.get(key), was
+                        if key.startswith("fields."):
+                            if was is None:
+                                fields.pop(key[len("fields."):], None)
+                            else:
+                                fields[key[len("fields."):]] = was
+                        elif key == "value_cents":
+                            sets += ["value_cents = ?", "value = ?"]
+                            params += [int(was or 0), int(was or 0) / 100]
+                        elif key in TRACKED:
+                            sets.append(key + " = ?")
+                            params.append(was)
+                    if fields != row["fields"]:
+                        sets.append("fields = ?")
+                        params.append(json.dumps(fields))
+                    if sets:
+                        conn.execute("UPDATE deals SET %s, updated_at = ? WHERE id = ?" % ", ".join(sets), params + [stamp, deal_id])
+                elif kind == "activity":
+                    conn.execute("UPDATE activities SET undone = ? WHERE id = ?", (stamp, entry["entity_id"]))
+                    before, after = {"undone": ""}, {"undone": stamp}
+                elif kind == "contact" and what == "insert":
+                    if not conn.execute("SELECT 1 FROM deal_contacts WHERE contact_id = ? AND archived_at = '' AND deal_id != ?",
+                                        (entry["entity_id"], deal_id)).fetchone():        # nobody else has them: off they go too
+                        conn.execute("UPDATE contacts SET archived_at = ?, updated_at = ? WHERE id = ?", (stamp, stamp, entry["entity_id"]))
+                        before, after = {"archived_at": ""}, {"archived_at": stamp}
+                elif kind in ("contact", "link") and what == "update":
+                    table, keys = ("contacts", CONTACT) if kind == "contact" else ("deal_contacts", ("role",))
+                    put = {key: was for key, was in entry["before"].items() if key in keys}
+                    if put:
+                        conn.execute("UPDATE %s SET %s WHERE id = ?" % (table, ", ".join(key + " = ?" for key in put)),
+                                     list(put.values()) + [entry["entity_id"]])
+                        before, after = {key: entry["after"].get(key) for key in put}, put
+                elif kind == "link" and what == "insert":
+                    conn.execute("UPDATE deal_contacts SET archived_at = ? WHERE id = ?", (stamp, entry["entity_id"]))
+                    before, after = {"archived_at": ""}, {"archived_at": stamp}
+                elif kind == "link" and what == "archive":
+                    conn.execute("UPDATE deal_contacts SET archived_at = '' WHERE id = ?", (entry["entity_id"],))
+                    before, after = {"archived_at": entry["after"].get("archived_at")}, {"archived_at": ""}
+                self._entry(conn, batch, kind, entry["entity_id"], deal_id, "undo", before, after, actor,
+                            "Took back: " + entry["summary"], reverts=entry["seq"], at=stamp)
+            conn.execute("UPDATE activities SET undone = ? WHERE deal_id = ? AND op = ? AND undone = ''", (stamp, deal_id, target))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "undo", actor, "Took back: " + text, batch))
+        return {"text": text, "archived": archived, "deal": None if archived else self.get(deal_id), "conflicts": []}
+
+    # -- the other people on a record ---------------------------------------------------------------
+    # A person is kept once (a contact) and linked to each record they are on, with their part in
+    # that record on the link. Change their title or email and it changes everywhere they appear.
+    PEOPLE = ("SELECT c.id AS id, l.id AS link, l.deal_id AS deal_id, c.name AS name, c.email AS email, c.title AS title, "
+              "l.role AS role, c.linkedin AS linkedin, c.phone AS phone, c.note AS note, l.created_at AS created_at, "
+              "c.updated_at AS updated_at FROM deal_contacts l JOIN contacts c ON c.id = l.contact_id "
+              "WHERE l.archived_at = '' AND c.archived_at = ''")
+
+    def people(self, deal_id: str = "") -> list:
+        """The other people on one record, or every person-on-a-record there is. (A record's own name
+        and email are its first person.) ``id`` is the person, the same on every record they are on."""
+        with self._conn() as conn:
+            if deal_id:
+                rows = conn.execute(self.PEOPLE + " AND l.deal_id = ? ORDER BY l.id", (deal_id,)).fetchall()
+            else:
+                rows = conn.execute(self.PEOPLE + " ORDER BY l.id").fetchall()
+        return [dict(row) for row in rows]
+
+    def person(self, person_id: Any, deal_id: str = "") -> Optional[dict]:
+        """One person: as they are on ``deal_id``, or on the first record they are on."""
+        with self._conn() as conn:
+            row = conn.execute(self.PEOPLE + " AND c.id = ?" + (" AND l.deal_id = ?" if deal_id else "") + " ORDER BY l.id LIMIT 1",
+                               [person_id] + ([deal_id] if deal_id else [])).fetchone()
+        return dict(row) if row else None
+
+    def person_records(self, person_id: Any) -> list:
+        """The ids of the records a person is on."""
+        with self._conn() as conn:
+            return [row[0] for row in conn.execute("SELECT deal_id FROM deal_contacts WHERE contact_id = ? AND archived_at = '' ORDER BY id",
+                                                   (person_id,)).fetchall()]
+
     def person_add(self, deal_id: str, name: str, *, actor: str = "", **values: Any) -> dict:
+        """Put someone on a record. Someone already known by that email is linked, not entered twice."""
         name = " ".join(str(name or "").split())[:120]
         if not name:
             raise ValueError("a name is required")
         clean = {key: " ".join(str(values.get(key) or "").split())[:300] for key in PERSON if key != "name"}
-        stamp = now()
+        clean["email"] = clean["email"].lower()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
+            if not conn.execute("SELECT 1 FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone():
                 raise KeyError(deal_id)
-            cur = conn.execute("INSERT INTO people (deal_id, name, email, title, role, linkedin, phone, note, created_at, updated_at) "
-                               "VALUES (?,?,?,?,?,?,?,?,?,?)", [deal_id, name] + [clean[key] for key in PERSON if key != "name"] + [stamp, stamp])
-            said = "Added %s%s" % (name, " (%s)" % (clean["role"] or clean["title"]) if clean["role"] or clean["title"] else "")
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (deal_id, stamp, "person", actor, said, json.dumps({"_person_added": cur.lastrowid}), self._op()))
-            conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
-            person_id = cur.lastrowid
-        return self.person(person_id)
+            known = conn.execute("SELECT * FROM contacts WHERE lower(email) = ? AND archived_at = ''", (clean["email"],)).fetchone() \
+                if clean["email"] else None
+            said = "Added %s%s" % (name if known is None else known["name"],
+                                   " (%s)" % (clean["role"] or clean["title"]) if clean["role"] or clean["title"] else "")
+            if known is None:
+                contact_id = conn.execute(
+                    "INSERT INTO contacts (name, email, title, linkedin, phone, note, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (name, clean["email"], clean["title"], clean["linkedin"], clean["phone"], clean["note"], stamp, stamp)).lastrowid
+                self._entry(conn, batch, "contact", contact_id, deal_id, "insert", after=dict({key: clean[key] for key in CONTACT if key != "name"}, name=name),
+                            actor=actor, summary=said, at=stamp)
+            else:
+                contact_id, name = known["id"], known["name"]
+                fill = {key: clean[key] for key in CONTACT if key != "name" and clean[key] and not known[key]}     # only what was blank
+                if fill:
+                    conn.execute("UPDATE contacts SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in fill),
+                                 list(fill.values()) + [stamp, contact_id])
+                    self._entry(conn, batch, "contact", contact_id, deal_id, "update", {key: known[key] for key in fill}, fill, actor,
+                                "Updated %s: %s" % (name, ", ".join(fill)), at=stamp)
+            if not conn.execute("SELECT 1 FROM deal_contacts WHERE deal_id = ? AND contact_id = ? AND archived_at = ''", (deal_id, contact_id)).fetchone():
+                link = conn.execute("INSERT INTO deal_contacts (deal_id, contact_id, role, created_at) VALUES (?,?,?,?)",
+                                    (deal_id, contact_id, clean["role"], stamp)).lastrowid
+                self._entry(conn, batch, "link", link, deal_id, "insert", after={"contact_id": contact_id, "role": clean["role"]}, actor=actor,
+                            summary=said, at=stamp)
+                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                             (deal_id, stamp, "person", actor, said, batch))
+                conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
+        return self.person(contact_id, deal_id)
 
-    def person_update(self, person_id: Any, *, actor: str = "", **values: Any) -> Optional[dict]:
-        person = self.person(person_id)
+    def person_update(self, person_id: Any, *, actor: str = "", deal_id: str = "", **values: Any) -> Optional[dict]:
+        """Change a person. Their name, email, title and the rest change on every record they are on;
+        ``role`` is their part in ``deal_id`` only."""
+        person = self.person(person_id, deal_id)
         if person is None:
             return None
+        deal_id = person["deal_id"]
         new = {key: " ".join(str(values[key]).split())[:300] for key in PERSON if values.get(key) is not None}
+        if "email" in new:
+            new["email"] = new["email"].lower()
         new = {key: value for key, value in new.items() if value != person[key] and (key != "name" or value)}
         if not new:
             return person
-        stamp = now()
+        stamp, batch = now(), self._op()
+        said = "Updated %s: %s" % (person["name"], ", ".join(new))
         with self._conn() as conn:
-            conn.execute("UPDATE people SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in new),
-                         list(new.values()) + [stamp, person_id])
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (person["deal_id"], stamp, "person", actor, "Updated %s: %s" % (person["name"], ", ".join(new)),
-                          json.dumps({"_person_changed": dict({key: person[key] for key in new}, id=person["id"])}), self._op()))
-        return self.person(person_id)
+            about = {key: value for key, value in new.items() if key in CONTACT}
+            if about:
+                try:
+                    conn.execute("UPDATE contacts SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in about),
+                                 list(about.values()) + [stamp, person_id])
+                except sqlite3.IntegrityError:
+                    raise ValueError("that email already belongs to someone else on the desk")
+                self._entry(conn, batch, "contact", person_id, deal_id, "update", {key: person[key] for key in about}, about, actor, said, at=stamp)
+            if "role" in new:
+                conn.execute("UPDATE deal_contacts SET role = ? WHERE id = ?", (new["role"], person["link"]))
+                self._entry(conn, batch, "link", person["link"], deal_id, "update", {"role": person["role"]}, {"role": new["role"]}, actor, said, at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "person", actor, said, batch))
+        return self.person(person_id, deal_id)
 
-    def person_remove(self, person_id: Any, *, actor: str = "") -> bool:
-        person = self.person(person_id)
+    def person_remove(self, person_id: Any, *, actor: str = "", deal_id: str = "") -> bool:
+        """Take a person off a record. They stay on any other record they are on."""
+        person = self.person(person_id, deal_id)
         if person is None:
             return False
-        stamp = now()
+        stamp, batch = now(), self._op()
         with self._conn() as conn:
-            conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
-                         (person["deal_id"], stamp, "person", actor, "Removed %s" % person["name"],
-                          json.dumps({"_person_removed": person}), self._op()))
+            conn.execute("UPDATE deal_contacts SET archived_at = ? WHERE id = ?", (stamp, person["link"]))
+            self._entry(conn, batch, "link", person["link"], person["deal_id"], "archive", {"archived_at": ""}, {"archived_at": stamp}, actor,
+                        "Removed %s" % person["name"], at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (person["deal_id"], stamp, "person", actor, "Removed %s" % person["name"], batch))
         return True
 
     # -- companies: a few facts kept per company, whatever records it has ---------------------------
@@ -755,9 +1032,13 @@ class Store:
         with self._conn() as conn:
             conn.execute("INSERT INTO orgs (key, name, updated_at) VALUES (?,?,?) ON CONFLICT (key) DO NOTHING",
                          (key, " ".join(str(name).split())[:200], now()))
+            was = dict(conn.execute("SELECT * FROM orgs WHERE key = ?", (key,)).fetchone())
+            clean = {k: v for k, v in clean.items() if v != was[k]}
             if clean:
                 conn.execute("UPDATE orgs SET %s, updated_at = ? WHERE key = ?" % ", ".join(k + " = ?" for k in clean),
                              list(clean.values()) + [now(), key])
+                self._entry(conn, self._op(), "company", key, "", "update", {k: was[k] for k in clean}, clean, str(values.get("actor") or ""),
+                            "Updated %s: %s" % (was["name"], ", ".join(clean)))
         return self.org_get(name)
 
     def orgs(self) -> list:
@@ -916,14 +1197,17 @@ class Store:
         """How much is in the ledger, for the Setup tab."""
         with self._conn() as conn:
             one = lambda sql, *params: conn.execute(sql, params).fetchone()[0]      # noqa: E731
-            return {"open": one("SELECT count(*) FROM deals WHERE status = 'open'"),
-                    "won": one("SELECT count(*) FROM deals WHERE status = 'won'"),
-                    "lost": one("SELECT count(*) FROM deals WHERE status = 'lost'"),
-                    "samples": one("SELECT count(*) FROM deals WHERE source = ?", sample_source) if sample_source else 0,
+            return {"open": one("SELECT count(*) FROM deals WHERE status = 'open' AND archived_at = ''"),
+                    "won": one("SELECT count(*) FROM deals WHERE status = 'won' AND archived_at = ''"),
+                    "lost": one("SELECT count(*) FROM deals WHERE status = 'lost' AND archived_at = ''"),
+                    "archived": one("SELECT count(*) FROM deals WHERE archived_at != ''"),
+                    "ledger": one("SELECT count(*) FROM ledger"),
+                    "samples": one("SELECT count(*) FROM deals WHERE source = ? AND archived_at = ''", sample_source) if sample_source else 0,
                     "activities": one("SELECT count(*) FROM activities"),
                     "from_sweeps": one("SELECT count(*) FROM activities WHERE ref != ''"),
                     "maps": one("SELECT count(*) FROM markets"),
-                    "people": one("SELECT count(*) FROM people"),
+                    "people": one("SELECT count(*) FROM deal_contacts l JOIN contacts c ON c.id = l.contact_id "
+                                  "WHERE l.archived_at = '' AND c.archived_at = ''"),
                     "declined": one("SELECT count(*) FROM declined"),
                     "lists_waiting": one("SELECT count(*) FROM intakes WHERE status = 'open'")}
 
