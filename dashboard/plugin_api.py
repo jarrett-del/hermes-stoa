@@ -326,8 +326,16 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
 
 @router.get("/setup")
 def setup() -> dict:
-    """What is set up and the rules in force, for the Setup tab. Keys are reported as set or not set only."""
-    return desk().setup()
+    """What is set up and the rules in force, for the Setup tab. Keys are reported as set or not set only.
+    If it cannot be put together at all, the answer says why: this is the tab people open when something is wrong."""
+    try:
+        return desk().setup()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import logging
+        logging.getLogger("hermes.plugins.stoa").error("stoa: the Setup tab could not be put together: %s", exc, exc_info=True)
+        raise HTTPException(500, "Setup could not be put together: %s: %s" % (type(exc).__name__, str(exc)[:300]))
 
 
 @router.post("/tour")

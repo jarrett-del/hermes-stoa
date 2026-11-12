@@ -540,25 +540,43 @@ class Desk:
         """What is set up, what is not, and the rules in force, for the Setup tab. A key or a token is
         reported as set or not set; its value never leaves the server."""
         from . import blueprints
-        tour, playbook, own = self.tour(), self.playbook(), self.own_playbook()
-        tally = self.own_store.tally(demo.SOURCE)
+        problems: list = []
+
+        def read(what: str, fn: Callable, fallback: Any) -> Any:
+            """One thing Setup reports, read by itself: this is the tab people open when something is
+            wrong, so a part that cannot be read is named on it and logged, and the rest still shows."""
+            try:
+                return fn()
+            except Exception as exc:
+                log.warning("stoa: setup could not read %s: %s", what, exc, exc_info=True)
+                problems.append("%s: %s: %s" % (what, type(exc).__name__, str(exc)[:200]))
+                return fallback
+
+        tour = read("the tour", self.tour, {})
+        own = self.own_playbook()
+        playbook = read("the playbook on show", self.playbook, own)
+        empty = dict.fromkeys(("open", "won", "lost", "archived", "ledger", "samples", "activities", "from_sweeps", "maps", "people",
+                               "declined", "lists_waiting"), 0)
+        tally = dict(empty, **read("what is on the desk", lambda: self.own_store.tally(demo.SOURCE), {}))
         real = tally["open"] + tally["won"] + tally["lost"] - tally["samples"]
-        chosen = self.setting("playbook", None) is not None
-        slack = None if self.slack is None else bool(getattr(self.slack, "available", False))
-        pdl, granola = bool(self.secret(PDL_KEY)), bool(self.secret(GRANOLA_KEY))
-        notes_dir = str(self.setting("notes_dir", "") or "")
-        cap = _int(self.setting("pdl_monthly_cap", 50), 50, 0, 10 ** 6)
-        used = _int(self.own_store.meta_get("pdl_calls:" + st.today()[:7], "0"), 0, 0, 10 ** 9)
-        allow = self.setting("channels", []) or []
+        chosen = read("the playbook setting", lambda: self.setting("playbook", None) is not None, False)
+        slack = read("Slack", lambda: None if self.slack is None else bool(getattr(self.slack, "available", False)), None)
+        pdl = read("the lookup key", lambda: bool(self.secret(PDL_KEY)), False)
+        granola = read("the Granola key", lambda: bool(self.secret(GRANOLA_KEY)), False)
+        notes_dir = read("the notes folder", lambda: str(self.setting("notes_dir", "") or ""), "")
+        cap = read("the lookup cap", lambda: _int(self.setting("pdl_monthly_cap", 50), 50, 0, 10 ** 6), 50)
+        used = read("lookups used", lambda: _int(self.own_store.meta_get("pdl_calls:" + st.today()[:7], "0"), 0, 0, 10 ** 9), 0)
+        allow = read("the chats setting", lambda: self.setting("channels", []) or [], [])
         if isinstance(allow, str):
             allow = [c.strip() for c in allow.split(",") if c.strip()]
-        chats = [str(c) for c in allow if str(c) != "cron"]
-        users = sorted(self.slack_users())
+        allow = [str(c) for c in allow] if isinstance(allow, (list, tuple, set)) else []
+        chats = [c for c in allow if c != "cron"]
+        users = read("who may press Slack buttons", lambda: sorted(self.slack_users()), [])
+        roots = read("the folders it may read", lambda: [str(root) for root in self.import_roots()], [])
+        catalog = read("the playbooks", self.library.catalog, [])
+        level = read("the autonomy setting", self.autonomy, "ask")
         terms = own.terms
-        try:
-            size = (self.data_dir / "desk.db").stat().st_size
-        except OSError:
-            size = 0
+        size = read("the size of the file", lambda: (self.data_dir / "desk.db").stat().st_size, 0)
         checklist = [
             {"id": "playbook", "done": chosen or real > 0, "title": "Pick the playbook that fits how you sell",
              "detail": "You are on %s: %s." % (own.title, " → ".join(s["label"] for s in own.stages) + " → " + own.won["label"])},
@@ -595,7 +613,7 @@ class Desk:
             {"label": "Who may press a Slack button",
              "value": "These Slack members: %s." % ", ".join(users) if users else "Only the person a card was posted for."},
             {"label": "What a scheduled job may change by itself", "own": True,     # own: the page gives it a box of its own
-             "value": "%s. %s" % (AUTONOMY[self.autonomy()]["label"], AUTONOMY[self.autonomy()]["summary"])},
+             "value": "%s. %s" % (AUTONOMY[level]["label"], AUTONOMY[level]["summary"])},
             {"label": "What you declined", "own": True,
              "value": ("%d declined proposals are remembered for 90 days and not made again." % tally["declined"])
              if tally["declined"] else "A proposal you decline is remembered for 90 days and not made again."},
@@ -604,20 +622,20 @@ class Desk:
              "value": "Paused while sample data is on show." if tour
              else "Cannot use the desk: add cron to the channels setting." if allow and "cron" not in allow
              else "May use the desk."},
-            {"label": "Files it may read", "value": "CSV and TSV only, from: %s." % ", ".join(str(root) for root in self.import_roots())},
+            {"label": "Files it may read", "value": "CSV and TSV only, from: %s." % ", ".join(roots)},
             {"label": "Files it writes", "value": "Exports and saved maps, in %s." % (self.data_dir / "exports")},
             {"label": "Paid lookups", "value": ("At most %d a month." % cap if cap else "No monthly cap.") if pdl else "None: no lookup key is set."},
         ]
         return {
-            "ok": True, "version": _version(),
+            "ok": True, "version": _version(), "problems": problems,
             "tour": {"example": tour["example"], "title": demo.EXAMPLES[tour["example"]]["title"], "since": tour["since"]} if tour else None,
             "examples": [{"id": key, "title": example["title"], "playbook": example["playbook"]} for key, example in demo.EXAMPLES.items()],
             "playbook": {"name": own.name, "title": own.title, "door": own.door, "summary": own.summary, "origin": own.origin,
                          "chosen": chosen, "shown": playbook.name},
-            "playbooks": [dict(entry, active=entry["name"] == own.name) for entry in self.library.catalog()],
+            "playbooks": [dict(entry, active=entry["name"] == own.name) for entry in catalog],
             "can_switch": bool(self.can_configure),
-            "autonomy": {"level": self.autonomy(), "levels": [{"id": key, "label": level["label"], "summary": level["summary"]}
-                                                              for key, level in AUTONOMY.items()]},
+            "autonomy": {"level": level, "levels": [{"id": key, "label": entry["label"], "summary": entry["summary"]}
+                                                    for key, entry in AUTONOMY.items()]},
             "declined": tally["declined"],
             "checklist": checklist, "connections": connections, "rules": rules,
             "automations": [{"name": bp["name"], "title": bp["title"], "description": bp["description"]} for bp in blueprints.BLUEPRINTS],

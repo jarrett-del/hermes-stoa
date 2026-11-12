@@ -565,6 +565,7 @@ function Fit({ value }) {
   return h('span', { className: 'stoa-fit', title: 'Fit ' + n + ' of 5' }, '●'.repeat(n), h('s', null, '●'.repeat(5 - n)))
 }
 
+// (Setup and Welcome say why with `why(error)`.)
 function Unavailable({ error, loading }) {
   return h('div', { className: 'stoa stoa-scroll' }, h(Style), h('div', { className: 'stoa-eyebrow' }, 'Stoa'),
     h('p', { className: 'stoa-sub', style: { marginTop: 8 } }, loading ? 'Opening the desk…'
@@ -1251,7 +1252,7 @@ function Welcome({ skip }) {
   const query = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000 })
   const [busy, setBusy] = useState(false)
   const setup = query.data
-  if (!setup) return h('p', { className: 'stoa-sub' }, query.error ? 'The desk is not answering yet. Reload in a moment.' : 'Opening the desk…')
+  if (!setup) return h('p', { className: 'stoa-sub' }, query.error ? 'The desk is not answering yet (' + why(query.error) + '). Reload in a moment.' : 'Opening the desk…')
   const pick = item => { setBusy(true); switchPlaybook(item.name, item.title).then(ok => { setBusy(false); if (ok) skip() }) }
   return h('div', { className: 'stoa-welcome' },
     h('div', { className: 'stoa-eyebrow' }, 'Welcome to Stoa'),
@@ -1297,6 +1298,13 @@ const ALWAYS = ['Keeps one ledger: every change to a record or a person, what it
   'Logs what it finds in your email, calls and Slack on the right record, whoever on it sent it.', 'Posts cards in Slack whose buttons act at once, and only for the people allowed to press them.',
   'Lets you snooze anything until a date, and export everything at any time.']
 
+/** An error from the desk's backend, as a line a person can pass on: its message, and the status if there is one. */
+function why(error) {
+  if (!error) return ''
+  const parts = [error.status || (error.response && error.response.status) || '', error.detail || (error.body && error.body.detail) || '', error.message || String(error)]
+  return [...new Set(parts.map(part => String(part || '').trim()).filter(Boolean))].join(' · ').slice(0, 400) || 'No reason was given.'
+}
+
 function Lamp({ on }) {
   return h('i', { className: 'stoa-lamp', 'data-on': on === true ? '1' : on === false ? '0' : '', 'aria-label': on === true ? 'on' : on === false ? 'off' : 'not checked' })
 }
@@ -1306,7 +1314,15 @@ function Setup({ state, go }) {
   const [busy, setBusy] = useState(false)
   const [switching, setSwitching] = useState(false)
   const setup = query.data
-  if (!setup) return h('p', { className: 'stoa-sub' }, query.error ? 'Setup is not answering. If you just updated Stoa, restart the gateway and reload.' : 'Loading…')
+  if (!setup) {
+    if (!query.error) return h('p', { className: 'stoa-sub' }, 'Loading…')
+    // Say what actually went wrong: this is the tab people open when something is wrong.
+    return h('div', { className: 'stoa-box', style: { maxWidth: 720 } },
+      h('div', { className: 'stoa-name' }, 'Setup is not answering'),
+      h('p', { className: 'stoa-sub', style: { margin: '6px 0 0', overflowWrap: 'anywhere' } }, why(query.error)),
+      h('p', { className: 'stoa-sub', style: { margin: '6px 0 0' } }, 'The rest of the desk is not affected. If Stoa was just updated, restart the gateway (hermes gateway restart) and reload.'),
+      h('div', { className: 'stoa-btns' }, h(Btn, { disabled: query.isFetching, onClick: () => query.refetch() }, query.isFetching ? 'Trying…' : 'Try again')))
+  }
   const data = setup.data, sets = setup.playbook_sets, left = setup.checklist.filter(item => !item.done).length
   const wait = promise => { setBusy(true); return Promise.resolve(promise).then(() => setBusy(false)) }
   const button = item => {
@@ -1322,6 +1338,9 @@ function Setup({ state, go }) {
     h('div', { className: 'stoa-sechead', style: { padding: '0 0 8px' } }, h('span', { className: 'stoa-eyebrow' }, title), right ? h('span', { className: 'stoa-sub' }, right) : null),
     children)
   return h('div', { className: 'stoa-setup' },
+    (setup.problems || []).length ? h('div', { className: 'stoa-box stoa-setbox', 'data-wide': '1', style: { borderColor: 'var(--ui-orange)' } },
+      h('div', { className: 'stoa-name' }, 'Some of this could not be read'),
+      setup.problems.map((line, index) => h('p', { key: index, className: 'stoa-sub', style: { margin: '4px 0 0', overflowWrap: 'anywhere' } }, line))) : null,
     box('Get started', left ? left + ' left' : 'all done', setup.checklist.map(item => h('div', { key: item.id, className: 'stoa-check', 'data-done': item.done ? '1' : '0' },
       h('i', { className: 'stoa-tick', 'aria-hidden': true }, item.done ? '✓' : ''),
       h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name', style: { display: 'block' } }, item.title), h('span', { className: 'stoa-sub' }, item.detail)),

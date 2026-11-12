@@ -620,7 +620,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 190 tests, no network
+python3 -m unittest discover -s tests     # 191 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

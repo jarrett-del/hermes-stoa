@@ -1106,6 +1106,24 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(rules["Scheduled jobs"], "Cannot use the desk: add cron to the channels setting.")
         self.assertEqual((data["data"]["records"], data["data"]["samples"], data["data"]["activities"] > 0), (1, 0, True))
 
+    def test_one_part_that_cannot_be_read_does_not_take_the_tab_down(self):
+        desk = self.fresh({"playbook": "recruiting"})
+        desk.deal({"action": "add", "name": "Ada Quill"})
+
+        def broken():
+            raise OSError("disk went away")
+
+        desk.import_roots = broken
+        desk.slack_users = broken
+        desk._get_secret = lambda name: (_ for _ in ()).throw(RuntimeError("no scope"))      # swallowed where secrets are read: not a problem
+        with self.assertLogs("hermes.plugins.stoa", level="WARNING") as logged:
+            data = desk.setup()
+        self.assertEqual((data["ok"], data["data"]["records"], len(data["checklist"]), len(data["automations"])), (True, 1, 5, 7))
+        self.assertEqual(sorted(data["problems"]), ["the folders it may read: OSError: disk went away", "who may press Slack buttons: OSError: disk went away"])
+        self.assertEqual(len(logged.output), 2)
+        self.assertEqual({rule["label"]: rule["value"] for rule in data["rules"]}["Files it may read"], "CSV and TSV only, from: .")
+        self.assertEqual(self.fresh({"playbook": "recruiting"}).setup()["problems"], [])
+
     def test_on_tour_it_still_counts_the_real_desk(self):
         desk = self.fresh({"playbook": "recruiting"})
         desk.deal({"action": "add", "name": "Ada Quill"})
