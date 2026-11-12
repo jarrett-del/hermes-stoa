@@ -241,7 +241,7 @@ class Intake:
         row["evidence"] = _evidence(raw.get("evidence"))
         row["case"] = _text(raw.get("why") or raw.get("because"), 300)
         row["person"] = _person(raw.get("person"))
-        row["lost_reason"] = _text(raw.get("lost_reason"), 60)
+        row["lost_reason"] = playbook.reason(_text(raw.get("lost_reason"), 200))
         bill, came = raw.get("invoice"), raw.get("payment")
         # money a proposal may carry: an invoice to put on the record, or a payment that came in on one
         row["invoice"] = {"amount": st.to_cents(bill.get("amount")) / 100, "number": _text(bill.get("number"), 40),
@@ -289,6 +289,8 @@ class Intake:
         if _text(row.get("stage")) and not stage:
             warnings.append("stage '%s' is not in this playbook" % _text(row.get("stage"), 30))
         row["stage"] = stage or ""
+        if row["lost_reason"] and stage == playbook.lost["id"] and row["lost_reason"] not in playbook.lost["reasons"]:
+            warnings.append("the reason is kept as written; this playbook's own are: %s" % ", ".join(playbook.lost["reasons"]))
         row["value"] = st._number(row.get("value"))
         return row, warnings, ignored
 

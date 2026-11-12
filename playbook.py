@@ -67,6 +67,26 @@ class Playbook:
             return self.lost
         return None
 
+    def reason(self, text: Any) -> str:
+        """Why a record was lost, in the playbook's own words where they fit: a listed reason however it is
+        capitalised, or the one the text names. Otherwise the text itself, kept short and never cut mid-word."""
+        said = " ".join(str(text or "").split())
+        if not said:
+            return ""
+        low = said.lower()
+        for listed in self.lost["reasons"]:
+            if listed.lower() == low:
+                return listed
+        named = [listed for listed in self.lost["reasons"] if listed.lower() in low]
+        if len(named) == 1:
+            return named[0]
+        if re.fullmatch(r"[a-z]{4,}", low):      # one word ("Compensation"): the one reason with a word that starts the same way
+            near = [listed for listed in self.lost["reasons"]
+                    if any(len(word) >= 4 and (word.startswith(low[:4])) for word in re.findall(r"[a-z]+", listed.lower()))]
+            if len(near) == 1:
+                return near[0]
+        return said if len(said) <= 60 else said[:60].rsplit(" ", 1)[0].rstrip(" ,;:-")
+
     def label(self, stage_id: str) -> str:
         stage = self.stage(stage_id)
         return stage["label"] if stage else stage_id

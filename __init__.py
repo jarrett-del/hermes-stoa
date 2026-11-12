@@ -57,7 +57,12 @@ def _session() -> dict:
         from gateway.session_context import get_session_env
     except Exception:
         return {}
-    return {"platform": (get_session_env("HERMES_SESSION_PLATFORM") or "").lower(),
+    platform = (get_session_env("HERMES_SESSION_PLATFORM") or "").lower()
+    if str(get_session_env("HERMES_CRON_SESSION") or "").strip().lower() in ("1", "true", "yes", "on"):
+        # A scheduled run. Hermes gives it no platform (its delivery target is not a sender) and marks the run
+        # itself instead; read as it stands, it would pass for someone at a terminal and nothing would be held.
+        platform = "cron"
+    return {"platform": platform,
             "chat_id": get_session_env("HERMES_SESSION_CHAT_ID") or "",
             "thread_id": get_session_env("HERMES_SESSION_THREAD_ID") or "",
             "session_key": get_session_env("HERMES_SESSION_KEY") or "",

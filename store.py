@@ -1080,6 +1080,24 @@ class Store:
             row = conn.execute("SELECT * FROM invoices WHERE id = ? AND archived_at = ''", (invoice_id,)).fetchone()
         return self._invoice(row) if row else None
 
+    def invoice_numbered(self, number: Any) -> list:
+        """Every invoice on the desk with this number (failing that, this id). Removed ones are left out."""
+        want = str(number or "").strip().lower().lstrip("#")
+        if not want:
+            return []
+        listed = self.invoices()
+        return ([i for i in listed if i["number"] and i["number"].lower().lstrip("#") == want]
+                or [i for i in listed if str(i["id"]) == want])
+
+    def invoice_last(self, deal_id: str, invoice_id: Any = None) -> Optional[dict]:
+        """The last action that still stands on a record's invoices, or on one of them: ``{op, invoice_id, text}``."""
+        one = invoice_id not in (None, "")
+        with self._conn() as conn:
+            row = conn.execute("SELECT batch, entity_id, summary FROM ledger WHERE deal_id = ? AND entity = 'invoice' AND " + STANDING
+                               + (" AND entity_id = ?" if one else "") + " ORDER BY seq DESC LIMIT 1",
+                               (deal_id, str(invoice_id)) if one else (deal_id,)).fetchone()
+        return {"op": row["batch"], "invoice_id": row["entity_id"], "text": row["summary"]} if row else None
+
     @staticmethod
     def _named(invoice: dict) -> str:
         return "Invoice %s" % invoice["number"] if invoice.get("number") else "Invoice"

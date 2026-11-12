@@ -28,7 +28,7 @@ playbook's words with the user. In tool arguments the fields are always `deal` a
 | "Add Dana from Kestrel to the Northwind search" | `gtm_deal(action="add", ...)`, then `gtm_card` so they see it |
 | "I spoke to Dana, she wants 210 base" | `gtm_deal(action="log", kind="call", text=..., next_step=...)` and update `fields` |
 | "Move Dana to submitted" | `gtm_deal(action="move", stage="submitted")` |
-| "We lost Kestrel on price" | `gtm_deal(action="close", outcome="lost", reason=...)` |
+| "We lost Kestrel on price" | `gtm_deal(action="close", outcome="lost", reason=...)`, the reason in the playbook's own words when one of its reasons fits |
 | "What's on my plate?" / "What needs me today?" | `gtm_pipeline(view="today")`, then answer in a few lines, most pressing first |
 | "Done, I sent Dana the references" | `gtm_deal(action="done", deal="dana", next_step=..., next_due=...)`: it logs the step as done and sets what comes next |
 | "Not until after the 20th" / "park Kestrel for two weeks" | `gtm_deal(action="snooze", until="2026-11-21")` or `days=14`: it leaves every attention list until then |
@@ -171,7 +171,12 @@ they billed someone or were paid, record it:
   yet. `status="draft"` if it has not gone out.
 - "Kestrel paid" / "they paid half" → `gtm_invoice(action="pay", deal=..., invoice="1042",
   amount=...)`; without an amount, everything still owed. Name the invoice when the record has
-  more than one open.
+  more than one open. An invoice's number finds its record, so "1042 was paid" needs no `deal`. If
+  the tool says the invoice is on another record than the one you named, tell the person which,
+  and ask before recording anything.
+- "That payment was a mistake" / "undo the invoice" → `gtm_invoice(action="undo", invoice="1042")`:
+  it takes back the last thing done to that invoice (a payment, a void, an edit, or adding it).
+  Do not delete and re-enter an invoice to correct it.
 - "How is cash?" / "what is overdue?" / "what will close this month?" →
   `gtm_pipeline(view="cash")`: won this month, collected, owed, overdue, won but not invoiced, the
   forecast by expected close date, and where won work stands. Lead with what is overdue and what

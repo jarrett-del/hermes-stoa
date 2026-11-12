@@ -1487,6 +1487,31 @@ class CashTests(unittest.TestCase):
         self.desk.deal({"action": "snooze", "deal": self.fees, "days": 5})
         self.assertEqual(self.desk.today()["counts"]["invoices_overdue"], 0)
 
+    def test_a_payment_entered_by_mistake_is_taken_back_and_the_number_alone_finds_the_invoice(self):
+        self.desk.invoice({"action": "add", "deal": self.site, "amount": 22000, "number": "1043"})
+        paid = self.desk.invoice({"action": "pay", "invoice": "1043", "amount": 11000})          # no record named: the number says which
+        self.assertEqual((paid["ok"], paid["deal"], paid["invoice"]["paid"]), (True, self.site, 11000.0))
+        back = self.desk.invoice({"action": "undo", "invoice": "#1043"})
+        self.assertTrue(back["ok"], back)
+        self.assertIn("received", back["undid"])
+        self.assertEqual((back["invoices"][0]["paid"], back["money"]["paid"], back["money"]["owed"]), (0.0, 0.0, 22000.0))
+        self.desk.deal({"action": "update", "deal": self.site, "next_step": "Send the statement"})     # something else, later
+        again = self.desk.invoice({"action": "undo", "deal": self.site})       # the last thing done to its invoices: adding it
+        self.assertTrue(again["ok"], again)
+        self.assertEqual((again["invoices"], self.desk.store.get(self.site)["next_step"]), ([], "Send the statement"))
+        self.assertFalse(self.desk.invoice({"action": "undo", "deal": self.site})["ok"])
+        self.assertIn("undo", schemas.GTM_INVOICE["parameters"]["properties"]["action"]["enum"])
+
+    def test_an_invoice_named_with_the_wrong_record_changes_nothing_and_says_where_it_is(self):
+        self.desk.invoice({"action": "add", "deal": self.site, "amount": 22000, "number": "1043"})
+        out = self.desk.invoice({"action": "pay", "deal": "Brand refresh", "invoice": "1043"})
+        self.assertFalse(out["ok"])
+        self.assertIn("it is on Website rebuild", out["error"])
+        self.assertIn("Nothing was changed", out["error"])
+        self.assertEqual(self.desk.store.invoices(self.site)[0]["paid"], 0.0)
+        self.assertIn("which invoice", self.desk.invoice({"action": "pay"})["error"])
+        self.assertIn("no invoice", self.desk.invoice({"action": "pay", "deal": self.site, "invoice": "9999"})["error"])
+
     def test_a_proposal_can_carry_an_invoice_a_payment_and_a_close_date(self):
         self.desk.store.invoice_add(self.site, 30000, number="1042", due_on=self.day(20))
         out = self.desk.intake.propose({"kind": "proposal", "source": "activity sweep", "rows": [
@@ -1684,6 +1709,38 @@ class ApprovalTests(unittest.TestCase):
              "evidence": [{"kind": "email", "at": "2026-11-10", "who": "Dana Whitfield", "text": "Yes, please submit me to Northwind.", "ref": "gmail:18c"}]},
             {"record": self.marcus, "next_step": "Send the comp range", "next_due": "+2d", "why": "He asked for it twice."},
             {"record": self.marcus, "person": {"name": "Lena Ortiz", "email": "lena@fathom.example", "title": "VP Engineering"}}], **more}, {})
+
+    def test_a_reason_for_a_loss_is_put_in_the_playbooks_words_where_they_fit(self):
+        playbook = self.desk.playbook()
+        self.assertEqual(playbook.reason("took another offer"), "Took another offer")
+        self.assertEqual(playbook.reason("Bad timing, she is mid-launch"), "Timing")
+        self.assertEqual(playbook.reason("Compensation"), "Comp mismatch")          # one word, and one reason starts the same way
+        self.assertEqual(playbook.reason("Relocation"), "Relocation")
+        cut = playbook.reason("Candidate withdrew: accepted a counter-offer from current employer")
+        self.assertEqual(cut, "Candidate withdrew: accepted a counter-offer from current")      # kept as said, and never cut mid-word
+        self.desk.deal({"action": "close", "deal": self.marcus, "outcome": "lost", "reason": "he is not interested, he says"})
+        self.assertEqual(self.desk.store.get(self.marcus)["lost_reason"], "Not interested")
+        out = self.desk.intake.propose({"kind": "proposal", "source": "activity sweep", "rows": [
+            {"record": self.dana, "stage": "passed", "lost_reason": "Withdrew after a counter-offer from her employer"},
+            {"record": self.desk.store.find("Callum Reyes")["id"], "stage": "passed", "lost_reason": "comp mismatch"}]}, {})
+        rows = self.desk.intake.view(out["id"])["rows"]
+        self.assertIn("Not a fit, Not interested", rows[0]["warnings"][0])         # the person, and the agent, see the playbook's own
+        self.assertEqual(rows[1]["warnings"], [])
+
+    def test_a_client_named_in_the_group_is_found_with_the_people_on_its_records(self):
+        self.desk.contact({"action": "add", "deal": self.dana, "name": "Marta Novak", "title": "Hiring Manager", "role": "hiring manager"})
+        out = self.desk.company("Northwind")              # no record's company: here it is the client, kept in the search's name
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["groups"], ["Staff Backend · Northwind"])
+        self.assertEqual(sorted(r["name"] for r in out["records"]), ["Dana Whitfield", "Marcus Oyelaran", "Priya Raman"])
+        self.assertEqual([(p["name"], p["record_name"]) for p in out["people"]], [("Marta Novak", "Dana Whitfield")])
+        self.assertIn("search", out["note"])
+        self.assertNotIn("groups", self.desk.company("North"))                     # a whole word, not a fragment
+        found = self.desk.find_people("northwind")["people"]
+        self.assertIn("Marta Novak", [p["name"] for p in found])
+        marta = next(p for p in found if p["name"] == "Marta Novak")        # on a candidate's record, not at the candidate's employer
+        self.assertEqual((marta["company"], marta["record"]["company"]), ("", "Kestrel Labs"))
+        self.assertTrue(self.desk.company("Kestrel Labs")["ok"])                   # a real company is found as before
 
     def test_each_proposal_waits_with_what_it_rests_on(self):
         out = self.propose()
@@ -2171,6 +2228,35 @@ class RegisterTests(unittest.TestCase):
             self.assertEqual(section(info), "", info)
         self.assertIn("not available", json.loads(self.ctx.tools["gtm_pipeline"]({}))["error"])
         self.assertIn("not available", self.ctx.commands["gtm"](""))
+
+    def test_a_scheduled_run_is_known_by_hermes_own_mark_not_by_a_platform(self):
+        """Hermes runs a scheduled job with an empty platform and HERMES_CRON_SESSION set. Read as a terminal
+        session it would be held to nothing: found with a real scheduled run on 0.13.1, which changed a stage and
+        marked an invoice paid at the lowest autonomy level."""
+        env = {"HERMES_SESSION_PLATFORM": "", "HERMES_CRON_SESSION": "1"}
+        fake = types.SimpleNamespace(get_session_env=lambda name, default="": env.get(name, default))
+        patcher = mock.patch.dict(sys.modules, {"gateway": types.ModuleType("gateway"), "gateway.session_context": fake})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertEqual(stoa._session()["platform"], "cron")
+        refused = json.loads(self.ctx.tools["gtm_pipeline"]({}))             # channels is ["C1"]: scheduled jobs are not opted in
+        self.assertIn("not available", refused["error"])
+        self.ctx.settings["channels"] = ["C1", "cron"]
+        desk = stoa.LIVE_DESKS[-1]
+        made = desk.deal({"action": "add", "name": "Ada Quill", "company": "Fathom Data", "value": 20000})["deal"]
+        held = json.loads(self.ctx.tools["gtm_deal"]({"action": "move", "deal": made["id"], "stage": "next"}))
+        self.assertTrue(held.get("held"), held)
+        self.assertEqual(desk.store.get(made["id"])["stage"], made["stage"])
+        desk.deal({"action": "close", "deal": made["id"], "outcome": "won"})
+        desk.invoice({"action": "add", "deal": made["id"], "amount": 20000, "number": "7"})
+        paid = json.loads(self.ctx.tools["gtm_invoice"]({"action": "pay", "invoice": "7"}))
+        self.assertTrue(paid.get("held"), paid)
+        self.assertEqual(desk.store.invoices(made["id"])[0]["paid"], 0.0)
+        self.assertEqual(len(desk.intake.queue()), 2)                      # both wait for a person
+        env["HERMES_CRON_SESSION"] = ""                                        # the same calls from a person at a terminal go through
+        self.assertEqual(stoa._session()["platform"], "")
+        self.assertTrue(json.loads(self.ctx.tools["gtm_invoice"]({"action": "pay", "invoice": "7"}))["ok"])
+        self.assertEqual(desk.store.invoices(made["id"])[0]["paid"], 20000.0)
 
     def test_a_scheduled_job_is_held_at_the_tool_and_a_person_is_not(self):
         desk = stoa.LIVE_DESKS[-1]

@@ -856,7 +856,10 @@ class Desk:
             row.update({key: args.get(key) for key in ("name", "company", "group", "stage", "value", "owner", "email", "linkedin",
                                                       "source", "next_step", "next_due", "fields", "note") if args.get(key) not in (None, "")})
         else:
-            deal, error = self._resolve(args.get("deal"))
+            if action == "invoice_pay":         # a payment may come with only the invoice's number
+                deal, error = self._invoice_record(args.get("deal"), str(args.get("invoice") or "").strip())
+            else:
+                deal, error = self._resolve(args.get("deal"))
             if error:
                 return error
             row["record"] = deal["id"]
@@ -1032,6 +1035,8 @@ class Desk:
         status = playbook.status_of(stage)
         # Won: the work begins, at the playbook's first delivery stage. Anything else: there is no delivery to speak of.
         delivery = (playbook.delivery[0]["id"] if playbook.delivery else "") if status == "won" else ""
+        if status == "lost":
+            reason = playbook.reason(reason)      # "Timing" however it was put, where the playbook has the word for it
         return self.store.move(deal["id"], stage, status=status, reason=reason, actor=actor,
                                label=playbook.label(stage), expect=deal["stage"], delivery=delivery)
 
@@ -1224,12 +1229,15 @@ class Desk:
         if action == "list" and not args.get("deal"):
             cash = self.cash()
             return {"ok": True, "action": "list", "invoices": cash["invoices"], "strip": cash["strip"]}
-        deal, error = self._resolve(args.get("deal"))
+        named = str(args.get("invoice") or "").strip()
+        deal, error = self._invoice_record(args.get("deal"), named if action not in ("list", "add") else "")
         if error:
             return error
         if action == "list":
             return {"ok": True, "action": "list", "deal": deal["id"], "name": deal["name"], "money": self.money(deal),
                     "invoices": [self._bill(i) for i in self.store.invoices(deal["id"])]}
+        if action == "undo":
+            return self._invoice_undo(deal, named, actor)
         try:
             with self.store.operation():
                 if action == "add":
@@ -1272,13 +1280,58 @@ class Desk:
                         made = None
                     else:
                         return {"ok": False, "error": "unknown action '%s'" % action,
-                                "actions": ["list", "add", "send", "pay", "void", "update", "remove"]}
+                                "actions": ["list", "add", "send", "pay", "void", "update", "remove", "undo"]}
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         deal = self.store.get(deal["id"])
         self._changed(deal)
         return {"ok": True, "action": action, "deal": deal["id"], "name": deal["name"], "invoice": self._bill(made) if made else None,
                 "money": self.money(deal), "invoices": [self._bill(i) for i in self.store.invoices(deal["id"])]}
+
+    def _invoice_record(self, ref: Any, named: str = "") -> tuple:
+        """``(deal, error)`` for an invoice action: the record named, or, with none named, the one the invoice
+        number belongs to ("invoice 1043 was paid"). A record and an invoice that do not go together are an
+        error that says where the invoice is, so a payment is never put on the wrong one."""
+        ref = str(ref or "").strip()
+        homes = self.store.invoice_numbered(named) if named else []
+        listed = [self._bill(i, (self.store.get(i["deal_id"]) or {}).get("name", "")) for i in homes]
+        if not ref and homes:
+            if len({i["deal_id"] for i in homes}) > 1:
+                return None, {"ok": False, "invoices": listed,
+                              "error": "more than one record has an invoice '%s'; pass `deal` as well. Nothing was changed." % named[:40]}
+            ref = homes[0]["deal_id"]
+        if not ref:
+            return None, {"ok": False, "error": "say which record (`deal`: its id or name) or which invoice (`invoice`: its number)"}
+        deal, error = self._resolve(ref)
+        if error:
+            return None, error
+        if homes and all(i["deal_id"] != deal["id"] for i in homes):
+            where = [self.store.get(i["deal_id"]) for i in homes]
+            return None, {"ok": False, "invoices": listed,
+                          "error": "invoice %s is not on %s; it is on %s. Pass that record as `deal`, or leave `deal` out. Nothing was changed."
+                                   % (named[:40], deal["name"], " and ".join("%s (%s)" % (d["name"], d["grp"] or d["company"]) for d in where if d))}
+        return deal, None
+
+    def _invoice_undo(self, deal: dict, named: str, actor: str) -> dict:
+        """Take back the last thing done to an invoice: a payment entered by mistake, a void, an edit, or the
+        invoice itself. With no invoice named, the last thing done to any of the record's invoices."""
+        target = None
+        if named:
+            want = named.lower().lstrip("#")
+            target = next((i for i in self.store.invoices(deal["id"])
+                           if str(i["id"]) == want or (i["number"] and i["number"].lower().lstrip("#") == want)), None)
+        last = self.store.invoice_last(deal["id"], target["id"] if target else None)
+        if last is not None and named and target is None and named.lower().lstrip("#") not in last["text"].lower():
+            last = None                         # a removed invoice is found by what the ledger says of it, or not at all
+        if last is None:
+            return {"ok": False, "error": "Nothing to take back on %s: that has been taken back already, or nothing has been done to it."
+                                          % ("invoice %s" % named[:40] if named else "the invoices on %s" % deal["name"]),
+                    "invoices": [self._bill(i) for i in self.store.invoices(deal["id"])]}
+        out = self.undo(deal["id"], op=last["op"], actor=actor)
+        if out.get("ok"):
+            fresh = self.store.get(deal["id"]) or deal
+            out.update(money=self.money(fresh), invoices=[self._bill(i) for i in self.store.invoices(deal["id"])])
+        return out
 
     def odds(self, playbook: Playbook, deals: list) -> dict:
         """How likely a record at each stage is to be won, as a percentage, and what that rests on:
@@ -1508,10 +1561,15 @@ class Desk:
         playbook, found = self.playbook(), []
         for deal in self.store.list(status="all"):
             for person in self.people(deal):
-                text = " ".join(str(person.get(key) or "") for key in ("name", "email", "title", "role")).lower() + " " + deal["company"].lower()
+                text = (" ".join(str(person.get(key) or "") for key in ("name", "email", "title", "role")) + " " + deal["company"]
+                        + " " + deal["grp"]).lower()
                 if query in text:
+                    # The record's company is its own person's. Someone else on the record is said to be there only when
+                    # their address agrees: a hiring manager on a candidate's record works for the client, not the candidate's employer.
+                    there = person["primary"] or (st.email_domain(person.get("email")) and
+                                                  st.email_domain(person.get("email")) == st.email_domain(deal["email"]))
                     found.append(dict({key: person.get(key) or "" for key in ("name", "email", "title", "role")},
-                                      primary=person["primary"], company=deal["company"], record=self._brief(deal, playbook)))
+                                      primary=person["primary"], company=deal["company"] if there else "", record=self._brief(deal, playbook)))
         found.sort(key=lambda person: (person["record"]["status"] != "open", person["name"].lower()))
         return {"ok": True, "count": len(found), "people": found[:25]}
 
@@ -1550,7 +1608,25 @@ class Desk:
             near = {st.org_key(deal["company"]): deal["company"] for deal in deals if key in st.org_key(deal["company"])}
             if len(near) == 1:      # "Kestrel" for "Kestrel Labs": only one company it could be
                 return self.company(next(iter(near.values())), note=note, domain=domain)
-            return {"ok": False, "error": "no company on the desk matches '%s'" % str(name)[:60], "companies": sorted(near.values())[:12]}
+            out = {"ok": False, "error": "no company on the desk matches '%s'" % str(name)[:60], "companies": sorted(near.values())[:12]}
+            # A playbook may keep the client in the group, not the company ("Staff Backend · Northwind", where the
+            # company is the candidate's employer): then the records there, and the other people on them, are the answer.
+            grouped = [deal for deal in deals if " %s " % key in " %s " % st.org_key(deal["grp"])]
+            if grouped:
+                playbook, people, seen = self.playbook(), [], set()
+                grouped.sort(key=lambda d: (d["status"] != "open", d["name"].lower()))
+                for deal in grouped:
+                    for person in self.people(deal):
+                        if person["primary"] or person["id"] in seen:
+                            continue
+                        seen.add(person["id"])
+                        people.append(dict({k: person.get(k) or "" for k in ("name", "email", "title", "role")},
+                                           record=deal["id"], record_name=deal["name"]))
+                out.update(groups=sorted({deal["grp"] for deal in grouped}), records=[self._brief(deal, playbook) for deal in grouped[:25]],
+                           people=people[:25],
+                           note="No company is called that, but it is named in the %s of %d record%s: those records, and the other "
+                                "people on them, are listed here." % (playbook.terms["group"], len(grouped), "" if len(grouped) == 1 else "s"))
+            return out
         display = max((deal["company"] for deal in here), key=lambda text: sum(d["company"] == text for d in here))
         if note is not None or domain is not None:
             self.store.org_put(display, note=note, domain=domain)
@@ -2018,7 +2094,8 @@ class Desk:
                 "Say \"%s\" and \"%s\", not \"deal\" or \"group\", unless those are the words. "
                 "For how to run the desk, load the skill stoa:desk. To map a market or find new leads, load stoa:market-map.%s"
                 % (playbook.describe(), playbook.terms["deal"], playbook.terms["group"],
-                   " Sample data is on show (a tour): everything on the desk is made up. Say so when you report from it."
+                   " Sample data is on show (a tour): everything on the desk is made up. Say so when you report from it, "
+                   "and copy none of it into another system."
                    if self.tour() else ""))
 
 

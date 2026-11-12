@@ -71,7 +71,7 @@ GTM_DEAL = {
             "text": {"type": "string", "description": "log: what was said or done, in a sentence or three. done: optional, in place of 'Done: <the next step>'."},
             "ref": {"type": "string", "description": "log: an id for the thing being logged (an email, message or call id). The same ref is logged only once."},
             "outcome": {"type": "string", "enum": ["won", "lost"], "description": "close: the outcome."},
-            "reason": {"type": "string", "description": "close/move to lost: why."},
+            "reason": {"type": "string", "description": "close/move to lost: why, as one of the playbook's own reasons when one fits (gtm_playbook shows them), else a few words."},
             "days": {"type": "integer", "description": "snooze: how many days (0 clears)."},
             "until": {"type": "string", "description": "snooze: put aside until this date instead: YYYY-MM-DD (friday and +10d also work)."},
             "force": {"type": "boolean", "description": "add: create even if an open record with this name and group exists."},
@@ -319,7 +319,7 @@ GTM_INTAKE = {
                             "person": {"type": "object", "description": "Someone to add to the record as another person on it.",
                                        "properties": {"name": {"type": "string"}, "email": {"type": "string"},
                                                       "title": {"type": "string"}, "role": {"type": "string"}}},
-                            "lost_reason": {"type": "string", "description": "When stage is the losing one: why."},
+                            "lost_reason": {"type": "string", "description": "When stage is the losing one: why, as one of the playbook's own reasons when one fits, else a few words."},
                             "close_on": {"type": "string", "description": "When the record is expected to close: YYYY-MM-DD."},
                             "invoice": {"type": "object", "description": "A proposal: an invoice to put on the record.",
                                         "properties": {"amount": {"type": "number"}, "number": {"type": "string"},
@@ -388,16 +388,18 @@ GTM_INVOICE = {
         "defaults to whatever of the record's value is not billed yet; due defaults to 30 days from today; "
         "status='draft' for one not sent yet), 'send' marks a draft sent, 'pay' records money received (the amount, "
         "or everything still owed), 'void' cancels one, 'update' corrects amount, number or due date, 'remove' takes "
-        "off one entered by mistake, 'list' shows a record's invoices, or with no deal every open invoice and the "
-        "cash totals. Use it when the person says they billed someone or were paid. For the whole picture and the "
+        "off one entered by mistake, 'undo' takes back the last thing done to an invoice (a payment recorded by "
+        "mistake, a void, an edit), 'list' shows a record's invoices, or with no deal every open invoice and the "
+        "cash totals. An invoice's number is enough to find it: `deal` may be left out when `invoice` is given. "
+        "Use it when the person says they billed someone or were paid. For the whole picture and the "
         "forecast, gtm_pipeline(view='cash')."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "add", "send", "pay", "void", "update", "remove"]},
+            "action": {"type": "string", "enum": ["list", "add", "send", "pay", "void", "update", "remove", "undo"]},
             "deal": _DEAL_REF,
-            "invoice": {"type": "string", "description": "send/pay/void/update/remove: which invoice, by its number or id. May be left out when the record has only one open."},
+            "invoice": {"type": "string", "description": "send/pay/void/update/remove/undo: which invoice, by its number or id. May be left out when the record has only one open. With a number, `deal` may be left out."},
             "amount": {"type": "number", "description": "add/update: the invoice amount. pay: how much came in (left out: all that is owed)."},
             "number": {"type": "string", "description": "add/update: the invoice number as the person writes it (\"1042\")."},
             "due": {"type": "string", "description": "add/send/update: when it is due: a date, '+14d', or 'net 30'."},

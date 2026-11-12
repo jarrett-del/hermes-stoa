@@ -625,6 +625,10 @@ What the plugin does that you would want to know before installing it:
 
 ## Limits in 0.13
 
+- **If you run scheduled jobs against the desk, use 0.13.2 or later.** Earlier versions did not
+  recognise a scheduled run as one (Hermes gives it no platform and marks the run another way), so
+  the `cron` opt-in in `channels` and the autonomy setting did not apply to it: a job could change
+  the desk without asking. Found by running a real scheduled job; fixed in 0.13.2.
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
   **Capabilities → Plugins**. A click there needs an open chat to send its line into; with none
@@ -668,7 +672,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 202 tests, no network
+python3 -m unittest discover -s tests     # 207 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
