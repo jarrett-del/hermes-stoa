@@ -11,6 +11,8 @@ import json
 import re
 import sqlite3
 import threading
+import uuid
+from contextlib import contextmanager
 from typing import Any, Iterable, Optional
 
 SCHEMA = """
@@ -103,6 +105,34 @@ CREATE TABLE IF NOT EXISTS intakes (
   rows TEXT NOT NULL DEFAULT '[]',
   result TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS people (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT '',
+  linkedin TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS people_deal ON people (deal_id);
+CREATE TABLE IF NOT EXISTS orgs (
+  key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  domain TEXT NOT NULL DEFAULT '',
+  website TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS declined (
+  hash TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  deal_id TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT ''
+);
 """
 
 # Columns added after the first release. A database made by an older version gains them when it is opened.
@@ -110,9 +140,19 @@ ADDED_COLUMNS = {
     "markets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
     "targets": {"detail": "TEXT NOT NULL DEFAULT '{}'"},
     "cards": {"session_key": "TEXT NOT NULL DEFAULT ''", "asked_by": "TEXT NOT NULL DEFAULT ''"},
+    # what a change replaced (so it can be taken back), the action it was part of, and when it was taken back
+    "activities": {"before": "TEXT NOT NULL DEFAULT ''", "op": "TEXT NOT NULL DEFAULT ''", "undone": "TEXT NOT NULL DEFAULT ''"},
+    "intakes": {"origin": "TEXT NOT NULL DEFAULT 'list'"},    # list: rows someone sent. proposal: changes Hermes suggests
 }
 
 EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source")
+RESTORABLE = EDITABLE + ("stage", "status", "lost_reason", "snoozed_until", "stage_at", "fields")    # what an undo may put back
+PERSON = ("name", "email", "title", "role", "linkedin", "phone", "note")
+QUIET_KINDS = "('snooze', 'card', 'undo')"      # bookkeeping: on the log, but not a touch and not something to take back
+ORG_TAILS = {"inc", "llc", "ltd", "co", "corp", "corporation", "gmbh", "plc", "limited", "company", "sa", "ag", "bv", "pty"}
+FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "ymail.com",
+             "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.net",
+             "fastmail.com", "hey.com", "zoho.com", "mail.com", "yandex.com", "qq.com", "163.com"}
 CSV_COLUMNS = ("id", "name", "company", "grp", "email", "linkedin", "stage", "status", "value", "owner",
                "next_step", "next_due", "source", "lost_reason", "created_at", "updated_at", "stage_at")
 ID_MAX = 48  # Slack caps an overflow option's value at 75 characters; ids travel in those values
@@ -138,6 +178,20 @@ def days_since(value: str) -> Optional[float]:
     if when is None:
         return None
     return (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 86400.0
+
+
+def org_key(name: Any) -> str:
+    """One key for a company however it is written: "Kestrel Labs, Inc." and "kestrel labs" are the same."""
+    words = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).split()
+    while len(words) > 1 and words[-1] in ORG_TAILS:
+        words.pop()
+    return " ".join(words)
+
+
+def email_domain(address: Any) -> str:
+    """The domain of an address when it says something about the company ("" for gmail and the like)."""
+    domain = str(address or "").strip().lower().rpartition("@")[2]
+    return "" if not domain or "." not in domain or domain in FREE_MAIL else domain
 
 
 def slugify(text: str) -> str:
@@ -226,6 +280,7 @@ class Store:
         self.path = str(path)
         self._memory = None
         self._lock = threading.RLock()
+        self._ops = threading.local()       # the action in progress on this thread, if a caller opened one
         if self.path == ":memory:":  # one shared connection, for tests
             self._memory = sqlite3.connect(":memory:", check_same_thread=False)
             self._memory.row_factory = sqlite3.Row
@@ -276,6 +331,22 @@ class Store:
 
     def _conn(self) -> "Store._Session":
         return Store._Session(self)
+
+    # -- actions: what one click or one tool call wrote, so it can be taken back together ---------
+    @contextmanager
+    def operation(self):
+        """Everything written inside is one action. Opened inside another, it joins that one."""
+        if getattr(self._ops, "id", ""):
+            yield self._ops.id
+            return
+        self._ops.id = uuid.uuid4().hex[:12]
+        try:
+            yield self._ops.id
+        finally:
+            self._ops.id = ""
+
+    def _op(self) -> str:
+        return getattr(self._ops, "id", "") or uuid.uuid4().hex[:12]
 
     # -- deals ----------------------------------------------------------------------------------
     @staticmethod
@@ -340,15 +411,15 @@ class Store:
                 (deal_id, name, row["company"] or "", row["grp"] or "", row["email"] or "", row["linkedin"] or "", stage,
                  _number(values.get("value")), row["owner"] or "", row["next_step"] or "", row["next_due"] or "",
                  row["source"] or "", json.dumps(fields), stamp, stamp, stamp))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
-                         (deal_id, stamp, "created", actor, "Added at %s" % stage))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (deal_id, stamp, "created", actor, "Added at %s" % stage, '{"_created": true}', self._op()))
         return self.get(deal_id)
 
     def update(self, deal_id: str, *, actor: str = "", fields: Optional[dict] = None, **values: Any) -> dict:
         deal = self.get(deal_id)
         if deal is None:
             raise KeyError(deal_id)
-        sets, params, changed = [], [], []
+        sets, params, changed, before = [], [], [], {}
         for key in EDITABLE:
             if key in values and values[key] is not None:
                 new = _number(values[key]) if key == "value" else str(values[key]).strip()
@@ -356,6 +427,7 @@ class Store:
                     sets.append("%s = ?" % key)
                     params.append(new)
                     changed.append(key)
+                    before[key] = deal[key]
         if fields:
             merged = dict(deal["fields"])
             for key, val in fields.items():
@@ -367,13 +439,14 @@ class Store:
                 sets.append("fields = ?")
                 params.append(json.dumps(merged))
                 changed.append("fields")
+                before["fields"] = deal["fields"]
         if not sets:
             return deal
         stamp = now()
         with self._conn() as conn:
             conn.execute("UPDATE deals SET %s, updated_at = ? WHERE id = ?" % ", ".join(sets), params + [stamp, deal_id])
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
-                         (deal_id, stamp, "updated", actor, "Updated " + ", ".join(changed)))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (deal_id, stamp, "updated", actor, "Updated " + ", ".join(changed), json.dumps(before), self._op()))
         return self.get(deal_id)
 
     def move(self, deal_id: str, stage: str, *, status: str = "open", reason: str = "", actor: str = "",
@@ -387,12 +460,19 @@ class Store:
         stamp = now()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT stage, status, fields FROM deals WHERE id = ?", (deal_id,)).fetchone()
+            row = conn.execute("SELECT stage, status, fields, lost_reason, snoozed_until, stage_at FROM deals WHERE id = ?",
+                               (deal_id,)).fetchone()
             if row is None:
                 raise KeyError(deal_id)
             if expect is not None and row["stage"] != expect:
                 return None
             fields = row["fields"]
+            try:
+                was = json.loads(fields or "{}")
+            except ValueError:
+                was = {}
+            before = {"stage": row["stage"], "status": row["status"], "lost_reason": row["lost_reason"],
+                      "snoozed_until": row["snoozed_until"], "stage_at": row["stage_at"], "fields": was}
             if status != "open" and row["status"] == "open":    # remember where it was, for a later reopen
                 try:
                     data = json.loads(fields or "{}")
@@ -405,8 +485,8 @@ class Store:
                 text += " (%s)" % reason
             conn.execute("UPDATE deals SET stage = ?, status = ?, lost_reason = ?, snoozed_until = '', fields = ?, stage_at = ?, "
                          "updated_at = ? WHERE id = ?", (stage, status, reason if status == "lost" else "", fields, stamp, stamp, deal_id))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
-                         (deal_id, stamp, "stage", actor, text))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (deal_id, stamp, "stage", actor, text, json.dumps(before), self._op()))
         return self.get(deal_id)
 
     def snooze(self, deal_id: str, days: int = 0, *, until: str = "", actor: str = "") -> dict:
@@ -420,20 +500,28 @@ class Store:
             until = ""
         stamp = now()
         with self._conn() as conn:
-            if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
+            row = conn.execute("SELECT snoozed_until FROM deals WHERE id = ?", (deal_id,)).fetchone()
+            if row is None:
                 raise KeyError(deal_id)
             conn.execute("UPDATE deals SET snoozed_until = ?, updated_at = ? WHERE id = ?", (until, stamp, deal_id))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
-                         (deal_id, stamp, "snooze", actor, "Snoozed until %s" % until if until else "Snooze cleared"))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (deal_id, stamp, "snooze", actor, "Snoozed until %s" % until if until else "Snooze cleared",
+                          json.dumps({"snoozed_until": row["snoozed_until"]}), self._op()))
         return self.get(deal_id)
 
     def delete(self, deal_id: str) -> bool:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
-            conn.execute("DELETE FROM activities WHERE deal_id = ?", (deal_id,))
-            conn.execute("DELETE FROM cards WHERE deal_id = ?", (deal_id,))
-            conn.execute("DELETE FROM meta WHERE k IN (?, ?)", ("pending:" + deal_id, "handoff:" + deal_id))
+            self._forget(conn, deal_id)
         return cur.rowcount > 0
+
+    @staticmethod
+    def _forget(conn, deal_id: str) -> None:
+        """Everything kept about a record that is gone."""
+        conn.execute("DELETE FROM activities WHERE deal_id = ?", (deal_id,))
+        conn.execute("DELETE FROM people WHERE deal_id = ?", (deal_id,))
+        conn.execute("DELETE FROM cards WHERE deal_id = ?", (deal_id,))
+        conn.execute("DELETE FROM meta WHERE k IN (?, ?)", ("pending:" + deal_id, "handoff:" + deal_id))
 
     def list(self, *, status: Optional[str] = "open", stage: str = "", grp: str = "", owner: str = "",
              query: str = "") -> list:
@@ -467,8 +555,8 @@ class Store:
         with self._conn() as conn:
             if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
                 raise KeyError(deal_id)
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, ref) VALUES (?,?,?,?,?,?)",
-                         (deal_id, stamp, kind, actor, text, ref))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, ref, before, op) VALUES (?,?,?,?,?,?,?,?)",
+                         (deal_id, stamp, kind, actor, text, ref, '{"_log": true}', self._op()))
             conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
         return {"deal_id": deal_id, "at": stamp, "kind": kind, "actor": actor, "text": text, "ref": ref}
 
@@ -496,7 +584,7 @@ class Store:
     def last_touch(self, deal_id: str) -> str:
         """Latest thing a person or the agent did on the deal (bookkeeping rows don't count)."""
         with self._conn() as conn:
-            row = conn.execute("SELECT max(at) FROM activities WHERE deal_id = ? AND kind NOT IN ('snooze', 'card')",
+            row = conn.execute("SELECT max(at) FROM activities WHERE deal_id = ? AND undone = '' AND kind NOT IN " + QUIET_KINDS,
                                (deal_id,)).fetchone()
         return row[0] or ""
 
@@ -504,7 +592,197 @@ class Store:
         """``last_touch`` for every record in one query: ``{deal id: timestamp}``."""
         with self._conn() as conn:
             return {row[0]: row[1] or "" for row in conn.execute(
-                "SELECT deal_id, max(at) FROM activities WHERE kind NOT IN ('snooze', 'card') GROUP BY deal_id")}
+                "SELECT deal_id, max(at) FROM activities WHERE undone = '' AND kind NOT IN " + QUIET_KINDS + " GROUP BY deal_id")}
+
+    # -- taking a change back --------------------------------------------------------------------
+    @staticmethod
+    def _last_action(conn, deal_id: str):
+        """The newest row on a record that is a real change still standing (not bookkeeping, not taken back)."""
+        return conn.execute("SELECT * FROM activities WHERE deal_id = ? AND undone = '' AND kind NOT IN ('card', 'undo') "
+                            "ORDER BY id DESC LIMIT 1", (deal_id,)).fetchone()
+
+    def undoable(self, deal_id: str) -> Optional[dict]:
+        """The last action on a record, if it can be taken back: ``{op, at, actor, text}``."""
+        with self._conn() as conn:
+            last = self._last_action(conn, deal_id)
+            if last is None or not last["before"]:
+                return None
+            first = conn.execute("SELECT text FROM activities WHERE deal_id = ? AND op = ? AND undone = '' AND before != '' "
+                                 "ORDER BY id LIMIT 1", (deal_id, last["op"])).fetchone()
+        return {"op": last["op"], "at": last["at"], "actor": last["actor"], "text": (first or last)["text"]}
+
+    def undoables(self) -> dict:
+        """``{deal_id: op}`` for every record whose last action can be taken back (one query, for a list)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT a.deal_id, a.op, a.before FROM activities a JOIN (SELECT deal_id, max(id) AS id FROM activities "
+                "WHERE undone = '' AND kind NOT IN ('card', 'undo') GROUP BY deal_id) last ON last.id = a.id").fetchall()
+        return {row["deal_id"]: row["op"] for row in rows if row["before"]}
+
+    def undo(self, deal_id: str, op: str = "", actor: str = "") -> Optional[dict]:
+        """Take back the last action on a record: put back what it replaced, remove what it added.
+
+        Returns ``{"text", "deleted", "deal"}``, or ``None`` when there is nothing to take back or
+        ``op`` is no longer the record's last action (something else has happened since).
+        """
+        stamp = now()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            last = self._last_action(conn, deal_id)
+            if last is None or not last["before"] or (op and last["op"] != op):
+                return None
+            rows = conn.execute("SELECT * FROM activities WHERE deal_id = ? AND op = ? AND undone = '' AND before != '' "
+                                "ORDER BY id DESC", (deal_id, last["op"])).fetchall()
+            text, deleted = rows[-1]["text"], False
+            for row in rows:
+                try:
+                    before = json.loads(row["before"])
+                except ValueError:
+                    before = {}
+                if before.get("_created"):
+                    deleted = True
+                    break
+                if before.get("_log"):
+                    conn.execute("DELETE FROM activities WHERE id = ?", (row["id"],))
+                    continue
+                if "_person_added" in before:
+                    conn.execute("DELETE FROM people WHERE id = ?", (before["_person_added"],))
+                elif "_person_removed" in before:
+                    person = before["_person_removed"]
+                    conn.execute("INSERT INTO people (deal_id, name, email, title, role, linkedin, phone, note, created_at, updated_at) "
+                                 "VALUES (?,?,?,?,?,?,?,?,?,?)", [deal_id] + [str(person.get(key) or "") for key in PERSON]
+                                 + [str(person.get("created_at") or stamp), stamp])
+                elif "_person_changed" in before:
+                    person = before["_person_changed"]
+                    keys = [key for key in PERSON if key in person]
+                    if keys:
+                        conn.execute("UPDATE people SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in keys),
+                                     [str(person[key]) for key in keys] + [stamp, person.get("id")])
+                else:
+                    keys = [key for key in before if key in RESTORABLE]
+                    if keys:
+                        conn.execute("UPDATE deals SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in keys),
+                                     [json.dumps(before[key]) if key == "fields" else before[key] for key in keys] + [stamp, deal_id])
+                conn.execute("UPDATE activities SET undone = ? WHERE id = ?", (stamp, row["id"]))
+            if deleted:
+                conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+                self._forget(conn, deal_id)
+            else:
+                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text) VALUES (?,?,?,?,?)",
+                             (deal_id, stamp, "undo", actor, "Took back: " + text))
+        return {"text": text, "deleted": deleted, "deal": None if deleted else self.get(deal_id)}
+
+    # -- the other people on a record ---------------------------------------------------------------
+    def people(self, deal_id: str = "") -> list:
+        """The extra people on one record, or on every record. (The record's own name and email are its first person.)"""
+        with self._conn() as conn:
+            if deal_id:
+                rows = conn.execute("SELECT * FROM people WHERE deal_id = ? ORDER BY id", (deal_id,)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM people ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def person(self, person_id: Any) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
+        return dict(row) if row else None
+
+    def person_add(self, deal_id: str, name: str, *, actor: str = "", **values: Any) -> dict:
+        name = " ".join(str(name or "").split())[:120]
+        if not name:
+            raise ValueError("a name is required")
+        clean = {key: " ".join(str(values.get(key) or "").split())[:300] for key in PERSON if key != "name"}
+        stamp = now()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM deals WHERE id = ?", (deal_id,)).fetchone():
+                raise KeyError(deal_id)
+            cur = conn.execute("INSERT INTO people (deal_id, name, email, title, role, linkedin, phone, note, created_at, updated_at) "
+                               "VALUES (?,?,?,?,?,?,?,?,?,?)", [deal_id, name] + [clean[key] for key in PERSON if key != "name"] + [stamp, stamp])
+            said = "Added %s%s" % (name, " (%s)" % (clean["role"] or clean["title"]) if clean["role"] or clean["title"] else "")
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (deal_id, stamp, "person", actor, said, json.dumps({"_person_added": cur.lastrowid}), self._op()))
+            conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
+            person_id = cur.lastrowid
+        return self.person(person_id)
+
+    def person_update(self, person_id: Any, *, actor: str = "", **values: Any) -> Optional[dict]:
+        person = self.person(person_id)
+        if person is None:
+            return None
+        new = {key: " ".join(str(values[key]).split())[:300] for key in PERSON if values.get(key) is not None}
+        new = {key: value for key, value in new.items() if value != person[key] and (key != "name" or value)}
+        if not new:
+            return person
+        stamp = now()
+        with self._conn() as conn:
+            conn.execute("UPDATE people SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in new),
+                         list(new.values()) + [stamp, person_id])
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (person["deal_id"], stamp, "person", actor, "Updated %s: %s" % (person["name"], ", ".join(new)),
+                          json.dumps({"_person_changed": dict({key: person[key] for key in new}, id=person["id"])}), self._op()))
+        return self.person(person_id)
+
+    def person_remove(self, person_id: Any, *, actor: str = "") -> bool:
+        person = self.person(person_id)
+        if person is None:
+            return False
+        stamp = now()
+        with self._conn() as conn:
+            conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, before, op) VALUES (?,?,?,?,?,?,?)",
+                         (person["deal_id"], stamp, "person", actor, "Removed %s" % person["name"],
+                          json.dumps({"_person_removed": person}), self._op()))
+        return True
+
+    # -- companies: a few facts kept per company, whatever records it has ---------------------------
+    def org_get(self, name: Any) -> Optional[dict]:
+        key = org_key(name)
+        if not key:
+            return None
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM orgs WHERE key = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def org_put(self, name: Any, **values: Any) -> Optional[dict]:
+        key = org_key(name)
+        if not key:
+            return None
+        clean = {}
+        for k in ("domain", "website", "note"):
+            if values.get(k) is not None:
+                clean[k] = str(values[k]).strip()[:4000] if k == "note" else " ".join(str(values[k]).split()).lower()[:200]
+        with self._conn() as conn:
+            conn.execute("INSERT INTO orgs (key, name, updated_at) VALUES (?,?,?) ON CONFLICT (key) DO NOTHING",
+                         (key, " ".join(str(name).split())[:200], now()))
+            if clean:
+                conn.execute("UPDATE orgs SET %s, updated_at = ? WHERE key = ?" % ", ".join(k + " = ?" for k in clean),
+                             list(clean.values()) + [now(), key])
+        return self.org_get(name)
+
+    def orgs(self) -> list:
+        with self._conn() as conn:
+            return [dict(row) for row in conn.execute("SELECT * FROM orgs").fetchall()]
+
+    # -- what was declined, so it is not proposed again ----------------------------------------------
+    def decline(self, digest: str, deal_id: str = "", summary: str = "") -> None:
+        with self._conn() as conn:
+            conn.execute("INSERT INTO declined (hash, at, deal_id, summary) VALUES (?,?,?,?) ON CONFLICT (hash) DO UPDATE SET at = excluded.at",
+                         (digest, now(), deal_id, summary[:300]))
+
+    def declined(self, max_age_days: float = 90) -> dict:
+        """``{hash: when}`` for what was declined and is still remembered."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT hash, at FROM declined").fetchall()
+        return {row["hash"]: row["at"] for row in rows if (days_since(row["at"]) or 0) <= max_age_days}
+
+    def declined_list(self, limit: int = 50) -> list:
+        with self._conn() as conn:
+            return [dict(row) for row in conn.execute("SELECT * FROM declined ORDER BY at DESC LIMIT ?", (int(limit),)).fetchall()]
+
+    def declined_clear(self) -> int:
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM declined").rowcount
 
     # -- cards ----------------------------------------------------------------------------------
     def remember_card(self, deal_id: str, channel: str, ts: str, session_key: str = "", asked_by: str = "") -> None:
@@ -605,10 +883,10 @@ class Store:
                 intake[key] = empty
         return intake
 
-    def intake_put(self, intake_id: str, source: str, rows: list) -> None:
+    def intake_put(self, intake_id: str, source: str, rows: list, origin: str = "list") -> None:
         with self._conn() as conn:
-            conn.execute("INSERT INTO intakes (id, at, source, status, rows) VALUES (?,?,?,?,?)",
-                         (intake_id, now(), source, "open", json.dumps(rows)))
+            conn.execute("INSERT INTO intakes (id, at, source, status, rows, origin) VALUES (?,?,?,?,?,?)",
+                         (intake_id, now(), source, "open", json.dumps(rows), origin if origin in ("list", "proposal") else "list"))
 
     def intake_get(self, intake_id: str) -> Optional[dict]:
         with self._conn() as conn:
@@ -617,7 +895,8 @@ class Store:
 
     def intake_list(self, status: str = "open", limit: int = 10) -> list:
         with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM intakes WHERE status = ? ORDER BY at DESC LIMIT ?", (status, int(limit))).fetchall()
+            rows = conn.execute("SELECT * FROM intakes WHERE status = ? ORDER BY at DESC, rowid DESC LIMIT ?",
+                                (status, int(limit))).fetchall()
         return [self._intake(row) for row in rows]
 
     def intake_claim(self, intake_id: str) -> bool:
@@ -644,6 +923,8 @@ class Store:
                     "activities": one("SELECT count(*) FROM activities"),
                     "from_sweeps": one("SELECT count(*) FROM activities WHERE ref != ''"),
                     "maps": one("SELECT count(*) FROM markets"),
+                    "people": one("SELECT count(*) FROM people"),
+                    "declined": one("SELECT count(*) FROM declined"),
                     "lists_waiting": one("SELECT count(*) FROM intakes WHERE status = 'open'")}
 
     # -- CSV ------------------------------------------------------------------------------------

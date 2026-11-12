@@ -38,14 +38,15 @@ GTM_DEAL = {
         "or stage='next'), close (outcome won or lost, with a reason), reopen, log (record a note, call, email or "
         "meeting, optionally setting the next step), done (the next step was done: logs it, and sets the next_step and "
         "next_due you pass as what comes next), snooze (put it aside for N days or until a date: it is on neither the "
-        "due list nor the quiet list until then). Call this whenever "
+        "due list nor the quiet list until then), undo (take back the last change on the record, whoever made it; "
+        "again for the one before). Call this whenever "
         "the user tells you something happened with a prospect, so the desk stays the source of truth. Any card "
         "already posted in Slack for the record updates itself."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze"]},
+            "action": {"type": "string", "enum": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze", "undo"]},
             "deal": _DEAL_REF,
             "name": {"type": "string", "description": "add/update: the person or deal name."},
             "company": {"type": "string"},
@@ -68,6 +69,14 @@ GTM_DEAL = {
             "days": {"type": "integer", "description": "snooze: how many days (0 clears)."},
             "until": {"type": "string", "description": "snooze: put aside until this date instead: YYYY-MM-DD (friday and +10d also work)."},
             "force": {"type": "boolean", "description": "add: create even if an open record with this name and group exists."},
+            "why": {"type": "string", "description": "In a scheduled job: one line on why you are making this change. Shown to the person if it is held for their approval."},
+            "evidence": {"type": "array", "description": "In a scheduled job: what the change rests on, shown with it if it is held for approval.",
+                         "items": {"type": "object", "properties": {
+                             "kind": {"type": "string", "description": "email, call, slack, meeting or note."},
+                             "at": {"type": "string", "description": "When, as a date."},
+                             "who": {"type": "string", "description": "Who said or sent it."},
+                             "text": {"type": "string", "description": "Their words, quoted, or one line on what happened."},
+                             "ref": {"type": "string", "description": "The id of the email, message or call."}}}},
         },
         "required": ["action"],
     },
@@ -261,14 +270,19 @@ GTM_INTAKE = {
         "action='propose' with what you found as rows (or with the path of a CSV, which the desk reads itself). The desk "
         "works out which rows are new, which would change a record already there, which are already there and which it "
         "cannot place, and shows the person a review to approve. Nothing is written until they press Apply or tell you "
-        "to: then action='apply' (rows=[...] or skip=[...] by row number for part of it). action='show' reads a list "
-        "back, 'list' shows the ones waiting, 'discard' drops one. Never add a long list record by record instead."
+"to: then action='apply' (rows=[...] or skip=[...] by row number for part of it). action='show' reads a list "
+        "back, 'list' shows the ones waiting, 'discard' drops one. Never add a long list record by record instead. "
+        "Also how you suggest a change nobody asked for (a stage move an email implies, a person to add to a record): "
+        "action='propose' with kind='proposal', each row naming its record and carrying why and evidence. The person "
+        "approves or declines each one on the Today tab; a declined one is remembered and not accepted again."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["propose", "show", "apply", "discard", "list"]},
-            "source": {"type": "string", "description": "propose: where the list came from, in a few words (\"leads.pdf\", \"conference badge scans\")."},
+            "source": {"type": "string", "description": "propose: where the list came from, in a few words (\"leads.pdf\", \"conference badge scans\", \"activity sweep\")."},
+            "kind": {"type": "string", "enum": ["list", "proposal"],
+                     "description": "propose: list (rows someone sent; the default) or proposal (changes you suggest from what you found)."},
             "rows": {
                 "description": "propose: the records, at most 500. apply: the row numbers to apply (default: every new and changed row).",
                 "type": "array",
@@ -289,6 +303,17 @@ GTM_INTAKE = {
                             "note": {"type": "string", "description": "Anything worth keeping that has no field: logged on the record."},
                             "fields": {"type": "object", "description": "The playbook's own fields, by key."},
                             "record": {"type": "string", "description": "The id of the record this row is about, to settle an unclear match."},
+                            "why": {"type": "string", "description": "A proposal: one line on why."},
+                            "evidence": {"type": "array", "description": "A proposal: what it rests on, up to four items.",
+                                         "items": {"type": "object", "properties": {
+                                             "kind": {"type": "string", "description": "email, call, slack, meeting or note."},
+                                             "at": {"type": "string"}, "who": {"type": "string"},
+                                             "text": {"type": "string", "description": "Their words, quoted, or one line on what happened."},
+                                             "ref": {"type": "string"}}}},
+                            "person": {"type": "object", "description": "Someone to add to the record as another person on it.",
+                                       "properties": {"name": {"type": "string"}, "email": {"type": "string"},
+                                                      "title": {"type": "string"}, "role": {"type": "string"}}},
+                            "lost_reason": {"type": "string", "description": "When stage is the losing one: why."},
                         },
                     }],
                 },
@@ -298,6 +323,41 @@ GTM_INTAKE = {
                         "description": "propose: the header row, when rows are lists of cells (a spreadsheet tab read as a table)."},
             "id": {"type": "string", "description": "show/apply/discard: the list's id. May be left out when only one is waiting."},
             "skip": {"type": "array", "items": {"type": "integer"}, "description": "apply: row numbers to leave out."},
+        },
+        "required": ["action"],
+    },
+}
+
+GTM_CONTACT = {
+    "name": "gtm_contact",
+    "description": (
+        "Find people and companies on the Stoa desk, and who else is on a record. "
+        "A record has its own person (its name and email) and can carry others: the buyer's boss, the CFO, a hiring "
+        "manager. action='match' takes email addresses and says whose they are: the records each belongs to, or, for "
+        "an unknown sender, the company its domain belongs to and that company's open records; use it before logging "
+        "an email, a meeting or a thread so the entry lands on the right record. 'find' searches people by name, "
+        "email, title or company across the desk. 'people' lists everyone on one record; 'add', 'update' and 'remove' "
+        "change them. 'company' shows one company: its records, everyone known there, what is open and won, and the "
+        "notes kept on it (pass note or domain to save them)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["match", "find", "people", "add", "update", "remove", "company"]},
+            "emails": {"type": "array", "items": {"type": "string"}, "description": "match: the addresses to look up (at most 60)."},
+            "query": {"type": "string", "description": "find: a name, an email, a title or a company."},
+            "deal": _DEAL_REF,
+            "name": {"type": "string", "description": "add: the person's name."},
+            "email": {"type": "string"},
+            "title": {"type": "string", "description": "Their job title."},
+            "role": {"type": "string", "description": "Their part in this record: decision maker, champion, finance, hiring manager…"},
+            "linkedin": {"type": "string"},
+            "phone": {"type": "string"},
+            "note": {"type": "string", "description": "add/update: a line about the person. company: the notes kept on the company (replaces what is there)."},
+            "person": {"type": "string", "description": "update/remove: which person on the record, by name, email or id."},
+            "new_name": {"type": "string", "description": "update: a corrected name."},
+            "company": {"type": "string", "description": "company: which company."},
+            "domain": {"type": "string", "description": "company: its email domain (kestrel.com), so mail from anyone there is recognised."},
         },
         "required": ["action"],
     },

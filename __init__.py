@@ -81,7 +81,7 @@ def _announce() -> None:
         log.debug("stoa: could not announce a change", exc_info=True)
 
 
-def _tool(fn, desk=None, quiet=False):
+def _tool(fn, desk=None, quiet=False, name=""):
     """Tool handlers return JSON strings and never raise into the agent loop."""
     def handler(args: dict, **kwargs) -> str:
         try:
@@ -89,6 +89,10 @@ def _tool(fn, desk=None, quiet=False):
                 session = _session()
                 if not desk.allowed(session):
                     return json.dumps(AWAY_TOUR if session.get("platform") == "cron" and desk.tour() else AWAY)
+                held = desk.guard(name, args or {}, session)       # a scheduled job, and a change kept for a person
+                if held is not None:
+                    desk.announce()
+                    return json.dumps(held, ensure_ascii=False, default=str)
             result = json.dumps(fn(args or {}), ensure_ascii=False, default=str)
             if desk is not None and not quiet:
                 desk.announce()
@@ -107,7 +111,7 @@ def build_desk(get_config, set_config) -> Desk:
     """
     home, data = _home(), _data_dir()
     desk = Desk(data_dir=lambda: data, get_config=get_config, set_config=set_config, get_secret=_secret_reader(home),
-                actor=lambda: _session().get("actor", ""))
+                actor=lambda: "Hermes (scheduled)" if _session().get("platform") == "cron" else _session().get("actor", ""))
     desk.home = home
     return desk
 
@@ -132,9 +136,10 @@ def register(ctx) -> None:
         (schemas.GTM_PLAYBOOK, desk.playbook_tool, "📜"),
         (schemas.GTM_EXPORT, desk.export, "📤"),
         (schemas.GTM_INTAKE, lambda args: desk.intake.run(args, _session()), "📥"),
+        (schemas.GTM_CONTACT, desk.contact, "👥"),
     ):
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, emoji=emoji,
-                          handler=_tool(fn, desk, quiet=schema is schemas.GTM_PIPELINE))    # a read changes nothing
+                          handler=_tool(fn, desk, quiet=schema is schemas.GTM_PIPELINE, name=schema["name"]))    # a read changes nothing
 
     # -- Slack cards and their buttons ----------------------------------------------------------
     from .slackdesk import ACTIONS, SlackDesk

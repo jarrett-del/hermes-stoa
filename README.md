@@ -18,6 +18,9 @@ keeps the pipeline. Stoa is that, in one plugin:
 - **Send it anything.** A PDF of leads, a spreadsheet, a photo of a sign-up sheet. Hermes reads it,
   Stoa shows what it would add and what it would change, and nothing is written until you press Apply.
 - **Click a button, the stage changes at once.** No model in the loop, no waiting, no wrong stage.
+- **Hermes proposes, you approve.** What it finds in your email, calls and Slack is logged on the
+  right record. Anything more (a stage it thinks should move, a person to add) waits for your yes
+  or no with the evidence beside it, a no is remembered, and any change can be taken back.
 - **Then Hermes does the writing.** The same click hands the follow-up (the outreach note, the
   proposal email, the decline) to the agent, in the card's thread.
 - **One file fits it to your business.** A playbook names your stages, your button labels and
@@ -92,13 +95,30 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 - **A page of its own.** **Stoa** in the sidebar opens on **Today**, then the funnel with its
   conversion rates and the pipeline board with the same filters, the market map with its reading,
   the activity log, and **Setup**.
-- **Today.** What needs you, most pressing first: next steps overdue and due today, lists waiting
-  for your approval, records gone quiet, and new ones with nothing planned. Each row has one move.
+- **Today.** What needs you, most pressing first: what is waiting for your approval, next steps
+  overdue and due today, records gone quiet, and new ones with nothing planned. Each row has one move.
   **Done** logs the step and asks what comes next, **Draft it** has Hermes write what the step
   needs, **Snooze** puts it aside for a few days or until a date you pick, and until then it is on
   no list. What is coming up this week sits beside it.
 
-![Today: what needs you, and one move for each](docs/desktop-today.jpg)
+![Today: what is waiting for your approval, then what is due, with one move for each](docs/desktop-today.jpg)
+
+- **Approvals.** Whatever Hermes suggests on its own sits at the top of Today, one card each:
+  what would change, why, and what it rests on (the email, the call, in their words). **Approve**
+  writes it; **Decline** leaves the desk as it is, and the same suggestion is not made again. A
+  list you were sent is reviewed there too, as a whole.
+- **Undo.** Every change records what it replaced. After anything you do, **Undo** appears above
+  the box at the foot of the page; a record's log and the Activity tab offer it for the last
+  change on each record, whoever made it, you, Hermes or a button in Slack.
+
+![An approved proposal, with the offer to take it back](docs/desktop-undo.jpg)
+
+- **People and companies.** A record has its own person and can carry the others around it: the
+  buyer's boss, finance, a hiring manager. Their email and calls are then filed on that record
+  too. Press the company on a record, or **Companies** on the pipeline, for everything at one
+  company: its records, everyone known there, what is open and won, and the notes you keep on it.
+
+![A company: its records, its people, and the notes kept on it](docs/desktop-company.jpg)
 
 - **Setup.** One tab that says where things stand: a short get-started list that ticks itself off,
   what is connected (a key shows as set or not set, never its value), the rules in force (which
@@ -151,8 +171,12 @@ already running when you installed Stoa, restart it once and the tab appears.
   company uses today. Open a company for its requirements checklist, buyers and source, then
   **Add to pipeline**. **Download page** saves the map as a web page.
 - **Activity:** everything that happened, from Slack clicks, the agent and the web alike.
-- **Paper and ink.** Neutral in light and dark, with one quiet line that ends in the Hermes blue.
-  A switch picks the mode, whatever dashboard theme you run.
+- **Setup:** what is connected, the rules in force, sample data and the playbook switch.
+- **The dashboard's own look.** The tab takes its colours, type, square corners and hairlines
+  from the dashboard's theme, so it reads as one of its pages in whichever theme you run.
+
+The newer work (Today, approvals, undo, people and companies) is in the Desktop app and Webapp
+page; the dashboard tab is the pipeline, the map and the log.
 
 ![The market map](docs/dashboard-market-map.jpg)
 
@@ -162,9 +186,7 @@ Buttons on the web do the same instant, deterministic work as the buttons in Sla
 cannot start an agent turn, so when a click calls for a draft the task waits on the record
 (the card shows *draft waiting*) and Hermes writes it the next time that record comes up in chat.
 
-| | |
-|---|---|
-| ![A record](docs/dashboard-record.jpg) | ![Light mode](docs/dashboard-light.jpg) |
+![A record on the dashboard tab](docs/dashboard-record.jpg)
 
 ## What it looks like in chat
 
@@ -197,17 +219,20 @@ change are one database transaction, so it holds across Slack, the web tab and t
 
 | | |
 |---|---|
-| **9 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **10 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_contact`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **Approvals** | What Hermes suggests waits for your yes or no, one decision each, with its evidence; a no is remembered; a scheduled job changes only what you allow |
+| **Undo** | The last change on any record can be taken back, and the one before it, whoever made it |
+| **People and companies** | Several people on a record, mail matched to the right record by whoever sent it, and one view per company |
 | **Intake** | Send a list in any form; review what is new and what would change; apply what you tick |
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
-| **Desktop app and Webapp** | A live pane beside the chat, a Stoa page, and cards and maps drawn inside the conversation |
+| **Desktop app and Webapp** | A live pane beside the chat, a Stoa page (Today, pipeline, companies, market map, activity, setup), and cards and maps drawn inside the conversation |
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
 | **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
 | **`hermes stoa`** | Status, board, brief, map, sample data, CSV import and export from a terminal |
 | **7 automations** | Morning brief, email-call-and-Slack activity sweep, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
-| **3 playbooks** | `b2b-sales`, `recruiting`, `agency`, plus any you or the agent write |
+| **4 playbooks** | `b2b-sales`, `recruiting`, `agency`, `partnerships`, plus any you or the agent write |
 
 ### Market maps
 
@@ -295,6 +320,42 @@ Every record carries one next step and a date. *"What needs me today?"* (or `/gt
 with the same list the Today tab shows. *"Done, I sent the references"* logs the step and sets
 the next one. *"Park Kestrel until the 20th"* snoozes it: a snoozed record is on neither the due
 list nor the quiet list, in the page, the morning brief or Slack, until its date.
+
+### Approvals, autonomy and undo
+
+In a chat you are there, so Hermes does what you ask. The rest is for when you are not.
+
+- **A scheduled job cannot outrun you.** The desk has one setting, changed only on the Setup tab
+  or with `hermes stoa autonomy <ask|routine|full>`: no tool can change it, so the agent cannot
+  raise it. **Ask me first** (the default): a job may log what it finds, and every other change
+  waits for you. **Handle the routine**: it may also set next steps, fill in facts and add people
+  to a record. **Run it**: it may make any change. This is enforced in the plugin, not in the
+  prompt: a change the setting does not allow is not made, it becomes a proposal.
+
+![What a scheduled job may do by itself](docs/desktop-autonomy.jpg)
+
+- **A proposal carries its case.** The record, what would change, one line of why, and up to four
+  pieces of evidence: an email, a call, a message, with who and when and their words. You approve
+  or decline each on Today (or apply a whole list at once). Approving is a person's: a scheduled
+  job cannot apply or discard what is waiting.
+- **A no is remembered.** A declined proposal is kept for 90 days and the same one is left out
+  if it comes again. It is the same one only while the record has not moved: once the stage or
+  the value it would replace changes, it counts as new. **Forget them** on Setup clears the memory.
+- **Everything can be taken back.** Each change stores what it replaced, and one action (a click,
+  a tool call, an approved proposal) is undone as one: *"undo that"*, the Undo offer on the page,
+  or `gtm_deal(action="undo")`. It takes back the last action on a record, then the one before;
+  undoing an add removes the record. It will not reach past something that happened later.
+
+### People and companies
+
+*"Add their CFO, Lena Ortiz, to the Kestrel deal." "Who do we know at Kestrel?" "What do we have
+going with Northwind?"* A record keeps its own person and any number of others, each with a
+title and their part in it. `gtm_contact(action="match")` tells the agent whose an email address
+is: the record it belongs to, through anyone on it, or, for a stranger, the company their domain
+belongs to and that company's open records, so a sweep files mail in the right place and can
+propose adding the sender. A company is not something you set up: it is every record that names
+it, however the name is written ("Kestrel Labs, Inc." and "kestrel labs" are one), plus the notes
+and the email domain you keep on it.
 
 ### Playbooks
 
@@ -492,11 +553,16 @@ What the plugin does that you would want to know before installing it:
   folder, and a file name is all the agent can choose.
 - **Messages to the agent.** With `allow_gateway_injection` granted, a button click queues one
   instruction for the agent in the card's thread. The agent drafts; it is told not to send.
-- **Stored data.** Names, emails, notes and enrichment results for the people in your pipeline
-  sit unencrypted in `plugin-data/stoa/desk.db`. Treat that file like the customer list it is.
+- **Stored data.** Names, emails, notes and enrichment results for the people in your pipeline,
+  and for the other people you add to a record, sit unencrypted in `plugin-data/stoa/desk.db`.
+  So that a change can be taken back, the value it replaced stays in that file with the log entry;
+  what you declined is kept there for 90 days; evidence quoted in a proposal is kept with it.
+  Treat that file like the customer list it is.
+- **What runs without you.** A scheduled job reaches the desk only if you list `cron` in
+  `channels`, and then changes only what the autonomy setting allows; the rest is held for you.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.10
+## Limits in 0.11
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -516,8 +582,15 @@ What the plugin does that you would want to know before installing it:
 - The activity sweep is only as good as the tools your Hermes has connected and the model reading
   the mail. It summarises; check the record's log against the email when it matters.
 - Setup cannot tell which automations you have switched on, so it lists them all and says how.
-  Today and Setup are in the Desktop app and Webapp page; the web dashboard tab has Setup, the
-  tour and its own due and quiet lists, but no Done or snooze-until-a-date yet.
+  Today, approvals, undo, people and companies are in the Desktop app and Webapp page; the web
+  dashboard tab has the pipeline, the map, the log and Setup.
+- The autonomy setting governs scheduled jobs. In a chat the agent can still change something you
+  did not ask for; the skill tells it to propose instead, and whatever it does can be taken back.
+- Undo covers changes made since 0.11. It takes back the last action on a record, not an older
+  one out of order. Changes to a market map, and a proposal you declined, are not undone by it.
+- A person belongs to one record. The same human on two deals is entered on each; the company
+  view shows them together.
+- A proposal is as good as the evidence the agent quotes. Read it before you approve.
 - On a tour, what you do is thrown away when you leave, Slack cards posted from it stop working,
   lookups are off, and scheduled jobs do nothing until it ends.
 - The dock on the page runs a turn of your agent's model, the same as typing in a chat. It takes
@@ -529,7 +602,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 150 tests, no network
+python3 -m unittest discover -s tests     # 172 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

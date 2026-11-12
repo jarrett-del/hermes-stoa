@@ -9,6 +9,7 @@ already there, and which it cannot place. Nothing is written until someone press
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import uuid
 from pathlib import Path
@@ -33,6 +34,51 @@ def _text(value: Any, limit: int = 500) -> str:
     if value is None or isinstance(value, (bool, list, dict)):
         return ""
     return " ".join(str(value).split())[:limit]
+
+
+def _evidence(value: Any) -> list:
+    """What a proposal rests on, as up to four short items: ``{kind, at, who, text, ref}``."""
+    if isinstance(value, (str, dict)):
+        value = [value]
+    out = []
+    for item in value if isinstance(value, list) else []:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            continue
+        entry = {"kind": _text(item.get("kind") or item.get("type"), 20).lower(),
+                 "at": _text(item.get("at") or item.get("date") or item.get("when"), 40),
+                 "who": _text(item.get("who") or item.get("from"), 80),
+                 "text": _text(item.get("text") or item.get("quote") or item.get("summary"), 400),
+                 "ref": _text(item.get("ref") or item.get("id"), 200)}
+        if entry["text"] or entry["ref"]:
+            out.append(entry)
+    return out[:4]
+
+
+def _person(value: Any) -> dict:
+    """Someone a row would add to a record: ``{name, email, title, role}`` ({} when there is no name)."""
+    if not isinstance(value, dict) or not _text(value.get("name"), 120):
+        return {}
+    return {key: _text(value.get(key), 200) for key in ("name", "email", "title", "role", "linkedin", "phone")}
+
+
+def _person_line(person: dict) -> str:
+    return ", ".join(bit for bit in (person.get("name"), person.get("role") or person.get("title"), person.get("email")) if bit)
+
+
+def digest(entry: dict) -> str:
+    """What a row would do, as a short hash: the same proposal made twice hashes the same. A change
+    hashes with what it would replace, so once the record moves on, the proposal counts as new."""
+    if entry.get("kind") == "new" or not entry.get("deal"):
+        row = entry.get("row") or {}
+        basis = ["new", (row.get("email") or "").lower() or _link(row.get("linkedin", "")) or str(entry.get("name") or "").lower(),
+                 str(entry.get("group") or "").lower()]
+    else:
+        changes = [c for c in entry.get("changes") or [] if c.get("key") != "note"] or list(entry.get("changes") or [])
+        basis = ["update", entry["deal"]] + sorted("%s|%s|%s" % (c.get("key"), str(c.get("from") or "").lower(), str(c.get("to") or "").lower())
+                                                 for c in changes)
+    return hashlib.sha1("\n".join(basis).encode("utf-8")).hexdigest()[:20]
 
 
 def _link(url: str) -> str:
@@ -96,19 +142,33 @@ class Intake:
         if len(rows) > MAX_ROWS:
             return {"ok": False, "error": "at most %d rows at a time; send the rest as a second list" % MAX_ROWS}
         playbook = self.desk.playbook()
-        plan, ignored = self.plan(rows, playbook)
+        # A proposal is a change Hermes suggests from what it found; a list is rows somebody sent. A
+        # declined proposal is remembered, and each one is approved or declined by itself.
+        proposal = (str(args.get("kind") or "").lower() == "proposal" or session.get("platform") == "cron"
+                    or any(isinstance(row, dict) and row.get("evidence") for row in rows))
+        plan, ignored = self.plan(rows, playbook, origin="proposal" if proposal else "list")
         intake_id = "in-" + uuid.uuid4().hex[:8]
-        self.store.intake_put(intake_id, source or "a list", plan)
+        self.store.intake_put(intake_id, source or ("a proposal" if proposal else "a list"), plan, "proposal" if proposal else "list")
         self.desk.announce()
         intake = self.store.intake_get(intake_id)
         out = dict(self.view(intake_id), ok=True)
+        declined = [row for row in plan if row["kind"] == "declined"]
+        if declined:
+            out["declined_before"] = len(declined)
         if ignored:
             out["ignored_columns"] = sorted(ignored)[:20]
         if problems:
             out["problems"] = problems[:20]
         if not any(row["kind"] in APPLICABLE for row in plan):
-            out["note"] = "Nothing here would change the desk. Say so in one line."
+            out["note"] = ("Nothing here is new: the person declined %s before, and the desk does not ask twice. Do not propose "
+                           "it again unless something has changed." % ("this" if len(declined) == 1 else "these")) if declined \
+                else "Nothing here would change the desk. Say so in one line."
             self.store.intake_finish(intake_id, "discarded", {"reason": "nothing to apply"})
+            return out
+        if session.get("platform") == "cron":       # nobody is there to show a review to: it waits on the Today tab
+            out.pop("rows", None)
+            out["note"] = ("Held for approval. The person approves or declines each one on the Today tab; nothing has been "
+                           "written and you cannot apply it. Mention in one line that proposals are waiting.")
             return out
         waiting = ("The list is waiting for approval; nothing has been written. Do not apply it yourself unless the "
                    "person tells you to. To apply some rows only, pass rows=[...] or skip=[...] by row number.")
@@ -176,8 +236,12 @@ class Intake:
         row: dict = {"fields": {}}
         warnings, ignored = [], []
         raw = raw if isinstance(raw, dict) else {}
+        row["evidence"] = _evidence(raw.get("evidence"))
+        row["case"] = _text(raw.get("why") or raw.get("because"), 300)
+        row["person"] = _person(raw.get("person"))
+        row["lost_reason"] = _text(raw.get("lost_reason"), 60)
         for column, value in raw.items():
-            if column is None or column == "fields":
+            if column is None or column in ("fields", "evidence", "why", "because", "person", "lost_reason"):
                 continue
             label = str(column).strip().lower()
             key = label.replace(" ", "_")
@@ -273,18 +337,27 @@ class Intake:
                 changes.append({"key": "fields." + key, "field": field_labels.get(key, key), "from": old, "to": new})
         if row.get("stage") and row["stage"] != record["stage"]:
             changes.append({"key": "stage", "field": "Stage", "from": playbook.label(record["stage"]), "to": playbook.label(row["stage"])})
+        person = row.get("person") or {}
+        if person:
+            known = [record] + self.store.people(record["id"])
+            same = [p for p in known if (person.get("email") and (p.get("email") or "").lower() == person["email"].lower())
+                    or p["name"].lower() == person["name"].lower()]
+            if not same:
+                changes.append({"key": "person", "field": "Person", "from": "", "to": _person_line(person)})
         if _text(row.get("note")):
             changes.append({"key": "note", "field": "Note", "from": "", "to": _text(row.get("note"), 160)})
         return changes
 
-    def plan(self, rows: list, playbook) -> tuple:
+    def plan(self, rows: list, playbook, origin: str = "list") -> tuple:
         deals = self.store.list(status="all")
+        declined = self.store.declined() if origin == "proposal" else {}
         plan, ignored, seen = [], set(), {}
         for number, raw in enumerate(rows, start=1):
             row, warnings, extra = self._clean(raw, playbook)
             ignored.update(extra)
             entry = {"n": number, "name": row["name"], "company": _text(row.get("company")), "group": _text(row.get("grp")),
-                     "stage": row["stage"], "row": row, "warnings": warnings, "changes": [], "why": "", "deal": ""}
+                     "stage": row["stage"], "row": row, "warnings": warnings, "changes": [], "why": "", "deal": "",
+                     "evidence": row.pop("evidence"), "case": row.pop("case")}
             plan.append(entry)
             if not row["name"] and row.get("record"):
                 known = self.store.get(str(row["record"]))
@@ -297,7 +370,8 @@ class Intake:
             identity = (row.get("record") or (row.get("email") or "").lower() or _link(row.get("linkedin", ""))
                         or row["name"].lower())
             key = (identity, entry["group"].lower())
-            if key in seen:
+            several = origin == "proposal" and bool(row.get("record"))      # two suggestions about one record are two suggestions
+            if key in seen and not several:
                 entry.update(kind="same", why="same as row %d" % seen[key])
                 continue
             seen[key] = number
@@ -312,14 +386,19 @@ class Intake:
                     "%s (%s)" % (c["name"], c["grp"] or c["company"] or c["id"]) for c in candidates) + ". Say which, or pass its id as `record`.")
             else:
                 entry.update(kind="new", why=why)
+            if entry["kind"] in APPLICABLE:
+                entry["hash"] = digest(entry)
+                if entry["hash"] in declined:       # asked before and turned down: the desk does not ask twice
+                    entry.update(kind="declined", why="declined on %s; not proposed again" % declined[entry["hash"]][:10])
         return plan, ignored
 
     # -- reading a list back --------------------------------------------------------------------
     @staticmethod
     def counts(intake: dict) -> dict:
-        tally = {"new": 0, "update": 0, "same": 0, "unclear": 0, "problem": 0}
+        tally = {"new": 0, "update": 0, "same": 0, "unclear": 0, "problem": 0, "declined": 0, "done": 0}
         for row in intake["rows"]:
-            tally[row.get("kind", "problem")] = tally.get(row.get("kind", "problem"), 0) + 1
+            kind = "done" if row.get("done") else row.get("kind", "problem")      # decided one by one already
+            tally[kind] = tally.get(kind, 0) + 1
         tally["rows"] = len(intake["rows"])
         return tally
 
@@ -330,16 +409,35 @@ class Intake:
             return None
         playbook = self.desk.playbook()
         return {"id": intake["id"], "source": intake["source"], "status": intake["status"], "at": intake["at"],
-                "counts": self.counts(intake), "result": intake["result"],
-                "rows": [{"n": row["n"], "kind": row["kind"], "name": row["name"], "company": row["company"], "group": row["group"],
-                          "stage": playbook.label(row["stage"] or playbook.first_stage()) if row["kind"] == "new" else "",
-                          "changes": [{"field": c["field"], "from": c["from"], "to": c["to"]} for c in row["changes"]],
-                          "why": row["why"], "warnings": row["warnings"], "deal": row["deal"],
-                          "applied": bool(row.get("applied"))} for row in intake["rows"]]}
+                "origin": intake.get("origin") or "list", "counts": self.counts(intake), "result": intake["result"],
+                "rows": [self._shown(row, playbook) for row in intake["rows"]]}
+
+    @staticmethod
+    def _shown(row: dict, playbook) -> dict:
+        return {"n": row["n"], "kind": row["kind"], "name": row["name"], "company": row["company"], "group": row["group"],
+                "stage": playbook.label(row["stage"] or playbook.first_stage()) if row["kind"] == "new" else "",
+                "changes": [{"field": c["field"], "from": c["from"], "to": c["to"]} for c in row["changes"]],
+                "why": row["why"], "warnings": row["warnings"], "deal": row["deal"], "applied": bool(row.get("applied")),
+                "done": row.get("done") or "", "case": row.get("case") or "", "evidence": row.get("evidence") or []}
 
     def waiting(self) -> list:
-        return [{"id": intake["id"], "source": intake["source"], "at": intake["at"], "counts": self.counts(intake)}
-                for intake in self.store.intake_list("open", limit=5)]
+        return [{"id": intake["id"], "source": intake["source"], "at": intake["at"], "origin": intake.get("origin") or "list",
+                 "counts": self.counts(intake)} for intake in self.store.intake_list("open", limit=20)]
+
+    def queue(self, limit: int = 60) -> list:
+        """What is waiting for a person, oldest first: each proposed change by itself (with what it
+        rests on), and each list someone sent as one item to review as a whole."""
+        playbook = self.desk.playbook()
+        items = []
+        for intake in reversed(self.store.intake_list("open", limit=20)):
+            if (intake.get("origin") or "list") != "proposal":
+                items.append({"intake": intake["id"], "list": True, "source": intake["source"], "at": intake["at"],
+                              "counts": self.counts(intake)})
+                continue
+            for row in intake["rows"]:
+                if row["kind"] in APPLICABLE and not row.get("done"):
+                    items.append(dict(self._shown(row, playbook), intake=intake["id"], source=intake["source"], at=intake["at"]))
+        return items[:limit]
 
     def headline(self, intake: dict) -> str:
         tally, terms = self.counts(intake), self.desk.playbook().terms
@@ -368,18 +466,21 @@ class Intake:
                 field = change["field"].lower()
                 if change.get("key") == "note":
                     parts.append("note added")
+                elif change.get("key") == "person":
+                    parts.append("add %s" % change["to"])
                 elif change["from"]:
                     parts.append("%s %s → %s" % (field, change["from"], change["to"]))
                 else:
                     parts.append("%s added" % field)
-            return "%d. %s: %s" % (row["n"], who, "; ".join(parts))
+            return "%d. %s: %s%s" % (row["n"], who, "; ".join(parts), " (%s)" % row["case"] if row.get("case") else "")
         return "%d. %s — %s" % (row["n"], who, row["why"])
 
     def text(self, intake: dict, limit: int = 40) -> str:
         playbook = self.desk.playbook()
         lines = ["Intake · " + self.headline(intake)]
-        for kind, title in (("new", "New"), ("update", "Updates"), ("unclear", "Unclear"), ("problem", "Cannot use"), ("same", "Already there")):
-            rows = [row for row in intake["rows"] if row["kind"] == kind]
+        for kind, title in (("new", "New"), ("update", "Updates"), ("unclear", "Unclear"), ("problem", "Cannot use"), ("same", "Already there"),
+                            ("declined", "Declined before")):
+            rows = [row for row in intake["rows"] if row["kind"] == kind and not row.get("done")]
             if not rows:
                 continue
             lines += ["", "%s (%d)" % (title, len(rows))]
@@ -393,7 +494,7 @@ class Intake:
         """The review as a Slack message: what would change, and the two buttons."""
         escape = cards._escape
         playbook = self.desk.playbook()
-        rows = [row for row in intake["rows"] if row["kind"] in APPLICABLE]
+        rows = [row for row in intake["rows"] if row["kind"] in APPLICABLE and not row.get("done")]
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "*Intake*  ·  %s" % escape(self.headline(intake))}}]
         if intake["status"] == "open":
             listed = [escape(self._line(row, playbook.label(row["stage"] or playbook.first_stage())))[:180] for row in rows[:20]]
@@ -425,6 +526,26 @@ class Intake:
                 continue
         return out
 
+    def _write(self, row: dict, playbook, actor: str, label: str) -> Optional[dict]:
+        """Write one approved row. Everything it changes is one action, so it can be taken back as one."""
+        with self.store.operation():
+            return self._add(row, playbook, actor, label) if row["kind"] == "new" else self._update(row, playbook, actor, label)
+
+    def _remember(self, intake: dict, row: dict) -> None:
+        """A proposal was turned down: do not make it again. (A row left out of a list someone sent is just left out.)"""
+        if (intake.get("origin") or "list") == "proposal":
+            self.store.decline(row.get("hash") or digest(row), row.get("deal") or "", self._line(row)[:300])
+
+    def _close(self, intake: dict, actor: str, problems: Optional[list] = None) -> dict:
+        """Every row has been decided: the list is finished, with what came of it."""
+        done = [row for row in intake["rows"] if row.get("done")]
+        result = {"added": len([r for r in done if r["done"] == "applied" and r["kind"] == "new"]),
+                  "updated": len([r for r in done if r["done"] == "applied" and r["kind"] == "update"]),
+                  "left": len([r for r in done if r["done"] != "applied"]), "problems": (problems or [])[:20], "by": actor}
+        status = "applied" if result["added"] or result["updated"] else "discarded"
+        self.store.intake_finish(intake["id"], status, result if status == "applied" else dict(result, reason="declined"), intake["rows"])
+        return result
+
     def apply(self, args: dict, actor: str = "") -> dict:
         intake = self.store.intake_get(str(args.get("id") or ""))
         if intake is None:
@@ -437,30 +558,74 @@ class Intake:
         label = ("intake: " + intake["source"])[:60]
         added, updated, left, problems, records = 0, 0, 0, [], []
         for row in intake["rows"]:
+            if row.get("done"):                 # decided by itself earlier
+                continue
             row["applied"] = False
             if row["kind"] not in APPLICABLE:
                 continue
             if (wanted is not None and row["n"] not in wanted) or row["n"] in skipped:
                 left += 1
+                row["done"] = "declined"
+                self._remember(intake, row)
                 continue
             try:
-                deal = self._add(row, playbook, actor, label) if row["kind"] == "new" else self._update(row, playbook, actor, label)
+                deal = self._write(row, playbook, actor, label)
             except Exception as exc:        # one row that cannot be written is reported; the rest still land
                 problems.append("row %d (%s): %s" % (row["n"], row["name"], exc))
+                row["done"] = "left"
                 continue
             if deal is None:
                 left += 1
+                row["done"] = "left"
                 continue
-            row["applied"], row["deal"] = True, deal["id"]
+            row["applied"], row["deal"], row["done"] = True, deal["id"], "applied"
             records.append(deal["id"])
             added, updated = added + (row["kind"] == "new"), updated + (row["kind"] == "update")
             self.desk._changed(deal)
-        result = {"added": added, "updated": updated, "left": left, "problems": problems[:20], "by": actor}
-        self.store.intake_finish(intake["id"], "applied", result, intake["rows"])
+        self._close(intake, actor, problems)
         self.desk.announce()
         return {"ok": True, "applied": True, "id": intake["id"], "added": added, "updated": updated, "left_out": left,
                 "problems": problems[:20], "records": records[:50],
                 "note": "Done. Say what was added and updated in one or two lines; do not list every record."}
+
+    def decide(self, intake_id: Any, number: Any, verb: str, actor: str = "") -> dict:
+        """Approve or decline one row by itself. The list stays open until its last row is decided."""
+        intake = self.store.intake_get(str(intake_id or ""))
+        if intake is None:
+            return {"ok": False, "error": "no such list"}
+        if verb not in ("approve", "decline"):
+            return {"ok": False, "error": "approve or decline"}
+        if intake["status"] != "open" or not self.store.intake_claim(intake["id"]):
+            now = self.store.intake_get(intake["id"])
+            return {"ok": True, "decided": False, "note": "Already dealt with: " + self.headline(now)}
+        numbers = self._numbers(number) or set()
+        row = next((r for r in intake["rows"] if r["n"] in numbers and r["kind"] in APPLICABLE and not r.get("done")), None)
+        out = {"ok": True, "decided": False, "note": "That one is already dealt with."}
+        problems = []
+        try:
+            if row is not None and verb == "approve":
+                try:
+                    deal = self._write(row, self.desk.playbook(), actor, ("intake: " + intake["source"])[:60])
+                except Exception as exc:
+                    deal, problems = None, ["row %d (%s): %s" % (row["n"], row["name"], exc)]
+                row["applied"], row["done"] = deal is not None, "applied" if deal is not None else "left"
+                if deal is not None:
+                    row["deal"] = deal["id"]
+                    self.desk._changed(deal)
+                out = {"ok": True, "decided": True, "applied": deal is not None, "deal": row.get("deal") or "",
+                       "note": "Done." if deal is not None else (problems[0] if problems else "Nothing to change: the record already says so.")}
+            elif row is not None:
+                row["applied"], row["done"] = False, "declined"
+                self._remember(intake, row)
+                out = {"ok": True, "decided": True, "applied": False, "deal": row.get("deal") or "",
+                       "note": "Declined. It will not be proposed again." if (intake.get("origin") or "list") == "proposal" else "Left out."}
+        finally:
+            if any(r["kind"] in APPLICABLE and not r.get("done") for r in intake["rows"]):
+                self.store.intake_finish(intake["id"], "open", intake["result"], intake["rows"])      # the rest still wait
+            else:
+                self._close(intake, actor, problems)
+        self.desk.announce()
+        return out
 
     def _add(self, row: dict, playbook, actor: str, label: str) -> Optional[dict]:
         values = row["row"]
@@ -476,7 +641,9 @@ class Intake:
                               next_step=values.get("next_step") or "", next_due=values.get("next_due") or "",
                               source=values.get("source") or label, fields=values.get("fields") or None)
         if closing:
-            deal = self.desk._move(deal, stage, playbook, actor) or deal
+            deal = self.desk._move(deal, stage, playbook, actor, values.get("lost_reason") or "") or deal
+        if values.get("person"):
+            self.store.person_add(deal["id"], actor=actor, **values["person"])
         if _text(values.get("note")):
             self.store.log(deal["id"], "note", _text(values["note"], 4000), actor=actor)
         return self.store.get(deal["id"])
@@ -490,12 +657,14 @@ class Intake:
         if not changes:
             return None
         plain = {c["key"]: (values["value"] if c["key"] == "value" else c["to"]) for c in changes
-                 if c["key"] not in ("stage", "note") and not c["key"].startswith("fields.")}
+                 if c["key"] not in ("stage", "note", "person") and not c["key"].startswith("fields.")}
         fields = {c["key"][len("fields."):]: c["to"] for c in changes if c["key"].startswith("fields.")}
         if plain or fields:
             record = self.store.update(record["id"], actor=actor, fields=fields or None, **plain)
         if any(c["key"] == "stage" for c in changes):
-            record = self.desk._move(record, values["stage"], playbook, actor) or self.store.get(record["id"])
+            record = self.desk._move(record, values["stage"], playbook, actor, values.get("lost_reason") or "") or self.store.get(record["id"])
+        if any(c["key"] == "person" for c in changes):
+            self.store.person_add(record["id"], actor=actor, **values["person"])
         if _text(values.get("note")):
             self.store.log(record["id"], "note", "%s (%s)" % (_text(values["note"], 4000), label), actor=actor)
         return self.store.get(record["id"])
@@ -505,7 +674,11 @@ class Intake:
         if intake is None:
             return {"ok": False, "error": "no such list"}
         if intake["status"] == "open" and self.store.intake_claim(intake_id):
-            self.store.intake_finish(intake_id, "discarded", {"reason": "discarded"})
+            for row in intake["rows"]:
+                if row["kind"] in APPLICABLE and not row.get("done"):
+                    row["done"] = "declined"
+                    self._remember(intake, row)
+            self.store.intake_finish(intake_id, "discarded", {"reason": "discarded"}, intake["rows"])
             self.desk.announce()
             return {"ok": True, "discarded": True, "note": "Discarded. Nothing was written."}
         return {"ok": True, "discarded": False, "status": intake["status"], "note": "Already dealt with: " + self.headline(intake)}

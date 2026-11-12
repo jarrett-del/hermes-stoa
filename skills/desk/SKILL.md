@@ -118,23 +118,57 @@ Stoa has no mail or chat code of its own. You do this with whatever the person h
 Hermes: Gmail, a calendar or call recorder, Slack search. If none of those tools is available to
 you, say so in one line and stop.
 
-1. `gtm_export(action="table")` gives the open records with their emails. Those people and
-   companies are the only ones you look for.
-2. With your own tools, find what happened with them in the window you were given: email sent or
-   received, calls and meetings that took place, messages in Slack. Leave out newsletters,
-   automated mail and anything that is not about the work.
-3. For each thing you find, `gtm_deal(action="log", deal="<id>", kind="email" | "call" |
-   "meeting" | "note", text="<who said what, in one or two sentences, with the date>",
+1. With your own tools, find what happened in the window you were given: email sent or received,
+   calls and meetings that took place, messages in Slack. Leave out newsletters, automated mail
+   and anything that is not about the work.
+2. `gtm_contact(action="match", emails=[...])` with every address involved. It answers for each
+   one: the record it belongs to (the record's own person, or one of the other people on it), or,
+   for someone not on the desk, the company their address belongs to and that company's open
+   records. An address it knows nothing about is not about the desk: leave it.
+3. For each thing that belongs to a record, `gtm_deal(action="log", deal="<id>", kind="email" |
+   "call" | "meeting" | "note", text="<who said what, in one or two sentences, with the date>",
    ref="<the message, thread or event id>")`. Always pass `ref`: it is what makes running the
    sweep twice harmless. Summarise; never paste a whole email, and never log something you
    could not read.
-4. When something means a record should move ("interview booked", "they signed", "not
-   interested") or needs a new next step, **do not change it**. Collect those as rows and call
-   `gtm_intake(action="propose", source="Activity sweep", rows=[{"record": "<id>", "stage":
-   "<stage>", "next_step": "...", "next_due": "...", "note": "<the evidence, one line>"}])`.
-   The person gets the review with tick boxes and applies what they agree with.
-5. Someone writes in who is not on the desk and looks like they should be: put them in the same
-   proposal as a new row. Do not add them yourself.
+4. Everything beyond logging is a **proposal**, not a change: a record that should move
+   ("interview booked", "they signed", "not interested"), a new next step, a sender at a known
+   company who should be on the record, someone new who looks like they belong on the desk.
+   Collect them and call `gtm_intake(action="propose", kind="proposal", source="Activity sweep",
+   rows=[...])`. Each row names its `record` (or is a new one), says what would change (`stage`,
+   `next_step` and `next_due`, `person: {name, email, title, role}`, `lost_reason` with a losing
+   stage), and carries `why` (one line) and `evidence`: up to four items of `{kind, at, who,
+   text, ref}`, with `text` their own words where you have them. The person sees each one on the
+   Today tab with that evidence and approves or declines it.
+5. A proposal the person declined is remembered: the desk leaves it out and tells you so. Do not
+   reword it to get it through. Propose it again only when something new has happened.
+
+## Proposals, approvals and taking things back
+
+- **In a chat**, when the person tells you something happened or asks for a change, make it. You
+  do not need approval for what they asked for.
+- **On your own initiative** (something you noticed, not something asked for), propose it as
+  above instead of changing it, and say that it is waiting on Today.
+- **In a scheduled job** the desk decides, not you: it has an autonomy setting only the person
+  can change. Logging always works. Any other change you make either goes through, or comes back
+  `"held": true`: it is now a proposal waiting for the person. That is the right outcome. Do not
+  try another route, do not apply or discard anything yourself (the desk refuses), and pass `why`
+  and `evidence` with such changes so the person can decide quickly.
+- **Undo.** Every change records what it replaced. "Undo that" or "put Dana back" is
+  `gtm_deal(action="undo", deal="<name or id>")`: it takes back the last action on that record,
+  whoever made it, and can be repeated for the one before. If someone says a change was wrong,
+  take it back rather than editing over it.
+
+## People and companies
+
+A record has its own person (its name and email). Everyone else around it, a buyer's boss, the
+finance contact, a hiring manager, goes on the record as another person:
+`gtm_contact(action="add", deal="<id>", name=..., email=..., title=..., role=...)`. Do this when
+the person mentions someone ("their CFO Lena is joining the call"), so that Lena's email is
+filed on the right record from then on. `gtm_contact(action="find", query=...)` answers "who do
+we know at Kestrel?" and "who is Lena?". `gtm_contact(action="company", company=...)` gives one
+company whole: its records, everyone known there, what is open and won, and the notes kept on
+it; pass `note` to save what is worth remembering about the company itself, and `domain` when you
+learn its email domain.
 
 ## Today, and briefs
 

@@ -130,8 +130,11 @@ def state() -> dict:
             "first_calls": summary["first_calls"],
             "counts": {"mapped": summary["numbers"]["companies"], "tracked": summary["numbers"]["in_pipeline"],
                        "dismissed": summary["numbers"]["dismissed"]}})
+    last = d.store.undoables()      # per record, the action that can still be taken back
     activity = [{"id": a["id"], "deal": a["deal_id"], "name": names.get(a["deal_id"], a["deal_id"]), "at": a["at"],
-                 "kind": a["kind"], "text": a["text"], "by": a["actor"]} for a in d.store.activities(limit=40)]
+                 "kind": a["kind"], "text": a["text"], "by": a["actor"], "op": a.get("op") or "", "undone": bool(a.get("undone")),
+                 "can_undo": bool(a.get("before")) and not a.get("undone") and last.get(a["deal_id"]) == a.get("op")}
+                for a in d.store.activities(limit=40)]
     open_deals = [x for x in deals if x["status"] == "open"]
     tour = d.tour()
     return {
@@ -147,6 +150,7 @@ def state() -> dict:
                      "fields": playbook.fields},
         "deals": [_card(d, deal, playbook, touches, pending) for deal in deals],
         "markets": markets,
+        "companies": d.companies(),
         "intakes": d.intake.waiting(),
         "activity": activity,
         "flow": d.flow(deals, playbook),
@@ -174,9 +178,11 @@ def deal(deal_id: str) -> dict:
         raise HTTPException(404, "no such record")
     playbook = d.playbook()
     out = _card(d, record, playbook)
-    out["activity"] = [{"at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"]}
+    out["activity"] = [{"at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"], "undone": bool(a.get("undone"))}
                        for a in d.store.activities(deal_id, limit=30)]
     out["pending_task"] = d.store.meta_get("pending:" + deal_id)
+    out["people"] = d.people(record)[1:]             # the others on the record; its own person is the record itself
+    out["undo"] = d.store.undoable(deal_id)          # the last action, if it can be taken back
     return out
 
 
@@ -187,7 +193,81 @@ def add_deal(body: dict = Body(...)) -> dict:
     if not result.get("ok"):
         raise HTTPException(400, result.get("error") or "could not add the record")
     d.announce()
+    if result.get("deal") and not result.get("exists"):
+        result["last"] = _last(d, result["deal"]["id"])
     return result
+
+
+def _last(d, deal_id: str) -> Optional[dict]:
+    """What was just done to a record, for the page to offer taking it back."""
+    last = d.store.undoable(deal_id)
+    record = d.store.get(deal_id)
+    return dict(last, deal=deal_id, name=record["name"]) if last and record else None
+
+
+@router.post("/deal/{deal_id}/undo")
+def undo(deal_id: str, body: Optional[dict] = Body(None)) -> dict:
+    """Take back the last action on a record. With ``op``, only if that action is still its last."""
+    d = desk()
+    if d.store.get(deal_id) is None:
+        raise HTTPException(404, "no such record")
+    result = d.undo(deal_id, op=str((body or {}).get("op") or ""), actor="dashboard")
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("error") or "nothing to take back")
+    d.announce()
+    return {"ok": True, "undid": result["undid"], "removed": result["removed"], "name": result["name"],
+            "last": None if result["removed"] else _last(d, deal_id)}
+
+
+@router.post("/deal/{deal_id}/person")
+def person(deal_id: str, body: dict = Body(...)) -> dict:
+    """add | update | remove one of the other people on a record."""
+    d = desk()
+    if d.store.get(deal_id) is None:
+        raise HTTPException(404, "no such record")
+    verb = str((body or {}).get("verb") or "")
+    if verb not in ("add", "update", "remove"):
+        raise HTTPException(400, "unknown action")
+    allowed = ("name", "email", "title", "role", "linkedin", "phone", "note", "person", "new_name")
+    with d.store.operation():
+        result = d.contact(dict({k: body[k] for k in allowed if k in body}, action=verb, deal=deal_id), actor="dashboard")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not save")
+    d.announce()
+    return {"ok": True, "exists": bool(result.get("exists")), "people": result["people"][1:], "last": _last(d, deal_id)}
+
+
+@router.post("/company")
+def company(body: dict = Body(...)) -> dict:
+    """One company: its records, everyone known there, and the notes kept on it. With ``note`` or ``domain``, saves them first."""
+    d = desk()
+    body = body or {}
+    result = d.company(str(body.get("name") or ""), note=body.get("note"), domain=body.get("domain"))
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error") or "no such company")
+    if body.get("note") is not None or body.get("domain") is not None:
+        d.announce()
+    return result
+
+
+@router.post("/autonomy")
+def autonomy(body: dict = Body(...)) -> dict:
+    """What a scheduled job may change by itself. Set here by a person; no tool can change it."""
+    d = desk()
+    result = d.set_autonomy((body or {}).get("level"))
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "unknown level")
+    d.announce()
+    return result
+
+
+@router.post("/declined/forget")
+def forget_declined() -> dict:
+    """Forget what was declined, so those proposals may be made again."""
+    d = desk()
+    forgotten = d.own_store.declined_clear()
+    d.announce()
+    return {"ok": True, "forgotten": forgotten}
 
 
 @router.post("/deal/{deal_id}/act")
@@ -207,7 +287,8 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
             d._changed(result["deal"])
         d.announce()
         return {"ok": True, "notice": result.get("notice") or "", "parked": bool(result.get("followup")),
-                "ask": _ask(d, deal_id, verb) if result.get("followup") else ""}
+                "ask": _ask(d, deal_id, verb) if result.get("followup") else "",
+                "last": _last(d, deal_id) if verb not in ("draft", "enrich") else None}
     if verb in ("log", "update", "move", "done", "snooze"):
         allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage",
                    "days", "until")
@@ -216,7 +297,7 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
         if not result.get("ok"):
             raise HTTPException(400, result.get("error") or "could not save")
         d.announce()
-        return {"ok": True}
+        return {"ok": True, "last": _last(d, deal_id)}
     raise HTTPException(400, "unknown action")
 
 
@@ -287,7 +368,7 @@ def intake_file(body: dict = Body(...)) -> dict:
     counts = result.get("counts") or {}
     waiting = bool(counts.get("new") or counts.get("update"))
     return {"ok": True, "id": result.get("id"), "counts": counts, "waiting": waiting, "problems": result.get("problems") or [],
-            "headline": (d.intake.headline(d.store.intake_get(result["id"])) + ". Review it at the top of the page.") if waiting
+            "headline": (d.intake.headline(d.store.intake_get(result["id"])) + ". It is waiting for your approval on Today.") if waiting
             else "Nothing in %s would change the desk." % (str((body or {}).get("name") or "that list"))}
 
 
@@ -298,6 +379,18 @@ def intake(intake_id: str) -> dict:
     if view is None:
         raise HTTPException(404, "no such list")
     return view
+
+
+@router.post("/intake/{intake_id}/row")
+def intake_row(intake_id: str, body: dict = Body(...)) -> dict:
+    """Approve or decline one row by itself; the rest of the list stays waiting."""
+    d = desk()
+    result = d.intake.decide(intake_id, (body or {}).get("n"), str((body or {}).get("verb") or ""), "app")
+    if not result.get("ok"):
+        raise HTTPException(404 if "no such" in str(result.get("error")) else 400, result.get("error") or "could not do that")
+    if result.get("applied") and result.get("deal"):
+        result["last"] = _last(d, result["deal"])
+    return result
 
 
 @router.post("/intake/{intake_id}/{verb}")

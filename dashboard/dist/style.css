@@ -293,3 +293,63 @@
 .stoa-setup .stoa-check span { overflow-wrap: anywhere; }
 .stoa-setup-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .stoa-setup-foot { color: var(--st-mute); font-size: 12px; text-align: center; margin: 6px 0 0; }
+
+/* == Fitted to the Hermes dashboard ==================================================================
+   The tab takes the dashboard's own colours (--background-base, --midground), its type (--font-*),
+   its square corners and its hairlines, so it reads as one of its pages in whatever theme is on.
+   Where those variables are missing the fallbacks give the earlier dark look. */
+.stoa, .stoa[data-mode] {
+  --st-ink: var(--midground, #e8e6de);
+  --st-bg: var(--background-base, #0a0b0d);
+  --st-soft: color-mix(in srgb, var(--st-ink) 80%, transparent);
+  --st-mute: color-mix(in srgb, var(--st-ink) 55%, transparent);
+  --st-line: color-mix(in srgb, var(--st-ink) 15%, transparent);
+  --st-card: transparent;
+  --st-raise: color-mix(in srgb, var(--st-ink) 5%, transparent);
+  --st-wash: color-mix(in srgb, var(--st-ink) 9%, transparent);
+  --st-spec-a: var(--st-line);
+  --st-spec-b: var(--st-line);
+  --st-spec-c: var(--st-line);
+  --st-good: var(--st-ink);
+  --st-warn: color-mix(in srgb, #e3a13a 78%, var(--st-ink));
+  --st-bad: color-mix(in srgb, #e5675a 78%, var(--st-ink));
+  --st-serif: inherit;
+  --st-sans: inherit;
+  --st-mono: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  --st-head: var(--font-rules-expanded, inherit);
+  --st-label: var(--font-mondwest, inherit);
+  background: transparent;
+  padding: 0 0 28px;
+  min-height: 0;
+  overflow: visible;
+}
+.stoa, .stoa *, .stoa *::before, .stoa *::after { border-radius: 0 !important; }
+.stoa .stoa-dot, .stoa .stoa-live b { border-radius: 50% !important; }
+.stoa-aurora, .stoa-mode { display: none; }
+.stoa-hero { gap: 36px; padding: 0 0 22px; margin-bottom: 22px; }
+.stoa-hero::after, .stoa-drawer header::after { height: 1px; }
+.stoa-eyebrow, .stoa-h, .stoa-colhead h4, .stoa-step small { font-family: var(--st-head); font-weight: 700; letter-spacing: 0.1em; }
+.stoa-eyebrow { font-size: 10.5px; }
+.stoa-title { font-weight: 300; font-size: clamp(40px, 4.6vw, 62px); letter-spacing: -0.02em; margin-top: 14px; }
+.stoa-title em { font-style: normal; font-family: var(--st-mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; margin-left: 14px; }
+.stoa-sub { margin-top: 14px; }
+.stoa-num { font-weight: 300; font-size: 32px; }
+.stoa-h b { font-family: var(--st-mono); font-weight: 400; font-size: 14px; }
+.stoa-fn-num { font-family: var(--st-mono) !important; font-size: 16px; }
+.stoa-fn-block { opacity: 0.5; }
+.stoa-fn-won { fill: var(--st-ink); }
+.stoa-attn { gap: 0; }
+.stoa-attn .stoa-panel + .stoa-panel { border-left: 0; }
+.stoa-btn { font-family: var(--st-label); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; padding: 7px 12px; background: transparent; }
+.stoa-btn[data-kind="primary"] { background: var(--st-ink); color: var(--st-bg); font-weight: 700; }
+.stoa-btn[data-kind="ghost"] { padding: 6px 10px; }
+.stoa-seg { gap: 0; border: 1px solid var(--st-line); }
+.stoa-seg button { padding: 6px 13px; font-family: var(--st-label); font-size: 12.5px; letter-spacing: 0.03em; }
+.stoa-seg button[data-on="1"] { background: var(--st-ink); color: var(--st-bg); }
+.stoa-seg button[data-on="1"] i { opacity: 0.75; }
+.stoa-input, .stoa-select, .stoa-area { background: transparent; font-family: var(--st-mono); font-size: 13px; }
+.stoa-card:hover { background: var(--st-raise); }
+.stoa-feed, .stoa-blank { background: transparent; }
+.stoa-scrim { background: color-mix(in srgb, var(--st-bg) 62%, transparent); }
+.stoa-toast { font-family: var(--st-label); letter-spacing: 0.03em; }
+.stoa-tour { background: var(--st-raise); }

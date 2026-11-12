@@ -32,6 +32,17 @@ HANDOFF_FRESH = 90  # seconds a "Drafting..." line is believed without news (a r
 DESKTOP_FRESH = 90  # seconds since the Desktop app or Webapp half last checked in for it to count as open
 TOUR_MARKER = "tour.json"       # in the data folder while sample data is on show; it names the example and its file
 TOUR_FILE = re.compile(r"^tour-[0-9a-f]{8}\.db$")
+# What a scheduled job may change by itself. Nobody is watching a job, so the desk decides this, not
+# the prompt: anything a level does not allow is held as a proposal for a person to approve.
+AUTONOMY = {
+    "ask": {"label": "Ask me first", "allows": ("log",),
+            "summary": "A scheduled job may log what it finds. Every other change waits for your approval."},
+    "routine": {"label": "Handle the routine", "allows": ("log", "update", "done", "person"),
+                "summary": "A scheduled job may also set next steps, fill in facts and add people to a record. "
+                           "Stage changes, new records and closing wait for your approval."},
+    "full": {"label": "Run it", "allows": ("log", "update", "done", "person", "add", "move", "close", "reopen", "snooze"),
+             "summary": "A scheduled job may make any change itself. Every change is on the log and can be taken back."},
+}
 TOUR_NOTE = ("The desk is showing sample data (a tour): every person and company on it is made up, and the "
              "team's own records are out of sight until the tour ends.")
 
@@ -484,7 +495,7 @@ class Desk:
         lists["new"].sort(key=lambda row: row["days"])
         lists["coming"].sort(key=lambda row: row["due"])
         lists["snoozed"].sort(key=lambda row: row["until"])
-        approvals = self.intake.waiting()
+        approvals = self.intake.queue()
         counts = dict({key: len(rows) for key, rows in lists.items()}, approvals=len(approvals))
         needs = sum(counts[key] for key in ("overdue", "due_today", "quiet", "new", "drafts", "approvals"))
         if full:
@@ -512,7 +523,8 @@ class Desk:
         section("Due today", "due_today", lambda d: "%s — %s" % (d["name"], d.get("next_step", "next step")))
         if data["approvals"]:
             lines += ["", "Waiting for your approval (%d)" % counts["approvals"]] + [
-                "  " + self.intake.headline(self.store.intake_get(item["id"])) for item in data["approvals"]]
+                "  " + (self.intake.headline(self.store.intake_get(item["intake"])) if item.get("list")
+                        else self.intake._line(item)[len("%d. " % item["n"]):]) for item in data["approvals"]]
         section("Writing waiting to be picked up", "drafts", lambda d: "%s — %s" % (d["name"], d["stage_label"]))
         section("Gone quiet", "quiet", lambda d: "%s — %s, quiet %dd (a nudge is due after %dd)"
                 % (d["name"], d["stage_label"], d["days"], d["expected"]))
@@ -582,7 +594,11 @@ class Desk:
              else "In every chat this agent is in."},
             {"label": "Who may press a Slack button",
              "value": "These Slack members: %s." % ", ".join(users) if users else "Only the person a card was posted for."},
-            {"label": "Stage changes Hermes finds on its own", "value": "Proposed for your approval. A sweep never moves a record."},
+            {"label": "What a scheduled job may change by itself", "own": True,     # own: the page gives it a box of its own
+             "value": "%s. %s" % (AUTONOMY[self.autonomy()]["label"], AUTONOMY[self.autonomy()]["summary"])},
+            {"label": "What you declined", "own": True,
+             "value": ("%d declined proposals are remembered for 90 days and not made again." % tally["declined"])
+             if tally["declined"] else "A proposal you decline is remembered for 90 days and not made again."},
             {"label": "Lists (a CSV, a Sheet, pasted rows)", "value": "Held as a review. Nothing is written until you apply."},
             {"label": "Scheduled jobs",
              "value": "Paused while sample data is on show." if tour
@@ -600,10 +616,14 @@ class Desk:
                          "chosen": chosen, "shown": playbook.name},
             "playbooks": [dict(entry, active=entry["name"] == own.name) for entry in self.library.catalog()],
             "can_switch": bool(self.can_configure),
+            "autonomy": {"level": self.autonomy(), "levels": [{"id": key, "label": level["label"], "summary": level["summary"]}
+                                                              for key, level in AUTONOMY.items()]},
+            "declined": tally["declined"],
             "checklist": checklist, "connections": connections, "rules": rules,
             "automations": [{"name": bp["name"], "title": bp["title"], "description": bp["description"]} for bp in blueprints.BLUEPRINTS],
             "data": {"path": str(self.data_dir / "desk.db"), "size": size, "records": real, "open": tally["open"], "won": tally["won"],
                      "lost": tally["lost"], "samples": tally["samples"], "activities": tally["activities"], "maps": tally["maps"],
+                     "people": tally["people"],
                      "lists_waiting": tally["lists_waiting"], "exports": str(self.data_dir / "exports")},
             "playbook_sets": {
                 "words": "%s, %s" % (terms["deal"], terms["group"]),
@@ -652,7 +672,126 @@ class Desk:
 
     # -- gtm_deal -------------------------------------------------------------------------------
     def deal(self, args: dict, actor: str = "") -> dict:
-        """``actor`` names who is doing this when it is not the agent's own tool call (a form on the page)."""
+        """``actor`` names who is doing this when it is not the agent's own tool call (a form on the page).
+        Whatever one call changes is one action on the log, taken back as one."""
+        if str(args.get("action") or "").lower() == "undo":
+            return self.undo(args.get("deal"), actor=actor)
+        with self.store.operation():
+            return self._deal(args, actor)
+
+    def undo(self, ref: Any, op: str = "", actor: str = "") -> dict:
+        """Take back the last action on a record (and the one before it, if asked again)."""
+        deal, error = self._resolve(ref)
+        if error:
+            return error
+        result = self.store.undo(deal["id"], op=str(op or ""), actor=actor or self.actor())
+        if result is None:
+            return {"ok": False, "error": "Nothing to take back on %s: something else has happened to it since, or its last "
+                                          "change was made before changes could be taken back." % deal["name"]}
+        if result["deal"]:
+            self._changed(result["deal"])
+        return {"ok": True, "action": "undo", "undid": result["text"], "removed": result["deleted"], "name": deal["name"],
+                "deal": self.view(result["deal"], activities=3) if result["deal"] else None}
+
+    # -- what a scheduled job may do by itself ----------------------------------------------------
+    def autonomy(self) -> str:
+        level = self.own_store.meta_get("autonomy", "ask")
+        return level if level in AUTONOMY else "ask"
+
+    def set_autonomy(self, level: Any) -> dict:
+        """Set by a person, on the Setup tab or at a terminal. There is no tool for it: the agent cannot raise its own."""
+        level = str(level or "").strip().lower()
+        if level not in AUTONOMY:
+            return {"ok": False, "error": "autonomy is one of: %s" % ", ".join(AUTONOMY)}
+        self.own_store.meta_set("autonomy", level)
+        return {"ok": True, "autonomy": level, "label": AUTONOMY[level]["label"], "summary": AUTONOMY[level]["summary"]}
+
+    def guard(self, tool: str, args: dict, session: Optional[dict]) -> Optional[dict]:
+        """The answer to give a scheduled job in place of running a tool, or ``None`` to run it.
+
+        Reading and logging always run. A change the autonomy setting does not allow is held as a
+        proposal on the Today tab when a proposal can carry it, and refused when it cannot.
+        """
+        if (session or {}).get("platform") != "cron":
+            return None
+        allows = AUTONOMY[self.autonomy()]["allows"]
+        action = str((args or {}).get("action") or "").lower()
+        refused = {"ok": False, "error": "A scheduled job cannot do that by itself: the desk's autonomy setting (%s) keeps it for "
+                                         "the person. Say what you would have done in your reply instead."
+                                         % AUTONOMY[self.autonomy()]["label"]}
+        if tool == "gtm_deal":
+            action = action or "get"
+            if action == "get" or action in allows:
+                return None
+            if action == "undo":
+                return refused
+            return self.hold(action, args or {})
+        if tool == "gtm_contact" and action in ("add", "update", "remove") and "person" not in allows:
+            return self.hold("person", args or {}) if action == "add" else refused
+        if tool == "gtm_contact" and action == "company" and "update" not in allows and (
+                args.get("note") is not None or args.get("domain") is not None):
+            return refused
+        if tool == "gtm_intake" and action in ("apply", "discard"):
+            return {"ok": False, "error": "A scheduled job cannot approve or discard what is waiting: that is the person's call, "
+                                          "on the Today tab. Leave it there."}
+        if tool == "gtm_export" and action == "import" and "add" not in allows:
+            return {"ok": False, "error": "A scheduled job cannot import records by itself. Propose the rows with gtm_intake and "
+                                          "the person will approve them."}
+        if tool == "gtm_market" and action == "track" and "add" not in allows:
+            return {"ok": False, "error": "A scheduled job cannot put a company in the pipeline by itself. Add it to the map and "
+                                          "say which ones you would call first; the person adds them with one press."}
+        if tool == "gtm_playbook" and action in ("save", "use"):
+            return refused
+        return None
+
+    def hold(self, action: str, args: dict) -> dict:
+        """Turn a change a scheduled job asked for into a proposal waiting for a person."""
+        playbook = self.playbook()
+        row: dict = {"why": args.get("why") or "", "evidence": args.get("evidence") or []}
+        if action == "add":
+            row.update({key: args.get(key) for key in ("name", "company", "group", "stage", "value", "owner", "email", "linkedin",
+                                                      "source", "next_step", "next_due", "fields", "note") if args.get(key) not in (None, "")})
+        else:
+            deal, error = self._resolve(args.get("deal"))
+            if error:
+                return error
+            row["record"] = deal["id"]
+            if action == "move":
+                target = str(args.get("stage") or "next")
+                stage = playbook.next_stage(deal["stage"]) if target.lower() == "next" else playbook.resolve_stage(target)
+                if not stage:
+                    return {"ok": False, "error": "unknown stage '%s'" % target,
+                            "stages": playbook.stage_ids() + [playbook.won["id"], playbook.lost["id"]]}
+                row.update(stage=stage, lost_reason=str(args.get("reason") or ""))
+            elif action == "close":
+                outcome = str(args.get("outcome") or "").lower()
+                if outcome not in ("won", "lost"):
+                    return {"ok": False, "error": "close needs outcome: won or lost"}
+                row.update(stage=playbook.won["id"] if outcome == "won" else playbook.lost["id"], lost_reason=str(args.get("reason") or ""))
+            elif action == "update":
+                row.update({key: args.get(key) for key in ("name", "company", "group", "email", "linkedin", "value", "owner",
+                                                          "next_step", "next_due", "fields") if args.get(key) not in (None, "")})
+            elif action == "done":
+                step = deal["next_step"].strip()
+                row.update(note=str(args.get("text") or "").strip() or ("Done: %s" % step if step else "Done."),
+                           next_step=args.get("next_step") or "", next_due=args.get("next_due") or "")
+            elif action == "person":
+                row["person"] = {key: args.get(key) for key in ("name", "email", "title", "role", "linkedin", "phone")}
+                row["person"]["name"] = args.get("name") or args.get("person") or ""
+            else:
+                return {"ok": False, "error": "A scheduled job cannot %s a record. Say in your reply that you would, and why."
+                                              % action}
+        out = self.intake.propose({"rows": [row], "source": "Hermes, on a schedule", "kind": "proposal"}, {"platform": "cron"})
+        if not out.get("ok"):
+            return out
+        waiting = (out.get("counts") or {}).get("new", 0) + (out.get("counts") or {}).get("update", 0)
+        return {"ok": True, "held": bool(waiting), "id": out.get("id") if waiting else "",
+                "note": out.get("note") if not waiting else
+                "Held for approval, not done: the desk's autonomy setting (%s) keeps this kind of change for the person, who "
+                "approves or declines it on the Today tab. Do not try another way. Carry on, and mention in one line that it "
+                "is waiting." % AUTONOMY[self.autonomy()]["label"]}
+
+    def _deal(self, args: dict, actor: str = "") -> dict:
         action = str(args.get("action") or "get").lower()
         playbook = self.playbook()
         actor = actor or self.actor()
@@ -737,7 +876,7 @@ class Desk:
                                      until=until, actor=actor)
         else:
             return {"ok": False, "error": "unknown action '%s'" % action,
-                    "actions": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze"]}
+                    "actions": ["get", "add", "update", "move", "close", "reopen", "log", "done", "snooze", "undo"]}
         self._changed(deal)
         return {"ok": True, "action": action, "deal": self.view(deal, playbook, activities=3)}
 
@@ -787,6 +926,10 @@ class Desk:
         Returns ``{"deal", "followup", "notice"}``: ``followup`` is an instruction for the agent
         (the writing half), ``notice`` a short line for the person who clicked.
         """
+        with self.store.operation():
+            return self._click(verb, deal_id, extra, actor)
+
+    def _click(self, verb: str, deal_id: str, extra: str = "", actor: str = "") -> dict:
         deal = self.store.get(deal_id)
         if deal is None:
             return {"deal": None, "notice": "That record is no longer on the desk."}
@@ -903,6 +1046,195 @@ class Desk:
     # -- gtm_market -----------------------------------------------------------------------------
     def market(self, args: dict, session: Optional[dict] = None) -> dict:
         return self.markets.run(args, session)
+
+    # -- gtm_contact: the other people on a record, and what is known about a company ---------------
+    def people(self, deal: dict) -> list:
+        """Everyone on a record: the record's own person first, then the others."""
+        first = {"primary": True, "name": deal["name"], "email": deal["email"], "linkedin": deal["linkedin"],
+                 "title": str((deal.get("fields") or {}).get("title") or ""), "role": ""}
+        return [first] + [dict({key: person[key] for key in ("id", "name", "email", "title", "role", "linkedin", "phone", "note")},
+                               primary=False) for person in self.store.people(deal["id"])]
+
+    def _brief(self, deal: dict, playbook: Playbook) -> dict:
+        return {"id": deal["id"], "name": deal["name"], "company": deal["company"], "group": deal["grp"], "status": deal["status"],
+                "stage": deal["stage"], "stage_label": playbook.label(deal["stage"]), "value": deal["value"],
+                "next_step": deal["next_step"], "next_due": deal["next_due"]}
+
+    def contact(self, args: dict, actor: str = "") -> dict:
+        action = str(args.get("action") or "find").lower()
+        actor = actor or self.actor()
+        if action == "match":
+            return self.match(args.get("emails") or args.get("email"))
+        if action == "find":
+            return self.find_people(str(args.get("query") or args.get("name") or ""))
+        if action == "company":
+            return self.company(args.get("company") or args.get("query"), note=args.get("note"), domain=args.get("domain"))
+        deal, error = self._resolve(args.get("deal"))
+        if error:
+            return error
+        if action == "people":
+            return {"ok": True, "deal": deal["id"], "name": deal["name"], "people": self.people(deal)}
+        if action == "add":
+            name = str(args.get("name") or "").strip()
+            if not name:
+                return {"ok": False, "error": "add needs the person's name"}
+            email = str(args.get("email") or "").strip().lower()
+            for known in self.people(deal):
+                if (email and (known["email"] or "").lower() == email) or known["name"].lower() == name.lower():
+                    return {"ok": True, "exists": True, "deal": deal["id"], "people": self.people(deal)}
+            self.store.person_add(deal["id"], name, actor=actor, **{key: args.get(key) for key in st.PERSON if key != "name"})
+        elif action in ("update", "remove"):
+            want, listed = str(args.get("person") or args.get("name") or "").strip().lower(), self.store.people(deal["id"])
+            found = [p for p in listed if str(p["id"]) == want or p["name"].lower() == want or (p["email"] and p["email"].lower() == want)]
+            if len(found) != 1:
+                return {"ok": False, "error": "say which person on %s: pass `person` (a name, an email or an id)" % deal["name"],
+                        "people": self.people(deal)}
+            if action == "remove":
+                self.store.person_remove(found[0]["id"], actor=actor)
+            else:
+                values = {key: args.get(key) for key in st.PERSON if key != "name" and args.get(key) is not None}
+                if args.get("new_name"):
+                    values["name"] = args["new_name"]
+                self.store.person_update(found[0]["id"], actor=actor, **values)
+        else:
+            return {"ok": False, "error": "unknown action '%s'" % action,
+                    "actions": ["find", "match", "people", "add", "update", "remove", "company"]}
+        deal = self.store.get(deal["id"])
+        self._changed(deal)
+        return {"ok": True, "action": action, "deal": deal["id"], "name": deal["name"], "people": self.people(deal)}
+
+    def _addresses(self) -> tuple:
+        """``(by address, by company domain, records by id)`` across every record and everyone on it."""
+        deals = self.store.list(status="all")
+        by_id = {deal["id"]: deal for deal in deals}
+        exact: dict = {}
+        domains: dict = {}
+
+        def note(address: str, deal: dict, who: str) -> None:
+            address = (address or "").strip().lower()
+            if not address:
+                return
+            exact.setdefault(address, []).append((deal, who))
+            domain = st.email_domain(address)
+            if domain and deal["company"]:
+                domains.setdefault(domain, {})[st.org_key(deal["company"])] = deal["company"]
+
+        for deal in deals:
+            note(deal["email"], deal, deal["name"])
+        for person in self.store.people():
+            if person["deal_id"] in by_id:
+                note(person["email"], by_id[person["deal_id"]], person["name"])
+        for org in self.store.orgs():
+            if org["domain"]:
+                domains.setdefault(org["domain"].lower(), {})[org["key"]] = org["name"]
+        return exact, domains, by_id
+
+    def match(self, emails: Any) -> dict:
+        """Whose address is this? For each one: the records it belongs to, or, failing that, the
+        company its domain belongs to and that company's open records."""
+        if isinstance(emails, str):
+            emails = re.split(r"[,;\s]+", emails)
+        if not isinstance(emails, list) or not emails:
+            return {"ok": False, "error": "match needs emails: a list of addresses"}
+        playbook = self.playbook()
+        exact, domains, by_id = self._addresses()
+        out, seen = [], set()
+        for raw in emails[:60]:
+            found = re.search(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", str(raw or ""))
+            address = found.group(0).lower() if found else ""
+            if not address or address in seen:
+                continue
+            seen.add(address)
+            hits = sorted(exact.get(address) or [], key=lambda hit: hit[0]["status"] != "open")
+            if hits:
+                out.append({"email": address, "known": True, "who": hits[0][1], "records": [self._brief(deal, playbook) for deal, _ in hits[:5]]})
+                continue
+            companies = domains.get(st.email_domain(address)) or {}
+            records = [deal for deal in by_id.values() if st.org_key(deal["company"]) in companies]
+            records.sort(key=lambda deal: (deal["status"] != "open", deal["name"].lower()))
+            entry = {"email": address, "known": False, "records": [self._brief(deal, playbook) for deal in records[:5]]}
+            if companies:
+                entry["company"] = sorted(companies.values())[0]
+                entry["note"] = ("Not on the desk, but this address is at %s. If the message is about one of these records, log it "
+                                 "there and propose adding the sender as a person on it." % entry["company"])
+            out.append(entry)
+        return {"ok": True, "matches": out}
+
+    def find_people(self, query: str) -> dict:
+        query = " ".join(query.lower().split())
+        if not query:
+            return {"ok": False, "error": "find needs query: a name, an email, a title or a company"}
+        playbook, found = self.playbook(), []
+        for deal in self.store.list(status="all"):
+            for person in self.people(deal):
+                text = " ".join(str(person.get(key) or "") for key in ("name", "email", "title", "role")).lower() + " " + deal["company"].lower()
+                if query in text:
+                    found.append(dict({key: person.get(key) or "" for key in ("name", "email", "title", "role")},
+                                      primary=person["primary"], company=deal["company"], record=self._brief(deal, playbook)))
+        found.sort(key=lambda person: (person["record"]["status"] != "open", person["name"].lower()))
+        return {"ok": True, "count": len(found), "people": found[:25]}
+
+    def companies(self) -> list:
+        """Every company on the desk, with what is open there: for the page's list of companies."""
+        touches, rows = self.store.touches(), {}
+        counts: dict = {}
+        for person in self.store.people():
+            counts[person["deal_id"]] = counts.get(person["deal_id"], 0) + 1
+        for deal in self.store.list(status="all"):
+            key = st.org_key(deal["company"])
+            if not key:
+                continue
+            row = rows.setdefault(key, {"key": key, "name": deal["company"], "open": 0, "open_value": 0.0, "won": 0, "won_value": 0.0,
+                                        "lost": 0, "people": 0, "last_touch": ""})
+            row[deal["status"]] += 1
+            if deal["status"] != "lost":
+                row[deal["status"] + "_value"] += deal["value"]
+            row["people"] += 1 + counts.get(deal["id"], 0)
+            row["last_touch"] = max(row["last_touch"], touches.get(deal["id"], "") or deal["updated_at"])
+        return sorted(rows.values(), key=lambda row: (-row["open_value"], -row["open"], row["name"].lower()))
+
+    def company(self, name: Any, note: Any = None, domain: Any = None) -> dict:
+        """One company: its records, everyone known there, what is open and won, and the notes kept on it."""
+        key = st.org_key(name)
+        if not key:
+            return {"ok": False, "error": "say which company"}
+        deals = self.store.list(status="all")
+        here = [deal for deal in deals if st.org_key(deal["company"]) == key]
+        if not here:
+            near = {st.org_key(deal["company"]): deal["company"] for deal in deals if key in st.org_key(deal["company"])}
+            if len(near) == 1:      # "Kestrel" for "Kestrel Labs": only one company it could be
+                return self.company(next(iter(near.values())), note=note, domain=domain)
+            return {"ok": False, "error": "no company on the desk matches '%s'" % str(name)[:60], "companies": sorted(near.values())[:12]}
+        display = max((deal["company"] for deal in here), key=lambda text: sum(d["company"] == text for d in here))
+        if note is not None or domain is not None:
+            self.store.org_put(display, note=note, domain=domain)
+        org = self.store.org_get(display) or {}
+        playbook, touches = self.playbook(), self.store.touches()
+        people = []
+        for deal in sorted(here, key=lambda d: (d["status"] != "open", d["name"].lower())):
+            for person in self.people(deal):
+                people.append(dict({k: person.get(k) or "" for k in ("name", "email", "title", "role")}, primary=person["primary"],
+                                   record=deal["id"], record_name=deal["name"]))
+        guesses: dict = {}
+        for person in people:
+            found = st.email_domain(person["email"])
+            if found:
+                guesses[found] = guesses.get(found, 0) + 1
+        open_here = [deal for deal in here if deal["status"] == "open"]
+        won = [deal for deal in here if deal["status"] == "won"]
+        ids = {deal["id"]: deal["name"] for deal in here}
+        recent = [a for a in self.store.activities(limit=300) if a["deal_id"] in ids][:8]
+        return {"ok": True,
+                "company": {"name": display, "key": key, "domain": org.get("domain") or (max(guesses, key=guesses.get) if guesses else ""),
+                            "note": org.get("note") or "", "website": org.get("website") or ""},
+                "open": len(open_here), "open_value": sum(deal["value"] for deal in open_here),
+                "won": len(won), "won_value": sum(deal["value"] for deal in won),
+                "lost": len([deal for deal in here if deal["status"] == "lost"]),
+                "last_touch": max([touches.get(deal["id"], "") for deal in here] or [""]),
+                "records": [self._brief(deal, playbook) for deal in sorted(here, key=lambda d: (d["status"] != "open", -d["value"]))],
+                "people": people[:60],
+                "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"],
+                              "by": a["actor"]} for a in recent]}
 
     # -- gtm_card -------------------------------------------------------------------------------
     def card(self, args: dict, session: Optional[dict] = None) -> dict:

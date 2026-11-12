@@ -39,6 +39,32 @@ const refresh = () => queryClient.invalidateQueries({ queryKey: ['stoa'] })
 const $tab = atom('today') // the page's tab: today | pipeline | market | activity | setup
 const $draft = atom('') // words put in the dock for the person to finish and send
 let onPage = false // the Stoa page is what is on screen: a click that calls for writing goes to its dock
+const $view = atom('board') // the pipeline tab: board | companies
+const $last = atom(null) // what was just done, while it can be taken back: { deal, name, text, op }
+let lastTimer = 0
+
+/** Offer to take back what was just done. The offer goes away by itself. */
+function offerUndo(last) {
+  if (!last || !onPage) return
+  $last.set(last)
+  clearTimeout(lastTimer)
+  lastTimer = setTimeout(() => { if ($last.get() === last) $last.set(null) }, 14000)
+}
+
+async function undo(dealId, op) {
+  try {
+    const result = await rest('/deal/' + encodeURIComponent(dealId) + '/undo', { method: 'POST', body: { op: op || '' } })
+    $last.set(null)
+    refresh()
+    host.notify({ kind: 'info', message: 'Taken back: ' + result.undid + (result.removed ? '. ' + result.name + ' is off the desk.' : '') })
+    return result
+  } catch (error) {
+    $last.set(null)
+    refresh()
+    host.notifyError(error, 'Nothing to take back')
+    return null
+  }
+}
 
 // -- small helpers -------------------------------------------------------------------------------
 const SYMBOL = { USD: '$', EUR: '€', GBP: '£' }
@@ -112,6 +138,7 @@ async function act(dealId, body, sessionId) {
     refresh()
     if (result && result.notice) host.notify({ kind: 'info', message: result.notice })
     if (result && result.ask) toChat(result.ask, sessionId)
+    if (result && result.last) offerUndo(result.last)
     return result
   } catch (error) {
     host.notifyError(error, 'Stoa could not save that')
@@ -227,6 +254,7 @@ async function takeFile(file) {
       refresh()
       host.notify({ kind: result.waiting ? 'success' : 'info', message: result.headline })
       const page = document.querySelector('.stoa-page')
+      if (result.waiting) $tab.set('today') // where everything waiting for a yes or a no is
       if (result.waiting && page) page.scrollTo({ top: 0, behavior: 'smooth' })
       return
     }
@@ -447,6 +475,35 @@ const CSS = `
 .stoa-pickdate { display: inline-flex; gap: 4px; align-items: center; }
 .stoa-pickdate .stoa-field { width: 138px; }
 .stoa-pace { margin: -4px 2px 9px; font-size: 10.5px; color: var(--ui-text-quaternary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Approvals, undo, people and companies */
+.stoa-approvals { margin-top: 14px; }
+.stoa-proposal { margin-bottom: 10px; padding: 11px 14px 12px; border: 1px solid var(--ui-stroke-secondary); border-left: 2px solid var(--stoa-accent); border-radius: 4px 10px 10px 4px; background: var(--ui-bg-card); animation: stoa-lift .2s ease both; }
+.stoa-prophead { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.stoa-proplink { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.stoa-proplink.stoa-sub { color: var(--ui-text-tertiary); font-size: 12px; }
+.stoa-proplink.stoa-name { font-weight: 600; }
+.stoa-proplink:hover { color: var(--stoa-accent-text); }
+.stoa-propchange { margin-top: 5px; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
+.stoa-evidence { margin: 9px 0 0; padding: 2px 0 2px 11px; border-left: 2px solid var(--ui-stroke-primary); color: var(--ui-text-secondary); }
+.stoa-evidence small { display: block; margin-bottom: 2px; }
+.stoa-evidence span { display: block; overflow-wrap: anywhere; }
+.stoa-undobar { display: flex; align-items: center; gap: 10px; width: fit-content; max-width: 100%; margin: 0 auto 8px; padding: 4px 5px 4px 15px; border: 1px solid var(--ui-stroke-primary); border-radius: 999px; background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 92%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 12px 34px -14px rgba(0, 0, 0, .65); font-size: 12.5px; animation: stoa-lift .2s ease both; }
+.stoa-undobar b { font-weight: 600; }
+.stoa-undobar .stoa-btn { height: 25px; border-radius: 999px; border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); font-weight: 550; }
+.stoa-person { display: flex; gap: 6px; align-items: center; padding: 5px 0; }
+.stoa-notes { height: auto; min-height: 62px; margin-top: 5px; padding: 7px 8px; line-height: 1.45; resize: vertical; }
+.stoa-waiting { display: block; width: fit-content; margin: -6px 0 16px; padding: 6px 13px; border: 1px solid var(--stoa-accent-line); border-radius: 999px; background: var(--stoa-accent-soft); color: var(--ui-text-primary); font: inherit; font-size: 12.5px; cursor: pointer; }
+.stoa-waiting b { font-weight: 600; }
+.stoa-viewrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin: 0 0 14px; }
+.stoa-companies { min-width: 0; }
+.stoa-crow { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.1fr) minmax(0, 1.1fr) 64px 84px; gap: 12px; align-items: center; width: 100%; padding: 9px 10px; border: 0; border-top: 1px solid var(--ui-stroke-tertiary); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.stoa-crow:hover { background: var(--ui-row-hover-background); }
+.stoa-crow[data-open="1"] { background: var(--stoa-accent-soft); box-shadow: inset 2px 0 0 var(--stoa-accent); }
+.stoa-crow .stoa-num { text-align: left; }
+.stoa-chead, .stoa-chead:hover { border-top: 0; background: transparent; cursor: default; padding-bottom: 6px; }
+.stoa-level { display: flex; gap: 10px; align-items: flex-start; width: 100%; margin-bottom: 6px; padding: 9px 11px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.stoa-level:hover { border-color: var(--ui-stroke-primary); }
+.stoa-level[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); cursor: default; }
 .stoa-btn[data-kind="go"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); font-weight: 550; }
 .stoa-btn[data-kind="go"]:hover { background: color-mix(in srgb, var(--ui-accent) 30%, transparent); }
 .stoa-tacts .stoa-btn:not([data-kind="go"]), .stoa-tacts .stoa-select { border-color: var(--ui-stroke-secondary); color: var(--ui-text-secondary); }
@@ -571,6 +628,7 @@ function NewRecord({ state, close, opened }) {
       .then(result => {
         refresh()
         host.notify({ kind: result && result.exists ? 'info' : 'success', message: result && result.exists ? body.name + ' is already on the desk.' : body.name + ' is on the desk.' })
+        if (result && result.last) offerUndo(result.last)
         opened(result && result.deal ? result.deal.id : '')
       })
       .catch(error => host.notifyError(error, 'Stoa could not add that'))
@@ -599,7 +657,7 @@ function NewRecord({ state, close, opened }) {
 }
 
 // -- one record: what it is, what is next, and the buttons ---------------------------------------
-function Record({ id, state, sessionId, close }) {
+function Record({ id, state, sessionId, close, onCompany }) {
   const pb = state.playbook
   const query = useQuery({ queryKey: ['stoa', 'deal', id], queryFn: () => rest('/deal/' + encodeURIComponent(id)), staleTime: 1500 })
   const [busy, setBusy] = useState(false)
@@ -617,7 +675,8 @@ function Record({ id, state, sessionId, close }) {
     h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' } },
       h('div', { className: 'stoa-grow' },
         h('div', { className: 'stoa-name', style: { fontSize: 14 } }, deal.name),
-        deal.company && deal.company !== deal.name ? h('div', { className: 'stoa-sub' }, deal.company) : null),
+        deal.company && onCompany ? h('button', { type: 'button', className: 'stoa-proplink stoa-sub', title: 'Everything at ' + deal.company, onClick: () => onCompany(deal.company) }, deal.company + '  ›')
+          : deal.company && deal.company !== deal.name ? h('div', { className: 'stoa-sub' }, deal.company) : null),
       close ? h(Btn, { kind: 'quiet', onClick: close, 'aria-label': 'Close' }, '×') : null),
     h('div', { className: 'stoa-meter' }, pb.stages.map((stage, index) =>
       h('i', { key: stage.id, 'data-on': deal.status === 'won' || (open && index <= deal.position) ? '1' : '0' }))),
@@ -646,12 +705,21 @@ function Record({ id, state, sessionId, close }) {
     editing ? h(Edit, { key: deal.stage, deal, state, done: () => setEditing(false) }) : null,
     facts.length ? h('div', { className: 'stoa-facts' }, facts.map(pair =>
       h('div', { key: pair[0], style: pair[0] === 'Email' ? { gridColumn: '1 / -1' } : undefined }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, String(pair[1]))))) : null,
-    (deal.activity || []).length ? h('div', { className: 'stoa-log' }, deal.activity.slice(0, 3).map((entry, index) =>
-      h('p', { key: index }, entry.text, h('span', { className: 'stoa-sub' }, '  ' + ago(entry.at) + (entry.by ? ' · ' + entry.by : ''))))) : null)
+    close ? h(People, { deal, term: pb.terms.deal }) : (deal.people || []).length ? h('div', { className: 'stoa-log' },
+      h('small', { className: 'stoa-eyebrow' }, 'Also on this ' + pb.terms.deal),
+      deal.people.map(person => h('p', { key: person.id }, person.name, h('span', { className: 'stoa-sub' }, '  ' + [person.role, person.title].filter(Boolean).join(' · '))))) : null,
+    (deal.activity || []).length ? h('div', { className: 'stoa-log' }, deal.activity.slice(0, 4).map((entry, index) =>
+      h('p', { key: index, style: entry.undone ? { textDecoration: 'line-through', opacity: 0.55 } : undefined }, entry.text,
+        h('span', { className: 'stoa-sub' }, '  ' + ago(entry.at) + (entry.by ? ' · ' + entry.by : '')))),
+    deal.undo ? h(Btn, { kind: 'quiet', disabled: busy, title: 'Put the record back as it was before: ' + deal.undo.text,
+      onClick: () => { setBusy(true); undo(deal.id, deal.undo.op).then(() => setBusy(false)) } },
+    h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } }, h(Icon, { name: 'back', size: 13 }), 'Take back the last change')) : null) : null)
 }
 
 // -- a list sent in: tick what to keep, then Apply ------------------------------------------------
 function changeText(change) {
+  if (change.field === 'Person') return 'add ' + change.to
+  if (change.field === 'Due') return change.from ? 'Due: ' + shortDate(change.from) + ' → ' + shortDate(change.to) : 'Due: ' + shortDate(change.to)
   if (change.field === 'Note') return 'note: ' + change.to
   return change.from ? change.field + ': ' + change.from + ' → ' + change.to : change.field + ': ' + change.to
 }
@@ -664,7 +732,7 @@ function Review({ id }) {
   if (query.error) return h('div', { className: 'stoa-box stoa-sub' }, 'That list is no longer here.')
   if (!intake) return h('div', { className: 'stoa-box stoa-sub' }, 'Loading…')
   const open = intake.status === 'open'
-  const usable = intake.rows.filter(row => row.kind === 'new' || row.kind === 'update')
+  const usable = intake.rows.filter(row => (row.kind === 'new' || row.kind === 'update') && (!open || !row.done))
   const rest_ = intake.rows.filter(row => row.kind !== 'new' && row.kind !== 'update')
   const chosen = usable.filter(row => !off[row.n])
   const counts = intake.counts, result = intake.result || {}
@@ -682,19 +750,20 @@ function Review({ id }) {
   }
   return h('div', { className: 'stoa-box' },
     h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' } },
-      h('span', { className: 'stoa-eyebrow' }, 'Intake · ' + intake.source),
+      h('span', { className: 'stoa-eyebrow' }, (intake.origin === 'proposal' ? 'Proposed · ' : 'Intake · ') + intake.source),
       open ? null : h(Chip, { tone: intake.status === 'applied' ? 'good' : '' }, intake.status)),
     h('div', { className: 'stoa-name', style: { marginTop: 4 } },
       [counts.new ? counts.new + ' new' : '', counts.update ? counts.update + ' to update' : '', counts.same ? counts.same + ' already there' : '',
         counts.unclear ? counts.unclear + ' unclear' : '', counts.problem ? counts.problem + ' unusable' : ''].filter(Boolean).join(' · ') || 'Nothing to add'),
     usable.length ? h('div', { className: 'stoa-list' }, usable.map(row => h('label', { key: row.n, className: 'stoa-pick', 'data-off': open && off[row.n] ? '1' : '0' },
       open ? h('input', { type: 'checkbox', checked: !off[row.n], disabled: busy, onChange: () => setOff({ ...off, [row.n]: !off[row.n] }) })
-        : h('i', { className: 'stoa-dot', 'data-tone': row.applied ? 'good' : '' }),
+        : h('i', { className: 'stoa-dot', 'data-tone': row.applied ? 'good' : '', title: row.applied ? 'applied' : row.done === 'declined' ? 'declined' : 'left out' }),
       h('span', { className: 'stoa-grow' },
         h('span', { className: 'stoa-name' }, row.name),
         h('span', { className: 'stoa-sub' }, '  ' + [row.company !== row.name ? row.company : '', row.group].filter(Boolean).join(' · ')),
         h('span', { className: 'stoa-sub', style: { display: 'block' } },
           row.kind === 'new' ? 'New' + (row.stage ? ' at ' + row.stage : '') : row.changes.map(changeText).join(' · ')),
+        row.case ? h('span', { className: 'stoa-sub', style: { display: 'block' } }, row.case) : null,
         (row.warnings || []).map((warning, index) => h('span', { key: index, className: 'stoa-sub', style: { display: 'block' } }, warning))),
       h(Chip, { tone: row.kind === 'new' ? 'good' : '' }, row.kind === 'new' ? 'new' : 'update')))) : null,
     rest_.length ? h('details', { className: 'stoa-rest' },
@@ -849,7 +918,8 @@ const ICON = {
   mic: 'M12 2.5a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0v-6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4',
   up: 'M12 19.5v-15M5.5 11L12 4.5 18.5 11',
   down: 'M6 9.5l6 6 6-6',
-  x: 'M6.5 6.5l11 11M17.5 6.5l-11 11'
+  x: 'M6.5 6.5l11 11M17.5 6.5l-11 11',
+  back: 'M9 14.5L4 9.5l5-5M4 9.5h10.5a5.5 5.5 0 0 1 0 11H11'
 }
 const Icon = ({ name, size }) => h('svg', { width: size || 17, height: size || 17, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
   strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, h('path', { d: ICON[name] }))
@@ -928,6 +998,7 @@ function Dock({ state }) {
   }
   const hints = ['What needs me today?', 'Who has gone quiet?', 'What moved this week?']
   return h('div', { className: 'stoa-dockzone' }, h('div', { className: 'stoa-dock' },
+    h(UndoBar),
     talk.turns.length && talk.open ? h('div', { className: 'stoa-glass stoa-sheet', ref: sheet },
       h('div', { className: 'stoa-sheethead' },
         h('span', { className: 'stoa-eyebrow' }, 'Stoa desk'),
@@ -1075,9 +1146,8 @@ function Today({ state, openId, setOpenId }) {
     h('div', { className: 'stoa-todayhead' },
       h('div', { className: 'stoa-name', style: { fontSize: 16 } }, day.needs ? plural(day.needs, 'thing needs you', 'things need you') : 'Nothing needs you today'),
       tally.length ? h('div', { className: 'stoa-chips', style: { marginTop: 0 } }, tally.map(item => h(Chip, { key: item[1], tone: item[2] }, item[0] + ' ' + item[1])))
-        : h('span', { className: 'stoa-sub' }, counts.coming ? 'Here is what is coming up.' : state.deals.length ? 'No next step is due and nobody has gone quiet.' : '')),
-    counts.approvals ? h('div', { className: 'stoa-sub', style: { margin: '2px 0 0' } },
-      plural(counts.approvals, 'list is', 'lists are') + ' waiting for your approval at the top of the page. Nothing is written until you apply.') : null,
+        : h('span', { className: 'stoa-sub' }, counts.coming ? 'What is coming up is on the right.' : state.deals.length ? 'No next step is due and nobody has gone quiet.' : '')),
+    h(Approvals, { state, setOpenId }),
     TODAY_LISTS.map(list => (day[list.key] || []).length ? h('div', { key: list.key, className: 'stoa-tsec' },
       h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
         h('span', { className: 'stoa-eyebrow', title: list.help }, list.title), h('span', { className: 'stoa-num' }, String(counts[list.key]))),
@@ -1191,16 +1261,19 @@ function download(name, text, type) {
 }
 
 const SAY = ['Add Priya Raman from Lumen Health, met at the conference, call her Friday', 'I spoke to Dana: she wants the proposal by Thursday',
+  'Add their CFO, Lena Ortiz, to the Kestrel deal', 'Who do we know at Kestrel?', 'Undo that',
   'Move Marcus to the next stage and draft the email', 'Who has gone quiet, and what should I send each of them?', 'Here are my leads (then drop a CSV on the page)',
   'Map the market for us and add the three best fits', 'Write me a playbook for selling to dental practices']
-const BY_HAND = ['Drag a card to another column to move it; drop it on the last column to close it as won.', 'Press a stage in the funnel to narrow the board to it.',
+const BY_HAND = ['Drag a card to another column to move it; drop it on the last column to close it as won.', 'Changed your mind? Undo appears above the box at the foot of the page, and on the record.',
+  'Press a stage in the funnel to narrow the board to it.', 'Press a company name on a record, or Companies on the pipeline, for everything at that company.',
   'Press a card or a row to open the record: advance it, mark the step done, snooze it, or edit any fact.', 'Drop a CSV anywhere on the page. It comes back as a review; nothing is written until you apply.',
   'Use the microphone in the box at the foot of the page to dictate.']
 const TYPED = [['/gtm', 'the board, in any Hermes chat'], ['/gtm today', 'what needs you, most pressing first'], ['/gtm brief', 'the morning brief'], ['/gtm <name>', 'one record as a card'],
   ['/gtm map', 'your market map'], ['!gtm …', 'the same in Slack, which keeps the slash for itself'], ['/blueprint', 'switch on an automation'], ['hermes stoa status', 'in a terminal: what is connected']]
-const ALWAYS = ['Keeps one ledger: every record, and everything that happens to it.', 'Gives each record one next step and a date, and tells you when the date comes.',
-  'Calls a record quiet when nothing has happened for longer than its stage allows.', 'Holds any list for your approval before a row is written.',
-  'Logs what it finds in your email, calls and Slack, and only proposes a stage change.', 'Posts cards in Slack whose buttons act at once, and only for the people allowed to press them.',
+const ALWAYS = ['Keeps one ledger: every record, the people on it, and everything that happens to it.', 'Gives each record one next step and a date, and tells you when the date comes.',
+  'Calls a record quiet when nothing has happened for longer than its stage allows.', 'Holds any list, and anything Hermes suggests, for your yes or no, with what it rests on.',
+  'Remembers a no, and does not ask again.', 'Lets you take back the last change on any record, whoever made it.',
+  'Logs what it finds in your email, calls and Slack on the right record, whoever on it sent it.', 'Posts cards in Slack whose buttons act at once, and only for the people allowed to press them.',
   'Lets you snooze anything until a date, and export everything at any time.']
 
 function Lamp({ on }) {
@@ -1234,7 +1307,8 @@ function Setup({ state, go }) {
       button(item))), true),
     box('Connected', '', setup.connections.map(item => h('div', { key: item.id, className: 'stoa-setrow' },
       h(Lamp, { on: item.on }), h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name', style: { display: 'block' } }, item.label), h('span', { className: 'stoa-sub' }, item.detail))))),
-    box('Rules in force', 'set in the plugin\'s settings', setup.rules.map(rule => h('div', { key: rule.label, className: 'stoa-setrow', style: { display: 'block' } },
+    box('What Hermes may do by itself', setup.autonomy.levels.find(level => level.id === setup.autonomy.level).label, h(Autonomy, { setup })),
+    box('Rules in force', 'set in the plugin\'s settings', setup.rules.filter(rule => !rule.own).map(rule => h('div', { key: rule.label, className: 'stoa-setrow', style: { display: 'block' } },
       h('small', { className: 'stoa-eyebrow', style: { display: 'block' } }, rule.label), h('span', { style: { overflowWrap: 'anywhere' } }, rule.value)))),
     box('Your playbook', setup.playbook.origin === 'custom' ? 'your own' : 'built in', [
       h('div', { key: 'title', className: 'stoa-name', style: { fontSize: 14 } }, setup.playbook.title),
@@ -1283,6 +1357,226 @@ function Setup({ state, go }) {
           ['What Hermes writes at each stage', sets.drafts.length ? plural(sets.drafts.length, 'stage has', 'stages have') + ' a draft' : 'nothing yet']].map(pair =>
           h('p', { key: pair[0], className: 'stoa-tip' }, h('b', null, pair[0] + ': '), pair[1])))), true),
     h('div', { className: 'stoa-sub stoa-setbox', 'data-wide': '1', style: { textAlign: 'center' } }, 'Stoa ' + setup.version))
+}
+
+// -- what Hermes proposes: one decision each, with what it rests on -------------------------------
+const EVIDENCE = { email: 'Email', call: 'Call', slack: 'Slack', meeting: 'Meeting', note: 'Note', calendar: 'Calendar' }
+
+async function decide(item, verb) {
+  try {
+    const result = await rest('/intake/' + encodeURIComponent(item.intake) + '/row', { method: 'POST', body: { n: item.n, verb } })
+    refresh()
+    if (result.last) offerUndo(result.last)
+    else if (result.note) host.notify({ kind: 'info', message: result.note })
+    return result
+  } catch (error) {
+    host.notifyError(error, 'Stoa could not do that')
+    return null
+  }
+}
+
+function Proposal({ item, busy, run, open }) {
+  const what = item.kind === 'new' ? 'New' + (item.stage ? ' at ' + item.stage : '') : cap(item.changes.map(changeText).join(' · '))
+  const where = [item.company !== item.name ? item.company : '', item.group !== item.company ? item.group : ''].filter(Boolean).join(' · ')
+  return h('div', { className: 'stoa-proposal' },
+    h('div', { className: 'stoa-prophead' },
+      item.deal ? h('button', { type: 'button', className: 'stoa-proplink stoa-name', title: 'Open the record', onClick: open }, item.name) : h('span', { className: 'stoa-name' }, item.name),
+      h('span', { className: 'stoa-sub stoa-clip stoa-grow' }, where),
+      h('span', { className: 'stoa-sub', style: { flex: 'none' } }, item.source + ' · ' + ago(item.at))),
+    h('div', { className: 'stoa-propchange' }, what),
+    item.case ? h('div', { className: 'stoa-sub', style: { marginTop: 2 } }, item.case) : null,
+    (item.evidence || []).map((entry, index) => h('blockquote', { key: index, className: 'stoa-evidence' },
+      h('small', { className: 'stoa-eyebrow' }, [EVIDENCE[entry.kind] || cap(entry.kind) || 'Evidence', entry.at, entry.who].filter(Boolean).join(' · ')),
+      entry.text ? h('span', null, entry.text) : null)),
+    (item.warnings || []).map((warning, index) => h('div', { key: 'w' + index, className: 'stoa-sub' }, warning)),
+    h('div', { className: 'stoa-btns', style: { marginTop: 10 } },
+      h(Btn, { kind: 'go', disabled: busy, onClick: () => run('approve') }, 'Approve'),
+      h(Btn, { kind: 'quiet', disabled: busy, title: 'Leave the desk as it is. Hermes will not propose this again.', onClick: () => run('decline') }, 'Decline')))
+}
+
+/** The top of Today: everything waiting on a yes or a no. Nothing here has been written. */
+function Approvals({ state, setOpenId }) {
+  const items = (state.today && state.today.approvals) || []
+  const [busy, setBusy] = useState('')
+  if (!items.length) return null
+  const proposals = items.filter(item => !item.list)
+  const key = item => item.intake + ':' + item.n
+  const run = (item, verb) => { setBusy(key(item)); return decide(item, verb).then(() => setBusy('')) }
+  const all = async () => {
+    setBusy('all')
+    for (const item of proposals) await decide(item, 'approve')
+    setBusy('')
+  }
+  return h('div', { className: 'stoa-tsec stoa-approvals' },
+    h('div', { className: 'stoa-sechead', style: { padding: '0 0 6px', alignItems: 'center' } },
+      h('span', { className: 'stoa-eyebrow', title: 'Changes Hermes suggests and lists you were sent. Nothing is written until you approve it.' }, 'Waiting for your approval'),
+      h('span', { style: { display: 'flex', gap: 10, alignItems: 'center' } },
+        proposals.length > 1 ? h(Btn, { kind: 'quiet', disabled: Boolean(busy), onClick: all }, 'Approve all ' + proposals.length) : null,
+        h('span', { className: 'stoa-num' }, String(items.length)))),
+    items.map(item => item.list
+      ? h('div', { key: item.intake, style: { marginBottom: 10 } }, h(Review, { id: item.intake }))
+      : h(Proposal, { key: key(item), item, busy: busy === 'all' || busy === key(item), run: verb => run(item, verb), open: () => setOpenId(item.deal) })))
+}
+
+// -- taking a change back ----------------------------------------------------------------------------
+function UndoBar() {
+  const last = useValue($last)
+  if (!last) return null
+  return h('div', { className: 'stoa-undobar', role: 'status' },
+    h('span', { className: 'stoa-clip' }, h('b', null, last.name), '  ' + last.text),
+    h(Btn, { onClick: () => undo(last.deal, last.op) }, 'Undo'),
+    h('button', { type: 'button', className: 'stoa-icon', style: { width: 24, height: 24 }, 'aria-label': 'Dismiss', onClick: () => $last.set(null) }, h(Icon, { name: 'x', size: 12 })))
+}
+
+// -- the other people on a record ---------------------------------------------------------------------
+function People({ deal, term }) {
+  const blank = { name: '', email: '', title: '', role: '' }
+  const [adding, setAdding] = useState(false)
+  const [v, setV] = useState(blank)
+  const [busy, setBusy] = useState(false)
+  const set = key => event => setV({ ...v, [key]: event.target.value })
+  const send = body => {
+    setBusy(true)
+    return rest('/deal/' + encodeURIComponent(deal.id) + '/person', { method: 'POST', body })
+      .then(result => { refresh(); if (result.last) offerUndo(result.last); return result })
+      .catch(error => { host.notifyError(error, 'Stoa could not save that'); return null })
+      .then(result => { setBusy(false); return result })
+  }
+  const add = () => {
+    if (!v.name.trim() || busy) return
+    send({ verb: 'add', ...v }).then(result => {
+      if (!result) return
+      if (result.exists) host.notify({ kind: 'info', message: v.name.trim() + ' is already on this record.' })
+      setV(blank)
+      setAdding(false)
+    })
+  }
+  const enter = event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) add() }
+  const people = deal.people || []
+  return h('div', { className: 'stoa-log' },
+    h('div', { className: 'stoa-sechead', style: { padding: 0, alignItems: 'center' } },
+      h('small', { className: 'stoa-eyebrow', title: 'Email, calls and messages from these people are filed on this record too' }, 'Also on this ' + term),
+      h(Btn, { kind: 'quiet', onClick: () => setAdding(!adding) }, adding ? 'Close' : '+  Person')),
+    people.map(person => h('div', { key: person.id, className: 'stoa-person' },
+      h('span', { className: 'stoa-grow' },
+        h('span', { className: 'stoa-name' }, person.name),
+        person.role || person.title ? h('span', { className: 'stoa-sub' }, '  ' + [person.role, person.title].filter(Boolean).join(' · ')) : null,
+        person.email ? h('span', { className: 'stoa-sub', style: { display: 'block', overflowWrap: 'anywhere' } }, person.email) : null),
+      h('button', { type: 'button', className: 'stoa-icon', style: { width: 24, height: 24 }, disabled: busy, title: 'Take ' + person.name + ' off this record',
+        'aria-label': 'Remove ' + person.name, onClick: () => send({ verb: 'remove', person: String(person.id) }) }, h(Icon, { name: 'x', size: 12 })))),
+    !people.length && !adding ? h('div', { className: 'stoa-sub' }, 'Nobody else yet. Add the people around it, and what they send is filed here too.') : null,
+    adding ? h('div', null,
+      h('div', { className: 'stoa-form', style: { marginTop: 8 } },
+        h(Field, { label: 'Name', autoFocus: true, value: v.name, onChange: set('name'), onKeyDown: enter }),
+        h(Field, { label: 'Role here', value: v.role, placeholder: 'Decision maker, finance…', onChange: set('role'), onKeyDown: enter }),
+        h(Field, { label: 'Title', value: v.title, onChange: set('title'), onKeyDown: enter }),
+        h(Field, { label: 'Email', type: 'email', value: v.email, onChange: set('email'), onKeyDown: enter })),
+      h('div', { className: 'stoa-btns', style: { marginTop: 8 } }, h(Btn, { kind: 'primary', disabled: busy || !v.name.trim(), onClick: add }, 'Add'))) : null)
+}
+
+// -- a company: its records, everyone known there, and the notes kept on it ------------------------
+function CompanyPanel({ name, state, close, openRecord }) {
+  const query = useQuery({ queryKey: ['stoa', 'company', name], queryFn: () => rest('/company', { method: 'POST', body: { name } }), staleTime: 1500 })
+  const [note, setNote] = useState(null) // null until edited
+  const [domain, setDomain] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const data = query.data
+  if (query.error) return h('div', { className: 'stoa-box stoa-sub' }, 'Nothing on the desk is at that company any more.', h('div', { className: 'stoa-btns' }, h(Btn, { onClick: close }, 'Close')))
+  if (!data) return h('div', { className: 'stoa-box stoa-sub' }, 'Loading…')
+  const pb = state.playbook, company = data.company
+  const changed = (note !== null && note !== company.note) || (domain !== null && domain.trim().toLowerCase() !== company.domain)
+  const save = () => {
+    setBusy(true)
+    rest('/company', { method: 'POST', body: { name: company.name, note: note === null ? company.note : note, domain: domain === null ? company.domain : domain } })
+      .then(() => { refresh(); setNote(null); setDomain(null); host.notify({ kind: 'success', message: 'Saved on ' + company.name + '.' }) })
+      .catch(error => host.notifyError(error, 'Stoa could not save that'))
+      .then(() => setBusy(false))
+  }
+  const stats = [['Open', data.open ? data.open + (data.open_value ? ' · ' + money(data.open_value, pb.currency) : '') : '0'],
+    [pb.won.label, data.won ? data.won + (data.won_value ? ' · ' + money(data.won_value, pb.currency) : '') : '0'],
+    [pb.lost.label, String(data.lost)], ['Last touch', ago(data.last_touch) || '—']]
+  return h('div', { className: 'stoa-box' },
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' } },
+      h('div', { className: 'stoa-grow' },
+        h('div', { className: 'stoa-eyebrow' }, pb.terms.company),
+        h('div', { className: 'stoa-name', style: { fontSize: 15, marginTop: 2 } }, company.name),
+        h('div', { className: 'stoa-sub' }, company.domain || 'no email domain known yet')),
+      h(Btn, { kind: 'quiet', onClick: close, 'aria-label': 'Close' }, '×')),
+    h('div', { className: 'stoa-facts' }, stats.map(pair => h('div', { key: pair[0] }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, pair[1])))),
+    h('div', { className: 'stoa-log' },
+      h('small', { className: 'stoa-eyebrow' }, cap(pb.terms.deals) + ' here'),
+      data.records.map(record => h('button', { type: 'button', key: record.id, className: 'stoa-row', style: { padding: '5px 6px', margin: '0 -6px', width: 'calc(100% + 12px)', opacity: record.status === 'open' ? 1 : 0.6 },
+        onClick: () => openRecord(record.id) },
+      h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name stoa-clip', style: { display: 'block' } }, record.name),
+        h('span', { className: 'stoa-sub stoa-clip', style: { display: 'block' } }, record.stage_label + (record.next_step && record.status === 'open' ? ' · ' + record.next_step : ''))),
+      record.value ? h('span', { className: 'stoa-num' }, money(record.value, pb.currency)) : null))),
+    h('div', { className: 'stoa-log' },
+      h('small', { className: 'stoa-eyebrow' }, 'People'),
+      data.people.map((person, index) => h('div', { key: index, className: 'stoa-person' }, h('span', { className: 'stoa-grow' },
+        h('span', { className: 'stoa-name' }, person.name),
+        person.role || person.title ? h('span', { className: 'stoa-sub' }, '  ' + [person.role, person.title].filter(Boolean).join(' · ')) : null,
+        h('span', { className: 'stoa-sub', style: { display: 'block', overflowWrap: 'anywhere' } },
+          [person.email, person.primary ? '' : 'on ' + person.record_name].filter(Boolean).join(' · ')))))),
+    h('div', { className: 'stoa-log' },
+      h('small', { className: 'stoa-eyebrow' }, 'Notes on the company'),
+      h('textarea', { className: 'stoa-field stoa-notes', rows: 3, value: note === null ? company.note : note, placeholder: 'What is worth remembering about them: how they buy, who decides, when their year ends…',
+        onChange: event => setNote(event.target.value) }),
+      h('div', { className: 'stoa-form', style: { marginTop: 8 } },
+        h(Field, { label: 'Email domain', wide: true, value: domain === null ? company.domain : domain, placeholder: 'kestrel.com',
+          title: 'Mail from anyone at this domain is recognised as coming from this company', onChange: event => setDomain(event.target.value) })),
+      changed ? h('div', { className: 'stoa-btns', style: { marginTop: 8 } }, h(Btn, { kind: 'primary', disabled: busy, onClick: save }, 'Save'),
+        h(Btn, { kind: 'quiet', disabled: busy, onClick: () => { setNote(null); setDomain(null) } }, 'Cancel')) : null),
+    data.activity.length ? h('div', { className: 'stoa-log' }, h('small', { className: 'stoa-eyebrow', style: { display: 'block', marginBottom: 4 } }, 'Lately'),
+      data.activity.slice(0, 5).map((entry, index) => h('p', { key: index }, h('b', { style: { fontWeight: 550 } }, entry.name), '  ' + entry.text,
+        h('span', { className: 'stoa-sub' }, '  ' + ago(entry.at))))) : null)
+}
+
+/** Every company on the desk, biggest open value first. Press one for the whole picture. */
+function Companies({ state, current, openCompany }) {
+  const filter = useValue($filter)
+  const pb = state.playbook
+  const text = filter.text.toLowerCase()
+  const rows = (state.companies || []).filter(row => !text || row.name.toLowerCase().includes(text))
+  if (!rows.length) return h('p', { className: 'stoa-sub' }, text ? 'No company matches “' + filter.text + '”.' : 'No company is named on any record yet.')
+  return h('div', { className: 'stoa-companies' },
+    h('div', { className: 'stoa-crow stoa-chead' }, ['Company', 'Open', pb.won.label, 'People', 'Last touch'].map(label => h('span', { key: label, className: 'stoa-eyebrow' }, label))),
+    rows.map(row => h('button', { type: 'button', key: row.key, className: 'stoa-crow', 'data-open': current && current.toLowerCase() === row.name.toLowerCase() ? '1' : '0', onClick: () => openCompany(row.name) },
+      h('span', { className: 'stoa-name stoa-clip' }, row.name),
+      h('span', { className: 'stoa-num' }, row.open ? row.open + (row.open_value ? ' · ' + money(row.open_value, pb.currency) : '') : '—'),
+      h('span', { className: 'stoa-num' }, row.won ? row.won + (row.won_value ? ' · ' + money(row.won_value, pb.currency) : '') : '—'),
+      h('span', { className: 'stoa-num' }, String(row.people)),
+      h('span', { className: 'stoa-num' }, ago(row.last_touch) || '—'))))
+}
+
+// -- how much a scheduled job may change by itself ----------------------------------------------------
+function Autonomy({ setup }) {
+  const [busy, setBusy] = useState(false)
+  const auto = setup.autonomy
+  const pick = level => {
+    if (level === auto.level || busy) return
+    setBusy(true)
+    rest('/autonomy', { method: 'POST', body: { level } })
+      .then(result => { refresh(); host.notify({ kind: 'success', message: 'Scheduled jobs: ' + result.label + '.' }) })
+      .catch(error => host.notifyError(error, 'Stoa could not change that'))
+      .then(() => setBusy(false))
+  }
+  const forget = () => {
+    setBusy(true)
+    rest('/declined/forget', { method: 'POST', body: {} })
+      .then(result => { refresh(); host.notify({ kind: 'info', message: plural(result.forgotten, 'declined proposal', 'declined proposals') + ' forgotten.' }) })
+      .catch(error => host.notifyError(error, 'Stoa could not do that'))
+      .then(() => setBusy(false))
+  }
+  return h('div', null,
+    h('div', { className: 'stoa-sub', style: { marginBottom: 8 } }, 'In a chat, Hermes does what you ask. This is for the jobs that run when you are not there. Only you can change it here: Hermes has no way to.'),
+    auto.levels.map(level => h('button', { type: 'button', key: level.id, className: 'stoa-level', 'data-on': level.id === auto.level ? '1' : '0', disabled: busy,
+      'aria-pressed': level.id === auto.level, onClick: () => pick(level.id) },
+    h(Lamp, { on: level.id === auto.level }),
+    h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name', style: { display: 'block' } }, level.label), h('span', { className: 'stoa-sub' }, level.summary)))),
+    h('div', { className: 'stoa-edit', style: { paddingTop: 10 } },
+      h('div', { className: 'stoa-sub' }, setup.declined ? plural(setup.declined, 'proposal you declined is', 'proposals you declined are') + ' remembered for 90 days and not made again.'
+        : 'Anything it may not do is held on Today for your yes or no. A no is remembered for 90 days and not asked again.'),
+      setup.declined ? h('div', { className: 'stoa-btns', style: { marginTop: 6 } }, h(Btn, { disabled: busy, onClick: forget }, 'Forget them')) : null))
 }
 
 // -- the full page -------------------------------------------------------------------------------
@@ -1404,14 +1698,16 @@ function Page() {
   const [openId, setOpenId] = useState('')
   const [adding, setAdding] = useState(false)
   const [marketId, setMarketId] = useState('')
+  const [companyName, setCompanyName] = useState('')
+  const view = useValue($view)
   const [dropping, setDropping] = useState(false)
   const [welcomed, setWelcomed] = useState(() => Boolean(storage && storage.get('welcomed', false)))
   const split = useRef(null)
   // While the page is on screen, a click that calls for writing goes to its own dock.
-  useEffect(() => { onPage = true; return () => { onPage = false } }, [])
+  useEffect(() => { onPage = true; return () => { onPage = false; $last.set(null) } }, [])
   // A record or the form opens beside the list: bring it clear of the dock if it would sit under it.
   useEffect(() => {
-    if (!adding && !openId) return undefined
+    if (!adding && !openId && !companyName) return undefined
     const timer = setTimeout(() => {
       const box = split.current && split.current.querySelector(':scope > .stoa-box')
       const page = split.current && split.current.closest('.stoa-page')
@@ -1421,13 +1717,16 @@ function Page() {
       if (hidden > 0) page.scrollBy({ top: Math.min(hidden, Math.max(0, rect.top - frame.top - 12)), behavior: 'smooth' })
     }, 260)
     return () => clearTimeout(timer)
-  }, [adding, openId, tab])
+  }, [adding, openId, companyName, tab])
   if (!query.data) return h('div', { className: 'stoa stoa-page' }, h(Unavailable, { error: query.error, loading: query.isLoading }))
   const state = query.data, pb = state.playbook, totals = state.totals
   const day = state.today || { counts: {}, needs: 0 }
   const market = state.markets.find(item => item.id === marketId) || state.markets[0]
-  const setTab = name => { $tab.set(name); setOpenId(''); setAdding(false) }
-  const add = () => { if (tab !== 'today' && tab !== 'pipeline') $tab.set('pipeline'); setOpenId(''); setAdding(true) }
+  const setTab = name => { $tab.set(name); setOpenId(''); setAdding(false); setCompanyName('') }
+  const add = () => { if (tab !== 'today' && tab !== 'pipeline') $tab.set('pipeline'); setOpenId(''); setCompanyName(''); setAdding(true) }
+  const openRecord = id => { setAdding(false); setCompanyName(''); setOpenId(id) }
+  const openCompany = name => { setAdding(false); setOpenId(''); setCompanyName(name) }
+  const waiting = (day.counts && day.counts.approvals) || 0
   const welcome = Boolean(state.fresh) && !welcomed
   const skip = () => { setWelcomed(true); if (storage) storage.set('welcomed', true) }
   // Each number says what it counts when you rest on it; the ones that are lists take you there.
@@ -1439,7 +1738,8 @@ function Page() {
     ['From the map', totals.tracked, cap(pb.terms.deals) + ' that started on a market map.', ''],
     ['Won', totals.won + (totals.won_value ? ' · ' + money(totals.won_value, pb.currency) : ''), 'Closed as ' + pb.won.label.toLowerCase() + ', all time.', '']]
   const side = adding ? h(NewRecord, { state, close: () => setAdding(false), opened: id => { setAdding(false); setOpenId(id) } })
-    : openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId('') }) : null
+    : openId ? h(Record, { key: openId, id: openId, state, close: () => setOpenId(''), onCompany: openCompany })
+      : companyName ? h(CompanyPanel, { key: companyName, name: companyName, state, close: () => setCompanyName(''), openRecord }) : null
   const nothing = h('div', { className: 'stoa-sub' },
     h('p', { style: { marginTop: 0 } }, 'Nothing on the desk yet. Add a ' + pb.terms.deal + ' with the button above, tell Stoa about one below, drop a list on the page, or ask it to map a market.'),
     h(Btn, { onClick: () => setTab('setup') }, 'See how it works, or look around with sample data'))
@@ -1462,34 +1762,41 @@ function Page() {
       h('div', { className: 'stoa-headstats' }, stats.map(item => h('button', { type: 'button', key: item[0], className: 'stoa-stat', title: item[2], 'data-press': item[3] ? '1' : '0',
         onClick: item[3] ? () => setTab(item[3]) : undefined }, h('span', { className: 'stoa-eyebrow' }, item[0]), h('b', null, String(item[1])))))),
     h('div', { className: 'stoa-rule' }),
-    (state.intakes || []).length ? h('div', { style: { marginTop: 20, maxWidth: 720 } },
-      h('div', { className: 'stoa-eyebrow', style: { marginBottom: 6 } }, 'Waiting for your approval'),
-      state.intakes.map(item => h('div', { key: item.id, style: { marginBottom: 10 } }, h(Review, { id: item.id })))) : null,
     h('div', { className: 'stoa-tabsrow' },
       h('div', { className: 'stoa-tabs', role: 'tablist' }, [['today', 'Today', day.needs], ['pipeline', 'Pipeline', totals.open], ['market', 'Market map', totals.mapped],
         ['activity', 'Activity', 0], ['setup', 'Setup', 0]].map(item =>
         h('button', { type: 'button', key: item[0], role: 'tab', 'aria-selected': tab === item[0], className: 'stoa-tab', 'data-on': tab === item[0] ? '1' : '0',
           onClick: () => setTab(item[0]) }, item[1], item[2] ? h('small', null, String(item[2])) : null))),
       (tab === 'today' || tab === 'pipeline') && !welcome ? h(Btn, { onClick: add }, '+  New ' + pb.terms.deal) : null),
-    (tab === 'today' || tab === 'pipeline') && welcome ? h(Welcome, { skip }) : null,
-    tab === 'today' && !welcome ? h('div', { className: 'stoa-split', ref: split, 'data-side': side || state.deals.length ? '1' : '0' },
-      state.deals.length ? h(Today, { state, openId, setOpenId: id => { setAdding(false); setOpenId(id) } }) : nothing,
-      side || (state.deals.length ? h(Ahead, { state, setOpenId }) : null)) : null,
-    tab === 'pipeline' && !welcome ? h('div', null,
-      state.deals.length ? h(Funnel, { state }) : null,
-      state.deals.length ? h('div', { style: { margin: '0 0 14px', maxWidth: 760 } }, h(Filters, { state })) : null,
+    waiting && tab !== 'today' && tab !== 'setup' ? h('button', { type: 'button', className: 'stoa-waiting', onClick: () => setTab('today') },
+      h('b', null, String(waiting)), ' waiting for your approval', h('span', { className: 'stoa-sub' }, '  ·  see Today  ›')) : null,
+    (tab === 'today' || tab === 'pipeline') && welcome && !waiting ? h(Welcome, { skip }) : null,
+    tab === 'today' && (!welcome || waiting) ? h('div', { className: 'stoa-split', ref: split, 'data-side': side || state.deals.length ? '1' : '0' },
+      state.deals.length || waiting ? h(Today, { state, openId, setOpenId: openRecord }) : nothing,
+      side || (state.deals.length ? h(Ahead, { state, setOpenId: openRecord }) : null)) : null,
+    tab === 'pipeline' && (!welcome || waiting) ? h('div', null,
+      state.deals.length && view === 'board' ? h(Funnel, { state }) : null,
+      state.deals.length ? h('div', { className: 'stoa-viewrow' },
+        h('div', { className: 'stoa-grow', style: { maxWidth: 760 } }, h(Filters, { state })),
+        h('div', { className: 'stoa-tabs', style: { margin: 0 }, role: 'group', 'aria-label': 'How the pipeline is shown' },
+          [['board', 'Board'], ['companies', 'Companies']].map(item => h('button', { type: 'button', key: item[0], className: 'stoa-tab', style: { height: 26, padding: '0 11px', fontSize: 12 },
+            'data-on': view === item[0] ? '1' : '0', 'aria-pressed': view === item[0], onClick: () => $view.set(item[0]) }, item[1])))) : null,
       h('div', { className: 'stoa-split', ref: split, 'data-side': side ? '1' : '0' },
-        state.deals.length ? h(Board, { state, openId, setOpenId: id => { setAdding(false); setOpenId(id) } }) : nothing, side)) : null,
+        !state.deals.length ? nothing : view === 'companies' ? h(Companies, { state, current: companyName, openCompany })
+          : h(Board, { state, openId, setOpenId: openRecord }), side)) : null,
     tab === 'market' ? (market
       ? h('div', null,
         state.markets.length > 1 ? h('div', { className: 'stoa-tabs', style: { marginTop: 0 } }, state.markets.map(item =>
           h('button', { type: 'button', key: item.id, className: 'stoa-tab', 'data-on': item.id === market.id ? '1' : '0', onClick: () => setMarketId(item.id) }, item.name))) : null,
         h(Market, { market }))
       : h('p', { className: 'stoa-sub' }, 'No market map yet. Ask Stoa below: “Map the market for us.”')) : null,
-    tab === 'activity' ? h('div', { style: { maxWidth: 760 } }, state.activity.length ? state.activity.map(entry => h('div', { key: entry.id, className: 'stoa-row', style: { cursor: 'default' } },
-      h('i', { className: 'stoa-dot', 'data-tone': entry.kind === 'stage' ? 'good' : '' }),
-      h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name' }, entry.name), h('span', null, '  ' + entry.text),
-        h('span', { className: 'stoa-sub', style: { display: 'block' } }, ago(entry.at) + ' · ' + entry.kind + (entry.by ? ' · ' + entry.by : '')))))
+    tab === 'activity' ? h('div', { style: { maxWidth: 800 } }, state.activity.length ? state.activity.map(entry => h('div', { key: entry.id, className: 'stoa-row', style: { cursor: 'default', alignItems: 'center' } },
+      h('i', { className: 'stoa-dot', style: { marginTop: 0 }, 'data-tone': entry.kind === 'stage' && !entry.undone ? 'good' : '' }),
+      h('span', { className: 'stoa-grow', style: entry.undone ? { opacity: 0.55 } : undefined },
+        h('span', { className: 'stoa-name' }, entry.name), h('span', { style: entry.undone ? { textDecoration: 'line-through' } : undefined }, '  ' + entry.text),
+        h('span', { className: 'stoa-sub', style: { display: 'block' } }, ago(entry.at) + ' · ' + (entry.undone ? 'taken back' : entry.kind) + (entry.by ? ' · ' + entry.by : ''))),
+      entry.can_undo ? h(Btn, { kind: 'quiet', title: 'This is the last change on ' + entry.name + ': put it back as it was', onClick: () => undo(entry.deal, entry.op) },
+        h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } }, h(Icon, { name: 'back', size: 13 }), 'Undo')) : null))
       : h('p', { className: 'stoa-sub' }, 'Everything that happens on the desk is logged here: who did it, when, and what changed.')) : null,
     tab === 'setup' ? h(Setup, { state, go: what => { if (what === 'add') add() } }) : null),
   h(Dock, { state }))

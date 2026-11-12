@@ -387,11 +387,45 @@ FRAUD_READING = {
                     {"target": "Loftline", "why": "Deposit fraud with nobody owning it."}],
 }
 
+# The other people on a few records: (record, name, title, role).
+RECRUITING_PEOPLE = [
+    ("Wei-Lin Chao", "Marta Kovac", "CEO, Ostrava", "makes the offer"),
+    ("Rafael Mendes", "Anil Kapoor", "CTO, Lumen Health", "hiring manager"),
+    ("Priya Raman", "Helen Park", "VP Engineering, Northwind", "hiring manager"),
+]
+SAAS_PEOPLE = [
+    ("Anika Sharma", "Gareth Lloyd", "CFO", "signs off the budget"),
+    ("Renata Okafor", "Sunita Rao", "General Counsel", "legal"),
+    ("Dalia Reyes-Moore", "Piotr Zielinski", "Head of Procurement", "procurement"),
+]
+# What the sample activity sweep "found": proposals waiting for a yes or a no, each with what it rests on.
+# (record, what would change, why, evidence kind, who, their words)
+RECRUITING_PROPOSALS = [
+    ("Dana Whitfield", {"stage": "submitted"}, "She confirmed she wants to be put forward.", "email", "Dana Whitfield",
+     "Yes, please go ahead and submit me to Northwind. Four weeks' notice is fine."),
+    ("Kwame Asante", {"next_step": "Book his phone screen: Thursday after 2, or Friday", "next_due": 2}, "He read the brief and offered times.",
+     "email", "Kwame Asante", "The brief looks interesting. I could talk Thursday after 2 or any time Friday."),
+    ("Sofia Marchetti", {"person": {"name": "Tereza Novotna", "title": "CEO, Ostrava", "role": "final interviewer"}},
+     "She is running the CEO round and is not on the record yet.", "calendar", "Ostrava", "CEO round with Tereza Novotna, Thursday 10:00."),
+]
+SAAS_PROPOSALS = [
+    ("Miles Brandt", {"stage": "won"}, "The signed order form came back.", "email", "Miles Brandt",
+     "Signed copy attached. Looking forward to getting started next month."),
+    ("Jonas Weber", {"next_step": "Send the two-year pricing option", "next_due": 3}, "He asked for a second option before deciding.",
+     "email", "Jonas Weber", "Can you send a two-year option as well? Finance wants to see both side by side."),
+    ("Imani Clarke", {"person": {"name": "Ravi Menon", "title": "Head of Engineering", "role": "technical evaluator"}},
+     "She copied him in to run the evaluation, and he is not on the record yet.", "email", "Imani Clarke",
+     "Adding Ravi, who will run the technical evaluation on our side."),
+]
+PROPOSAL_SOURCE = "Activity sweep (sample)"
+
 EXAMPLES = {
     "recruiting": {"playbook": "recruiting", "title": "a recruiting agency", "rows": RECRUITING,
-                   "market": TALENT_MARKET, "companies": TALENT_COMPANIES, "reading": TALENT_READING},
+                   "market": TALENT_MARKET, "companies": TALENT_COMPANIES, "reading": TALENT_READING,
+                   "people": RECRUITING_PEOPLE, "proposals": RECRUITING_PROPOSALS},
     "saas": {"playbook": "b2b-sales", "title": "a B2B software company selling a fraud prevention tool", "rows": SAAS,
-             "market": FRAUD_MARKET, "companies": FRAUD_COMPANIES, "reading": FRAUD_READING},
+             "market": FRAUD_MARKET, "companies": FRAUD_COMPANIES, "reading": FRAUD_READING,
+             "people": SAAS_PEOPLE, "proposals": SAAS_PROPOSALS},
 }
 
 
@@ -451,7 +485,35 @@ def load(desk, which: str = "") -> int:
             conn.execute("UPDATE deals SET created_at = ?, updated_at = ?, stage_at = ? WHERE id = ?", (born, touched, touched, deal["id"]))
         count += 1
     load_market(desk, which)
+    if count:
+        _load_around(desk, example, playbook)
     return count
+
+
+def _load_around(desk, example: dict, playbook) -> None:
+    """The other people on a few records, and a handful of proposals waiting for a yes or a no."""
+    store = desk.store
+    by_name = {deal["name"]: deal for deal in store.list(status="all") if deal["source"] == SOURCE}
+    for record, name, title, role in example.get("people") or []:
+        if record in by_name:
+            deal = by_name[record]
+            store.person_add(deal["id"], name, actor="demo", title=title, role=role, email=_email(name, title.split(", ")[-1] if ", " in title else deal["company"]))
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).strftime("%b %d").replace(" 0", " ")
+    rows = []
+    for record, change, why, kind, who, words in example.get("proposals") or []:
+        if record not in by_name:
+            continue
+        row = dict(change, record=by_name[record]["id"], why=why, evidence=[{"kind": kind, "at": yesterday, "who": who, "text": words}])
+        if row.get("stage") == "won":
+            row["stage"] = playbook.won["id"]
+        if isinstance(row.get("next_due"), int):
+            row["next_due"] = (dt.date.today() + dt.timedelta(days=row["next_due"])).isoformat()
+        if isinstance(row.get("person"), dict):
+            title = row["person"].get("title") or ""
+            row["person"] = dict(row["person"], email=_email(row["person"]["name"], title.split(", ")[-1] if ", " in title else by_name[record]["company"]))
+        rows.append(row)
+    if rows:
+        desk.intake.propose({"rows": rows, "source": PROPOSAL_SOURCE, "kind": "proposal"}, {})
 
 
 def summary(desk, which: str = "") -> str:
@@ -472,6 +534,9 @@ def clear(desk) -> int:
     doomed = [d for d in store.list(status="all") if d["source"] == SOURCE]
     for deal in doomed:
         store.delete(deal["id"])
+    for intake in store.intake_list("open", limit=50):
+        if intake["source"] == PROPOSAL_SOURCE:
+            store.intake_finish(intake["id"], "discarded", {"reason": "sample data removed"})
     for name in [example["market"]["name"] for example in EXAMPLES.values()] + list(RETIRED_MAPS):
         market = desk.markets._market(name)
         if market is None or market["name"] != name:

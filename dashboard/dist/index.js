@@ -40,16 +40,6 @@
   }
   function today() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
   function tone(kind) { return { stage: "grad", created: "good", call: "good", email: "good", meeting: "good", snooze: "warn" }[kind] || ""; }
-  function isDark() {
-    try {
-      var m = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g);
-      if (!m || (m[3] !== undefined && parseFloat(m[3]) === 0)) m = getComputedStyle(document.documentElement).backgroundColor.match(/[\d.]+/g);
-      if (!m) return false;
-      return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255 < 0.45;
-    } catch (e) { return false; }
-  }
-
-  // -- small pieces -----------------------------------------------------------------------------
   function Btn(props) {
     return h("button", { className: "stoa-btn", "data-kind": props.kind || "", disabled: props.disabled, onClick: props.onClick, title: props.title }, props.children);
   }
@@ -71,8 +61,7 @@
     return h("section", { className: "stoa-hero" },
       h("div", null,
         h("div", { className: "stoa-eyebrow" }, "Stoa", h("span", null, "//"), s.playbook.title,
-          h("span", { className: "stoa-live", "data-off": props.live ? "0" : "1" }, h("b"), props.live ? "Live" : "Paused"),
-          h("button", { className: "stoa-mode", onClick: props.flip, title: "Switch between light and dark" }, props.mode === "dark" ? "Light" : "Dark")),
+          h("span", { className: "stoa-live", "data-off": props.live ? "0" : "1" }, h("b"), props.live ? "Live" : "Paused")),
         h("h1", { className: "stoa-title" }, h("span", null, money(t.open_value, cur) || String(t.open)), h("em", null, "in play")),
         h("p", { className: "stoa-sub" },
           h("span", null, h("b", null, t.open), " open"), h("span", null, h("b", null, t.due), " due"),
@@ -615,13 +604,6 @@
     var _t = useState(""), toast = _t[0], setToast = _t[1];
     var _mv = useState({}), moved = _mv[0], setMoved = _mv[1];
     var _l = useState(true), live = _l[0], setLive = _l[1];
-    var _md = useState(function () {
-      try { var saved = window.localStorage.getItem("stoa.mode"); if (saved === "light" || saved === "dark") return saved; } catch (e) {}
-      return isDark() ? "dark" : "light";
-    }), mode = _md[0], setMode = _md[1];
-    var flip = useCallback(function () {
-      setMode(function (m) { var next = m === "dark" ? "light" : "dark"; try { window.localStorage.setItem("stoa.mode", next); } catch (e) {} return next; });
-    }, []);
     var stages = useRef(null);
     var timer = useRef(null);
 
@@ -655,7 +637,7 @@
         state.tour ? h("div", { className: "stoa-note stoa-tour", role: "status" },
           h("span", null, h("b", null, "Sample data"), " · " + state.tour.title + ". Everyone on it is made up, and your own desk is untouched."),
           h(Btn, { onClick: function () { post("/tour", { action: "leave" }).then(function () { setPanel(null); say("Back on your own desk."); return refresh(); }).catch(function (e) { say(String(e && e.message || e)); }); } }, "Leave the tour")) : null,
-        h(Hero, { state: state, live: live, mode: mode, flip: flip }),
+        h(Hero, { state: state, live: live }),
         h(Attention, { state: state, open: openDeal }),
         h("div", { className: "stoa-bar" },
           h("div", { className: "stoa-seg", role: "tablist" }, tabs.map(function (t) {
@@ -675,7 +657,7 @@
         panel && panel.kind === "target" ? h(TargetDrawer, { key: panel.target.id, target: panel.target, state: state, close: close, refresh: refresh, say: say, openDeal: openDeal }) : null,
         panel && panel.kind === "new" ? h(NewDrawer, { state: state, close: close, refresh: refresh, say: say, openDeal: openDeal }) : null);
     }
-    return h("div", { className: "stoa", "data-mode": mode },
+    return h("div", { className: "stoa" },      // colours and type come from the dashboard's own theme
       h("div", { className: "stoa-aurora", "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i")),
       body,
       toast ? h("div", { className: "stoa-toast", role: "status" }, toast) : null);

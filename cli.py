@@ -18,6 +18,8 @@ def setup(subparser) -> None:
     market.add_argument("--share", action="store_true", help="With --export: leave out buyers and pipeline status")
     use = subs.add_parser("use", help="Switch the active playbook")
     use.add_argument("name")
+    auto = subs.add_parser("autonomy", help="What a scheduled job may change by itself: ask, routine or full (no level: show it)")
+    auto.add_argument("level", nargs="?", default="", choices=["", "ask", "routine", "full"])
     sample = subs.add_parser("demo", help="Take a tour: show a worked example in place of your own desk, which is left untouched")
     sample.add_argument("which", nargs="?", default="", choices=["", "recruiting", "saas"],
                         help="recruiting: an agency with about $1.2M in open fees. saas: a company selling a fraud prevention "
@@ -73,6 +75,15 @@ def run(desk, args) -> None:
         print(result.get("summary") or result.get("error"))
         if result.get("warning"):
             print(result["warning"])
+    elif command == "autonomy":
+        from .desk import AUTONOMY
+        if args.level:
+            result = desk.set_autonomy(args.level)
+            print(result.get("error") or "Autonomy is now: %s. %s" % (result["label"], result["summary"]))
+        else:
+            level = desk.autonomy()
+            for key, entry in AUTONOMY.items():
+                print("%s %-8s %s. %s" % ("●" if key == level else "○", key, entry["label"], entry["summary"]))
     elif command == "demo":
         if args.clear:
             was = desk.tour_end()
@@ -101,4 +112,4 @@ def run(desk, args) -> None:
         else:
             print(result.get("error"))
     else:
-        print("Usage: hermes stoa <status|board|brief|map|playbooks|use|demo|export|import>")
+        print("Usage: hermes stoa <status|board|brief|map|playbooks|use|autonomy|demo|export|import>")
