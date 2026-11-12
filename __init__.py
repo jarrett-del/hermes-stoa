@@ -133,7 +133,7 @@ def register(ctx) -> None:
     # -- tools ----------------------------------------------------------------------------------
     for schema, fn, emoji in (
         (schemas.GTM_PIPELINE, desk.pipeline, "🏛️"),
-        (schemas.GTM_DEAL, desk.deal, "🏛️"),
+        (schemas.GTM_DEAL, lambda args: desk.reason_asked(args) or desk.deal(args), "🏛️"),
         (schemas.GTM_CARD, lambda args: desk.card(args, _session()), "🏛️"),
         (schemas.GTM_MARKET, lambda args: desk.market(args, _session()), "🗺️"),
         (schemas.GTM_ENRICH, desk.enrich, "🔎"),
@@ -143,6 +143,7 @@ def register(ctx) -> None:
         (schemas.GTM_INTAKE, lambda args: desk.intake.run(args, _session()), "📥"),
         (schemas.GTM_CONTACT, desk.contact, "👥"),
         (schemas.GTM_INVOICE, desk.invoice, "🧾"),
+        (schemas.GTM_GROUP, desk.group, "🗂️"),
     ):
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, emoji=emoji,
                           handler=_tool(fn, desk, quiet=schema is schemas.GTM_PIPELINE, name=schema["name"]))    # a read changes nothing

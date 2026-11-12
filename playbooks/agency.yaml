@@ -61,6 +61,11 @@ fields:
   - {key: start, label: Desired start}
   - {key: referred_by, label: Referred by}
 
+# What is kept on a client itself (its status and a note are kept on every group).
+group_fields:
+  - {key: billing, label: Billing}
+  - {key: terms, label: Payment terms}
+
 drafts:
   follow_up: >
     Draft a short follow-up to {name} at {company}. Friendly, specific to the project, one next

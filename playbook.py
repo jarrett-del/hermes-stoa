@@ -45,6 +45,7 @@ class Playbook:
         self.won: dict = self.data["won"]
         self.lost: dict = self.data["lost"]
         self.fields: list = self.data.get("fields") or []
+        self.group_fields: list = self.data.get("group_fields") or []      # the facts kept on a group (a search's fee terms)
         self.drafts: dict = self.data.get("drafts") or {}
         self.default_stale: int = int(self.data.get("stale_days") or 7)
         self.delivery: list = self.data.get("delivery") or []      # what happens after a win, in order: [{id, label}]
@@ -255,6 +256,15 @@ def validate(data: Any) -> dict:
         if isinstance(raw, dict) and raw.get("key"):
             fields.append({"key": str(raw["key"]), "label": str(raw.get("label") or raw["key"])})
     out["fields"] = fields[:12]
+    group_fields = []
+    if not isinstance(data.get("group_fields") or [], list):
+        raise PlaybookError("group_fields must be a list")
+    for raw in data.get("group_fields") or []:
+        if isinstance(raw, str):
+            raw = {"key": re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_"), "label": raw}
+        if isinstance(raw, dict) and raw.get("key"):
+            group_fields.append({"key": str(raw["key"]), "label": str(raw.get("label") or raw["key"])})
+    out["group_fields"] = group_fields[:12]
     after = data.get("delivery") or []
     if not isinstance(after, list) or len(after) > 6:
         raise PlaybookError("delivery must be a list of at most 6 stages (what happens after a win)")

@@ -28,8 +28,9 @@ def setup(subparser) -> None:
     sample.add_argument("which", nargs="?", default="", choices=["", "recruiting", "saas"],
                         help="recruiting: an agency with about $1.2M in open fees. saas: a company selling a fraud prevention "
                              "tool, about $2.5M of pipeline. Left out: the one that fits the active playbook")
-    sample.add_argument("--clear", "--leave", dest="clear", action="store_true",
-                        help="Leave the tour: back to your own desk, and any sample records an earlier version put in it are removed")
+    sample.add_argument("--leave", dest="leave", action="store_true", help="Leave the tour: back to your own desk. Nothing in it is touched")
+    sample.add_argument("--remove-samples", "--clear", dest="clear", action="store_true",
+                        help="Remove the sample records a version before 0.10 put in your own desk (and leave the tour, if one is on)")
     export = subs.add_parser("export", help="Write the pipeline to a CSV file in the plugin's exports folder")
     export.add_argument("path", nargs="?", default="", metavar="name", help="A file name (optional). It is written to the exports folder.")
     imp = subs.add_parser("import", help="Add records from a CSV file")
@@ -113,11 +114,15 @@ def run(desk, args) -> None:
             for key, entry in AUTONOMY.items():
                 print("%s %-8s %s. %s" % ("●" if key == level else "○", key, entry["label"], entry["summary"]))
     elif command == "demo":
-        if args.clear:
+        if getattr(args, "leave", False) or args.clear:
             was = desk.tour_end()
-            removed = demo.clear(desk)            # sample records an earlier version loaded into the desk itself
+            removed = demo.clear(desk) if args.clear else 0     # sample records an earlier version loaded into the desk itself
             print("%s%s" % ("Left the tour: this is your own desk again." if was else "No tour was on.",
                             " Removed %d sample records from your desk." % removed if removed else ""))
+            left = 0 if args.clear else desk.stray_samples()
+            if left:
+                print("%d sample records from an earlier version are still in your own desk. Remove them with: "
+                      "hermes stoa demo --remove-samples" % left)
             return
         result = desk.tour_start(args.which)
         example = demo.EXAMPLES[result["example"]]

@@ -28,7 +28,7 @@ playbook's words with the user. In tool arguments the fields are always `deal` a
 | "Add Dana from Kestrel to the Northwind search" | `gtm_deal(action="add", ...)`, then `gtm_card` so they see it |
 | "I spoke to Dana, she wants 210 base" | `gtm_deal(action="log", kind="call", text=..., next_step=...)` and update `fields` |
 | "Move Dana to submitted" | `gtm_deal(action="move", stage="submitted")` |
-| "We lost Kestrel on price" | `gtm_deal(action="close", outcome="lost", reason=...)`, the reason in the playbook's own words when one of its reasons fits |
+| "We lost Kestrel on price" | `gtm_deal(action="close", outcome="lost", reason=...)`. The reason is one of the playbook's own; if yours is not, the tool answers with the list: pick the closest and call again, or pass `Other: <a few words>` |
 | "What's on my plate?" / "What needs me today?" | `gtm_pipeline(view="today")`, then answer in a few lines, most pressing first |
 | "Done, I sent Dana the references" | `gtm_deal(action="done", deal="dana", next_step=..., next_due=...)`: it logs the step as done and sets what comes next |
 | "Not until after the 20th" / "park Kestrel for two weeks" | `gtm_deal(action="snooze", until="2026-11-21")` or `days=14`: it leaves every attention list until then |
@@ -153,6 +153,10 @@ you, say so in one line and stop.
   `"held": true`: it is now a proposal waiting for the person. That is the right outcome. Do not
   try another route, do not apply or discard anything yourself (the desk refuses), and pass `why`
   and `evidence` with such changes so the person can decide quickly.
+- **Several at once.** "Approve them" / "approve the next steps" →
+  `gtm_intake(action="apply", id=..., rows=[...])` for the ones meant; each is still its own change
+  and can be taken back by itself. A proposal the person has already carried out some other way
+  closes itself: do not ask them about it again.
 - **Undo.** Every change is on a ledger with what it replaced. "Undo that" or "put Dana back" is
   `gtm_deal(action="undo", deal="<name or id>")`: it takes back the last action on that record,
   whoever made it, and can be repeated for the one before. If someone says a change was wrong,
@@ -205,6 +209,31 @@ we know at Kestrel?" and "who is Lena?". `gtm_contact(action="company", company=
 company whole: its records, everyone known there, what is open and won, and the notes kept on
 it; pass `note` to save what is worth remembering about the company itself, and `domain` when you
 learn its email domain.
+
+## Searches, accounts and clients: the group a record is in
+
+Every record can name a group: the playbook's word for it is a search, an account, a client, a
+program (`gtm_group(action="list")` says which, as `called`). The group is a thing of its own. It
+carries who the **client** is (the company that pays: in recruiting that is not the candidate's
+own company), where it stands (open, on hold, done, closed), what one record in it is worth,
+notes, and the facts the playbook names for it (a search's fee terms).
+
+- "We are starting a Staff Backend search for Northwind, 20% fee" →
+  `gtm_group(action="set", group="Staff Backend · Northwind", client="Northwind",
+  fields={"fee_pct": "20"})`, **before** adding the first record to it. Records added to it take
+  the group's `value` unless they bring their own.
+- "Put the Halcyon search on hold" → `gtm_group(action="set", group="Halcyon", status="on hold")`.
+  A clear part of the name is enough; if it matches several, the tool lists them: ask, never guess.
+- "What is open for Northwind?" / "who do we deal with there?" → `gtm_group(action="get", ...)`,
+  or `gtm_contact(action="company", company="Northwind")`, which gathers every group it is the
+  client of.
+- The people on the **client's side** (a hiring manager, a sponsor, the person who signs) belong
+  on the group, not on one record: `gtm_contact(action="add", group="Staff Backend · Northwind",
+  name=..., email=..., role="hiring manager")`. Their mail is then recognised by
+  `gtm_contact(action="match")` as being about that group, with the records it could concern.
+  Someone who matters to one record only goes on that record, as before.
+- When a record shows a `client`, that is who an invoice for it goes to. Say the client's name,
+  not the record's company, when you talk about who owes what.
 
 ## Today, and briefs
 

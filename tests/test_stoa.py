@@ -983,6 +983,30 @@ class TourTests(unittest.TestCase):
         self.assertIn("No tour was on", run(which="", clear=True))
 
 
+    def test_leaving_a_tour_touches_nothing_and_removing_old_samples_is_asked_for_by_name(self):
+        import contextlib
+        import io
+        from stoa import cli
+
+        def run(**args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.run(self.desk, types.SimpleNamespace(stoa_command="demo", **dict({"which": "", "clear": False, "leave": False}, **args)))
+            return out.getvalue()
+
+        fixture.load(self.desk)                                   # what a version before 0.10 left in the team's own desk
+        before = self.desk.own_store.count()
+        run(which="recruiting")
+        said = run(leave=True)
+        self.assertIn("Left the tour", said)
+        self.assertIn("7 sample records from an earlier version are still in your own desk", said)
+        self.assertIn("--remove-samples", said)
+        self.assertEqual((self.desk.tour(), self.desk.own_store.count()), ({}, before))      # nothing in the desk was touched
+        self.assertIn("Removed 7 sample records", run(clear=True))
+        self.assertEqual(self.desk.own_store.count(), before - 7)                            # the team's own record stays
+        self.assertNotIn("still in your own desk", run(leave=True))
+
+
 class TodayTests(unittest.TestCase):
     """The Today list: what wants a person now, most pressing first."""
 
@@ -1634,6 +1658,135 @@ class SharedContactTests(unittest.TestCase):
         self.assertEqual(len(Store(path).people()), 3)                            # opening it again changes nothing
 
 
+class GroupTests(unittest.TestCase):
+    """A group (a search, an account, a client) is a thing of its own: who the client is, where it stands, its
+    terms, and the people on the client's side. Records still name their group; nothing about them changes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name)                      # the recruiting playbook
+        fixture.load(self.desk)
+        self.dana = self.desk.store.find("Dana Whitfield")["id"]
+        self.search = "Staff Backend · Northwind"
+
+    def test_a_group_nobody_described_is_still_listed_with_what_is_in_it(self):
+        listed = {g["name"]: g for g in self.desk.groups()}
+        self.assertEqual(sorted(listed), ["Founding Designer · Halcyon", "Head of Growth · Ostrava", self.search])
+        self.assertEqual((listed[self.search]["records"], listed[self.search]["open"], listed[self.search]["client"], listed[self.search]["status"]),
+                         (3, 3, "", "open"))
+        self.assertEqual(self.desk.group({"action": "list"})["called"], "search")
+        self.assertNotIn("client", self.desk.view(self.desk.store.get(self.dana)))
+
+    def test_setting_a_group_keeps_its_client_status_terms_and_value(self):
+        out = self.desk.group({"action": "set", "group": "staff backend - northwind", "client": "Northwind", "status": "On hold", "value": "38k",
+                               "note": "Paused until the reorg lands.", "fields": {"Fee %": "20", "target_base": "190000", "Shoe size": "9"}})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out["created"], out["group"]["name"], out["group"]["client"], out["group"]["status"], out["group"]["value"]),
+                         (False, self.search, "Northwind", "hold", 38000.0))
+        self.assertEqual({f["key"]: f["value"] for f in out["group"]["facts"] if f["value"]}, {"fee_pct": "20", "target_base": "190000"})
+        self.assertEqual(out["ignored"], ["Shoe size"])
+        self.assertEqual(len(out["records"]), 3)
+        seen = self.desk.view(self.desk.store.get(self.dana))
+        self.assertEqual((seen["client"], seen["group_status"]), ("Northwind", "On hold"))
+        self.assertFalse(self.desk.group({"action": "set", "group": self.search, "status": "napping"})["ok"])
+        self.desk.group({"action": "set", "group": self.search, "status": "open", "fields": {"fee_pct": ""}})
+        again = self.desk.group({"action": "get", "group": "Northwind"})          # a part of the name only one search has
+        self.assertEqual((again["group"]["status"], again["group"]["fields"]), ("open", {"target_base": "190000"}))
+        self.assertNotIn("group_status", self.desk.view(self.desk.store.get(self.dana)))
+        ledger = [e for e in self.desk.store.ledger(limit=20) if e["entity"] == "group"]
+        self.assertGreaterEqual(len(ledger), 2)                                   # kept on the ledger like everything else
+
+    def test_a_group_is_opened_before_its_first_record_and_gives_it_its_value(self):
+        out = self.desk.group({"action": "set", "group": "VP Sales · Kestrel", "client": "Kestrel Labs", "value": 60000})
+        self.assertEqual((out["created"], out["records"], out["group"]["client"]), (True, [], "Kestrel Labs"))
+        made = self.desk.deal({"action": "add", "name": "Ada Quill", "group": "VP Sales - kestrel", "company": "Fathom Data"})["deal"]
+        self.assertEqual((made["value"], made["client"]), (60000.0, "Kestrel Labs"))
+        own = self.desk.deal({"action": "add", "name": "Bo Lindqvist", "group": "VP Sales · Kestrel", "value": 45000})["deal"]
+        self.assertEqual(own["value"], 45000.0)                                   # a record that brings its own keeps it
+        self.assertEqual(self.desk.group({"action": "get", "group": "VP Sales · Kestrel"})["open_value"], 105000.0)
+        several = self.desk.group({"action": "set", "group": "Kestrel", "new": True, "client": "Kestrel Labs"})   # a name that is part of another's
+        self.assertEqual((several["created"], several["group"]["name"]), (True, "Kestrel"))
+        self.assertEqual(self.desk.group({"action": "get", "group": "VP Sales"})["group"]["name"], "VP Sales · Kestrel")
+        self.desk.group({"action": "set", "group": "Staff Frontend · Northwind", "client": "Northwind"})
+        self.assertIn("several", self.desk.group({"action": "get", "group": "Northwind"})["error"])
+        self.assertIn("several", self.desk.group({"action": "set", "group": "Northwind", "status": "closed"})["error"])   # never a guess
+        self.assertFalse(self.desk.group({"action": "get", "group": "Nowhere"})["ok"])
+
+    def test_renaming_a_group_renames_it_on_every_record_and_keeps_what_is_known(self):
+        self.desk.group({"action": "set", "group": self.search, "client": "Northwind"})
+        self.desk.contact({"action": "add", "group": self.search, "name": "Helen Park", "email": "helen@northwind.example", "role": "hiring manager"})
+        out = self.desk.group({"action": "rename", "group": self.search, "to": "Staff Platform · Northwind"})
+        self.assertEqual((out["renamed_on"], out["group"]["name"], out["group"]["client"], [p["name"] for p in out["people"]]),
+                         (3, "Staff Platform · Northwind", "Northwind", ["Helen Park"]))
+        self.assertEqual(self.desk.store.get(self.dana)["grp"], "Staff Platform · Northwind")
+        self.assertNotIn(self.search, [g["name"] for g in self.desk.groups()])
+        self.desk.undo(self.dana)                                                 # one record can go back by itself
+        self.assertEqual(self.desk.store.get(self.dana)["grp"], self.search)
+        self.desk.group({"action": "set", "group": "Head of Growth · Ostrava", "client": "Ostrava"})
+        clash = self.desk.group({"action": "rename", "group": "Founding Designer · Halcyon", "to": "Head of Growth · Ostrava"})
+        self.assertIn("already", clash["error"])
+
+    def test_people_on_a_groups_side_are_kept_once_and_found_by_the_client(self):
+        self.desk.group({"action": "set", "group": self.search, "client": "Northwind"})
+        added = self.desk.contact({"action": "add", "group": "Northwind", "name": "Helen Park", "email": "Helen@Northwind.example",
+                                   "title": "VP Engineering", "role": "hiring manager"})
+        self.assertEqual([(p["name"], p["email"], p["on"]) for p in added["people"]], [("Helen Park", "helen@northwind.example", "group")])
+        self.assertTrue(self.desk.contact({"action": "add", "group": self.search, "name": "H. Park", "email": "helen@northwind.example"})["exists"])
+        self.desk.contact({"action": "add", "deal": self.dana, "name": "Helen Park", "email": "helen@northwind.example"})   # the same person, on a record too
+        self.assertEqual(len([c for c in self.desk.store.grp_people()]), 1)
+        self.assertEqual(self.desk.store.people(self.dana)[0]["id"], self.desk.store.grp_people(self.search)[0]["id"])
+        self.desk.contact({"action": "update", "group": self.search, "person": "helen park", "title": "CTO", "role": "decision maker"})
+        self.assertEqual((self.desk.store.people(self.dana)[0]["title"], self.desk.store.grp_people(self.search)[0]["role"]), ("CTO", "decision maker"))
+        company = self.desk.company("Northwind")                                  # no record's company: the client of a search
+        self.assertEqual((company["ok"], company["via"], company["groups"], company["open"]), (True, "group", [self.search], 3))
+        self.assertEqual([p["name"] for p in company["people"]], ["Helen Park"])
+        hit = self.desk.match(["helen@northwind.example", "new.person@northwind.example"])["matches"]
+        self.assertEqual((hit[0]["known"], hit[0]["who"]), (True, "Helen Park"))   # she is on a record as well, so the record answers
+        self.desk.contact({"action": "remove", "deal": self.dana, "person": "helen@northwind.example"})
+        hit = self.desk.match(["helen@northwind.example"])["matches"][0]
+        self.assertEqual((hit["known"], hit["group"], hit["client"], len(hit["records"])), (True, self.search, "Northwind", 3))
+        found = [p for p in self.desk.find_people("northwind")["people"] if p["name"] == "Helen Park"]
+        self.assertEqual((found[0]["company"], found[0]["group"]), ("Northwind", self.search))
+        self.assertFalse(self.desk.contact({"action": "remove", "group": self.search, "person": "nobody"})["ok"])
+        self.desk.contact({"action": "remove", "group": self.search, "person": "helen park"})
+        self.assertEqual(self.desk.store.grp_people(self.search), [])
+        self.assertFalse(self.desk.contact({"action": "add", "group": "No Such Search", "name": "X"})["ok"])
+
+    def test_a_scheduled_job_changes_a_group_only_at_the_highest_level(self):
+        cron = {"platform": "cron"}
+        self.assertIsNone(self.desk.guard("gtm_group", {"action": "list"}, cron))
+        self.assertIsNone(self.desk.guard("gtm_group", {"action": "get", "group": self.search}, cron))
+        for level in ("ask", "routine"):
+            self.desk.set_autonomy(level)
+            self.assertFalse(self.desk.guard("gtm_group", {"action": "set", "group": self.search, "status": "closed"}, cron)["ok"])
+            self.assertFalse(self.desk.guard("gtm_contact", {"action": "add", "group": self.search, "name": "X"}, cron)["ok"])
+        self.desk.set_autonomy("full")
+        self.assertIsNone(self.desk.guard("gtm_group", {"action": "set", "group": self.search, "status": "closed"}, cron))
+        self.assertIsNone(self.desk.guard("gtm_contact", {"action": "add", "group": self.search, "name": "X"}, cron))
+        self.assertIsNone(self.desk.guard("gtm_group", {"action": "set", "group": self.search}, {"platform": "slack"}))
+
+    def test_a_copy_of_the_file_is_kept_once_a_day(self):
+        folder = Path(self.tmp.name) / "backups"
+        self.assertFalse(folder.exists())                                         # the desk was empty when it was first opened today
+        store = make_desk(self.tmp.name).own_store                                # the next time Hermes starts
+        made = sorted(p.name for p in folder.glob("desk-*.db"))
+        self.assertEqual(made, ["desk-%s.db" % st.today()])
+        self.assertEqual(store.snapshot(folder), "")                              # not twice in a day
+        for day in range(1, 20):
+            (folder / ("desk-2026-01-%02d.db" % day)).write_bytes(b"old")
+        (folder / ("desk-%s.db" % st.today())).unlink()
+        self.assertTrue(store.snapshot(folder, keep=14).endswith("desk-%s.db" % st.today()))
+        kept = sorted(p.name for p in folder.glob("desk-*.db"))
+        self.assertEqual((len(kept), kept[0], kept[-1]), (14, "desk-2026-01-07.db", "desk-%s.db" % st.today()))
+        copy = sqlite3.connect(str(folder / kept[-1]))
+        self.assertEqual(copy.execute("select count(*) from deals").fetchone()[0], 7)
+        copy.close()
+        empty = make_desk(tempfile.mkdtemp())
+        empty.own_store
+        self.assertFalse((empty.data_dir / "backups").exists())                   # nothing to copy on a desk nobody has used
+
+
 class PeopleTests(unittest.TestCase):
     """The other people on a record, whose address is whose, and what is known about a company."""
 
@@ -1744,6 +1897,39 @@ class ApprovalTests(unittest.TestCase):
         marta = next(p for p in found if p["name"] == "Marta Novak")        # on a candidate's record, not at the candidate's employer
         self.assertEqual((marta["company"], marta["record"]["company"]), ("", "Kestrel Labs"))
         self.assertTrue(self.desk.company("Kestrel Labs")["ok"])                   # a real company is found as before
+
+    def test_a_proposal_overtaken_by_events_closes_itself(self):
+        out = self.propose()
+        self.assertEqual(len(self.desk.intake.queue()), 3)
+        self.desk.deal({"action": "move", "deal": self.dana, "stage": "submitted"})          # done by hand since it was proposed
+        queue = self.desk.intake.queue()
+        self.assertEqual([(q["name"], q["changes"][0]["field"]) for q in queue], [("Marcus Oyelaran", "Next step"), ("Marcus Oyelaran", "Person")])
+        view = self.desk.intake.view(out["id"])
+        self.assertEqual((view["status"], view["rows"][0]["done"], view["rows"][0]["why"]), ("open", "overtaken", "already done another way"))
+        self.assertEqual(self.desk.today()["counts"]["approvals"], 2)
+        self.desk.deal({"action": "update", "deal": self.marcus, "next_step": "Send the comp range", "next_due": "+2d"})
+        self.desk.contact({"action": "add", "deal": self.marcus, "name": "Lena Ortiz", "email": "lena@fathom.example"})
+        self.assertEqual(self.desk.intake.queue(), [])                              # nothing left to ask
+        self.assertNotEqual(self.desk.intake.view(out["id"])["status"], "open")
+        self.assertEqual(self.desk.store.declined_list(), [])                       # overtaken is not declined: nothing is remembered against it
+        gone = self.desk.intake.propose({"kind": "proposal", "source": "activity sweep", "rows": [
+            {"record": self.dana, "next_step": "Prepare her for the onsite", "why": "Northwind confirmed Tuesday."}]}, {})
+        self.assertEqual([q["name"] for q in self.desk.intake.queue()], ["Dana Whitfield"])
+        self.desk.store.delete(self.dana)
+        self.assertNotIn("Dana Whitfield", [q["name"] for q in self.desk.intake.queue()])
+        self.assertEqual(self.desk.intake.view(gone["id"])["rows"][0]["why"], "the record is no longer on the desk")
+
+    def test_several_proposals_are_decided_in_one_go_each_its_own_decision(self):
+        out = self.propose()
+        done = self.desk.intake.decide_many([{"intake": out["id"], "n": 2}, {"intake": out["id"], "n": 3}, {"intake": "nope", "n": 1}], "approve")
+        self.assertEqual((done["ok"], done["decided"], done["applied"], done["deals"]), (True, 2, 2, [self.marcus, self.marcus]))
+        self.assertEqual([q["name"] for q in self.desk.intake.queue()], ["Dana Whitfield"])
+        self.assertEqual(self.desk.store.get(self.marcus)["next_step"], "Send the comp range")
+        self.desk.undo(self.marcus)                                                 # the last of them goes back by itself
+        self.assertEqual([p["name"] for p in self.desk.store.people(self.marcus)], [])
+        self.assertEqual(self.desk.store.get(self.marcus)["next_step"], "Send the comp range")
+        self.assertEqual(self.desk.intake.decide_many([{"intake": out["id"], "n": 1}], "decline")["decided"], 1)
+        self.assertFalse(self.desk.intake.decide_many([], "maybe")["ok"])
 
     def test_each_proposal_waits_with_what_it_rests_on(self):
         out = self.propose()
@@ -2204,7 +2390,7 @@ class RegisterTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_everything_the_manifest_promises_is_registered(self):
-        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_contact", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_intake", "gtm_invoice", "gtm_market",
+        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_contact", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_group", "gtm_intake", "gtm_invoice", "gtm_market",
                                                   "gtm_notes", "gtm_pipeline", "gtm_playbook"])
         self.assertEqual(sorted(self.ctx.blueprints), ["activity-sweep", "friday-review", "market-watch", "morning-brief",
                                                        "notes-sweep", "sheet-mirror", "sheet-pull"])
@@ -2231,6 +2417,24 @@ class RegisterTests(unittest.TestCase):
             self.assertEqual(section(info), "", info)
         self.assertIn("not available", json.loads(self.ctx.tools["gtm_pipeline"]({}))["error"])
         self.assertIn("not available", self.ctx.commands["gtm"](""))
+
+    def test_an_agent_closing_a_record_as_lost_picks_one_of_the_playbooks_reasons(self):
+        self.session(platform="slack", chat_id="C1")
+        desk = stoa.LIVE_DESKS[-1]
+        made = json.loads(self.ctx.tools["gtm_deal"]({"action": "add", "name": "Ada Quill"}))["deal"]["id"]
+        asked = json.loads(self.ctx.tools["gtm_deal"]({"action": "close", "deal": made, "outcome": "lost", "reason": "the money was far too low for her"}))
+        self.assertFalse(asked["ok"])
+        self.assertIn("Comp mismatch", asked["reasons"])
+        self.assertEqual(desk.store.get(made)["status"], "open")                  # nothing was changed
+        done = json.loads(self.ctx.tools["gtm_deal"]({"action": "close", "deal": made, "outcome": "lost", "reason": "comp mismatch"}))
+        self.assertEqual((done["ok"], desk.store.get(made)["lost_reason"]), (True, "Comp mismatch"))
+        other = json.loads(self.ctx.tools["gtm_deal"]({"action": "add", "name": "Bo Lindqvist"}))["deal"]["id"]
+        self.assertFalse(json.loads(self.ctx.tools["gtm_deal"]({"action": "move", "deal": other, "stage": "passed", "reason": "ghosted us"}))["ok"])
+        self.assertTrue(json.loads(self.ctx.tools["gtm_deal"]({"action": "move", "deal": other, "stage": "passed", "reason": "Other: went dark"}))["ok"])
+        self.assertEqual(desk.store.get(other)["lost_reason"], "Other: went dark")
+        third = json.loads(self.ctx.tools["gtm_deal"]({"action": "add", "name": "Cy Okafor"}))["deal"]["id"]
+        self.assertTrue(json.loads(self.ctx.tools["gtm_deal"]({"action": "close", "deal": third, "outcome": "lost"}))["ok"])     # no reason given: not asked
+        self.assertTrue(json.loads(self.ctx.tools["gtm_deal"]({"action": "close", "deal": made, "outcome": "won", "reason": "anything"}))["ok"] in (True, False))
 
     def test_a_scheduled_run_is_known_by_hermes_own_mark_not_by_a_platform(self):
         """Hermes runs a scheduled job with an empty platform and HERMES_CRON_SESSION set. Read as a terminal
@@ -2396,6 +2600,38 @@ class DashboardApiTests(unittest.TestCase):
         self.api.person(marcus, {"verb": "add", "name": "Lena Ortiz", "email": "lena@kestrel.example"})
         self.assertEqual((self.api.deal(dana)["people"][0]["also_on"], self.api.deal(marcus)["people"][0]["id"]), (1, people[0]["id"]))
         self.assertEqual((self.api.setup()["data"]["archived"], self.api.setup()["data"]["ledger"] > 5), (0, True))
+
+    def test_the_page_keeps_a_group_and_its_people_and_decides_several_proposals(self):
+        api, search = self.api, "Staff Backend · Northwind"
+        out = api.group({"name": search, "client": "Northwind", "status": "on hold", "fields": {"fee_pct": "20"}})
+        self.assertEqual((out["group"]["client"], out["group"]["status"]), ("Northwind", "hold"))
+        state = api.state()
+        mine = next(g for g in state["groups"] if g["name"] == search)
+        self.assertEqual((mine["client"], mine["status_label"], mine["fields"]), ("Northwind", "On hold", {"fee_pct": "20"}))
+        self.assertEqual({card.get("client") for card in state["deals"] if card.get("group") == search}, {"Northwind"})
+        self.assertEqual(state["playbook"]["group_fields"][0]["key"], "fee_type")
+        added = api.group_person({"verb": "add", "group": search, "name": "Helen Park", "email": "helen@northwind.example", "role": "hiring manager"})
+        self.assertEqual([p["name"] for p in added["people"]], ["Helen Park"])
+        api.group_person({"verb": "update", "group": search, "person": "helen park", "title": "VP Engineering"})
+        self.assertEqual(api.group({"name": search})["people"][0]["title"], "VP Engineering")
+        api.group_person({"verb": "remove", "group": search, "person": "helen park"})
+        self.assertEqual([p for p in api.group({"name": search})["people"] if p["on"] == "group"], [])
+        self.assertEqual(api.group({"name": search, "to": "Staff Platform · Northwind"})["group"]["name"], "Staff Platform · Northwind")
+        self.assertTrue(api.group({"name": "Head of Data · Lumen", "new": True, "client": "Lumen Health"})["created"])
+        for bad in ({"name": "No such search"}, {"name": ""}):
+            with self.assertRaises(api.HTTPException):
+                api.group(bad)
+        with self.assertRaises(api.HTTPException):
+            api.group_person({"verb": "shout", "group": search})
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        made = self.desk.intake.propose({"kind": "proposal", "source": "sweep", "rows": [
+            {"record": dana, "next_step": "Send the brief"}, {"record": dana, "close_on": "+30d"}]}, {})
+        done = api.approvals({"verb": "approve", "items": [{"intake": made["id"], "n": 1}, {"intake": made["id"], "n": 2}]})
+        self.assertEqual((done["decided"], done["applied"]), (2, 2))
+        self.assertEqual(self.desk.store.get(dana)["next_step"], "Send the brief")
+        with self.assertRaises(api.HTTPException):
+            api.approvals({"verb": "maybe", "items": []})
+        self.assertIn("count", api.setup()["data"]["backups"])
 
     def test_the_page_keeps_the_people_on_a_record_and_shows_a_company(self):
         dana = self.desk.store.find("Dana Whitfield")["id"]

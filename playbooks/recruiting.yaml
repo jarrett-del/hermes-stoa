@@ -69,6 +69,17 @@ fields:
   - {key: notice, label: Notice period}
   - {key: resume, label: Resume link}
 
+# What is kept on a search itself (the client, its status and a note are kept on every group).
+group_fields:
+  - {key: fee_type, label: Fee type}
+  - {key: fee_pct, label: Fee %}
+  - {key: target_base, label: Target base}
+  - {key: rate, label: Hourly rate}
+  - {key: hours, label: Hours a week}
+  - {key: contract_end, label: Contract end}
+  - {key: location, label: Location}
+  - {key: guarantee, label: Guarantee}
+
 drafts:
   follow_up: >
     Draft a short, warm follow-up to {name}. Reference the last thing in the activity log, give

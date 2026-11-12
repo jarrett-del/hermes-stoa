@@ -60,6 +60,11 @@ fields:
   - {key: competitor, label: Competing with}
   - {key: decision_date, label: Decision date}
 
+# What is kept on an account itself (its status and a note are kept on every group).
+group_fields:
+  - {key: segment, label: Segment}
+  - {key: renewal, label: Renewal date}
+
 drafts:
   follow_up: >
     Draft a short follow-up email to {name} at {company}. Two or three sentences, one clear ask

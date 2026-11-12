@@ -500,6 +500,12 @@ def _load_around(desk, example: dict, playbook) -> None:
         if record in by_name:
             deal = by_name[record]
             store.person_add(deal["id"], name, actor="demo", title=title, role=role, email=_email(name, title.split(", ")[-1] if ", " in title else deal["company"]))
+    # A search is for a client: "Staff Backend · Northwind" is Northwind's, on the agency's usual terms. (The other
+    # example groups its deals by account, which is the company itself.)
+    terms = {field["key"] for field in playbook.group_fields}
+    for group in sorted({deal["grp"] for deal in by_name.values() if " · " in deal["grp"]}):
+        facts = {key: value for key, value in (("fee_type", "Contingent"), ("fee_pct", "20"), ("guarantee", "90 days")) if key in terms}
+        store.grp_put(group, actor="demo", client=group.split(" · ")[-1], fields=facts or None)
     yesterday = (dt.date.today() - dt.timedelta(days=1)).strftime("%b %d").replace(" 0", " ")
     rows = []
     for record, change, why, kind, who, words in example.get("proposals") or []:

@@ -71,7 +71,7 @@ GTM_DEAL = {
             "text": {"type": "string", "description": "log: what was said or done, in a sentence or three. done: optional, in place of 'Done: <the next step>'."},
             "ref": {"type": "string", "description": "log: an id for the thing being logged (an email, message or call id). The same ref is logged only once."},
             "outcome": {"type": "string", "enum": ["won", "lost"], "description": "close: the outcome."},
-            "reason": {"type": "string", "description": "close/move to lost: why, as one of the playbook's own reasons when one fits (gtm_playbook shows them), else a few words."},
+            "reason": {"type": "string", "description": "close/move to lost: why, as one of the playbook's own reasons (a reason that is not one of them comes back with the list), or 'Other: <a few words>'."},
             "days": {"type": "integer", "description": "snooze: how many days (0 clears)."},
             "until": {"type": "string", "description": "snooze: put aside until this date instead: YYYY-MM-DD (friday and +10d also work)."},
             "force": {"type": "boolean", "description": "add: create even if an open record with this name and group exists."},
@@ -342,6 +342,39 @@ GTM_INTAKE = {
     },
 }
 
+GTM_GROUP = {
+    "name": "gtm_group",
+    "description": (
+        "Keep what is known about a search, an account or a client on the Stoa desk. "
+        "Records are grouped under one; the playbook's word for it comes back as `called` (a search, an account, a "
+        "client, a program). The group itself carries who the client is (the company that pays, where that is not the "
+        "record's own company), where it stands (open, on hold, done, closed), what one record in it is worth, a note, "
+        "and the facts the playbook names for it (a search's fee terms). action='list' shows them all with what is "
+        "open in each; 'get' shows one: its facts, its records and the people on the client's side; 'set' changes what "
+        "is known about one, by name (a clear part of the name is enough), and opens it when there is none like it "
+        "(new=true opens one whose name is part of another's); 'rename' gives it another name on every record in it. "
+        "When someone starts a new search or account and names the client, open the group with 'set' before adding "
+        "records to it. People on the client's side (a hiring manager, a sponsor) are added with "
+        "gtm_contact(action='add', group=...)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "get", "set", "rename"]},
+            "group": {"type": "string", "description": "get/set/rename: the group's name, or a clear part of it."},
+            "client": {"type": "string", "description": "set: the company this group is for (the one that pays)."},
+            "status": {"type": "string", "enum": ["open", "on hold", "done", "closed"],
+                       "description": "set: where it stands. done: filled or delivered. closed: stopped without that."},
+            "value": {"type": "number", "description": "set: what one record in it is worth (a search's fee). New records in the group take it unless they bring their own."},
+            "note": {"type": "string", "description": "set: the notes kept on it (replaces what is there)."},
+            "fields": {"type": "object", "description": "set: the playbook's facts for a group, by key or label (for a search: fee type, fee %, target base…). An empty value clears one."},
+            "new": {"type": "boolean", "description": "set: open a group with exactly this name even though the name is part of another's."},
+            "to": {"type": "string", "description": "rename: the new name."},
+        },
+        "required": ["action"],
+    },
+}
+
 GTM_CONTACT = {
     "name": "gtm_contact",
     "description": (
@@ -353,8 +386,11 @@ GTM_CONTACT = {
         "an unknown sender, the company its domain belongs to and that company's open records; use it before logging "
         "an email, a meeting or a thread so the entry lands on the right record. 'find' searches people by name, "
         "email, title or company across the desk. 'people' lists everyone on one record; 'add', 'update' and 'remove' "
-        "change them. 'company' shows one company: its records, everyone known there, what is open and won, and the "
-        "notes kept on it (pass note or domain to save them)."
+        "change them; with `group` in place of `deal` they work on the people on a group's side instead (the hiring "
+        "manager on a search, the sponsor at an account: someone who is not on one record but on the client's side of "
+        "all of them). 'company' shows one company: its records, everyone known there, what is open and won, and the "
+        "notes kept on it (pass note or domain to save them); a company that is the client of a group shows the "
+        "records in its groups and the people on its side."
     ),
     "parameters": {
         "type": "object",
@@ -363,6 +399,7 @@ GTM_CONTACT = {
             "emails": {"type": "array", "items": {"type": "string"}, "description": "match: the addresses to look up (at most 60)."},
             "query": {"type": "string", "description": "find: a name, an email, a title or a company."},
             "deal": _DEAL_REF,
+            "group": {"type": "string", "description": "people/add/update/remove: a group (a search, an account, a client) by name, in place of `deal`: the person is on the client's side of it."},
             "name": {"type": "string", "description": "add: the person's name."},
             "email": {"type": "string"},
             "title": {"type": "string", "description": "Their job title."},

@@ -447,12 +447,85 @@ class Intake:
                 "done": row.get("done") or "", "case": row.get("case") or "", "evidence": row.get("evidence") or []}
 
     def waiting(self) -> list:
+        self.settle()
         return [{"id": intake["id"], "source": intake["source"], "at": intake["at"], "origin": intake.get("origin") or "list",
                  "counts": self.counts(intake)} for intake in self.store.intake_list("open", limit=20)]
+
+    def _overtaken(self, row: dict, playbook) -> str:
+        """Why a waiting proposal has nothing left to do ("" while it still has): the change it asked for has
+        been made some other way since, or its record is off the desk."""
+        if row.get("kind") != "update" or not row.get("deal"):
+            return ""
+        record = self.store.get(row["deal"])
+        if record is None:
+            return "the record is no longer on the desk"
+        asked = [change["key"] for change in row.get("changes") or []]
+        if not [key for key in asked if key != "note"]:
+            return ""                                   # it only ever asked for a note to be added: that is still to do
+        listed = self.store.invoices(record["id"])
+
+        def stands(change: dict) -> bool:
+            if change["key"] == "note":
+                return False                            # the note went with a change that is already made
+            if change["key"] == "payment":
+                want = str((row["row"].get("payment") or {}).get("invoice") or "").lower().lstrip("#")
+                about = [i for i in listed if not want or str(i["id"]) == want or (i["number"] or "").lower().lstrip("#") == want]
+                return not about or any(i["state"] not in ("paid", "void") for i in about)
+            if change["key"] == "invoice":
+                number = str((row["row"].get("invoice") or {}).get("number") or "").lower().lstrip("#")
+                return not number or all((i["number"] or "").lower().lstrip("#") != number for i in listed)
+            return True
+
+        return "" if any(stands(change) for change in self._changes(record, row["row"], playbook)) else "already done another way"
+
+    def settle(self) -> int:
+        """Close the proposals that events have overtaken, so nobody is asked to approve what is already so.
+        Returns how many were closed."""
+        playbook, closed = self.desk.playbook(), 0
+        for intake in self.store.intake_list("open", limit=20):
+            if (intake.get("origin") or "list") != "proposal":
+                continue
+            if not any(row["kind"] in APPLICABLE and not row.get("done") and self._overtaken(row, playbook) for row in intake["rows"]):
+                continue
+            if not self.store.intake_claim(intake["id"]):
+                continue                                # someone is deciding it this moment: theirs to finish
+            fresh = self.store.intake_get(intake["id"])
+            try:
+                for row in fresh["rows"]:
+                    why = self._overtaken(row, playbook) if row["kind"] in APPLICABLE and not row.get("done") else ""
+                    if why:
+                        row["applied"], row["done"], row["why"] = False, "overtaken", why
+                        closed += 1
+            finally:
+                if any(row["kind"] in APPLICABLE and not row.get("done") for row in fresh["rows"]):
+                    self.store.intake_finish(fresh["id"], "open", fresh["result"], fresh["rows"])
+                else:
+                    self._close(fresh, "desk")
+        return closed
+
+    def decide_many(self, items: Any, verb: str, actor: str = "") -> dict:
+        """Approve or decline several waiting proposals in one go. Each is still its own decision, and its own undo."""
+        if verb not in ("approve", "decline"):
+            return {"ok": False, "error": "approve or decline"}
+        done = applied = 0
+        notes, deals = [], []
+        for item in (items if isinstance(items, list) else [])[:60]:
+            if not isinstance(item, dict):
+                continue
+            out = self.decide(item.get("intake"), item.get("n"), verb, actor)
+            if out.get("decided"):
+                done += 1
+                applied += bool(out.get("applied"))
+                if out.get("applied") and out.get("deal"):
+                    deals.append(out["deal"])
+            if out.get("note") and not out.get("applied") and verb == "approve":
+                notes.append(out["note"])
+        return {"ok": True, "decided": done, "applied": applied, "deals": deals, "notes": notes[:10]}
 
     def queue(self, limit: int = 60) -> list:
         """What is waiting for a person, oldest first: each proposed change by itself (with what it
         rests on), and each list someone sent as one item to review as a whole."""
+        self.settle()
         playbook = self.desk.playbook()
         items = []
         for intake in reversed(self.store.intake_list("open", limit=20)):

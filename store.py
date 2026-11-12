@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 SCHEMA = """
@@ -174,6 +176,26 @@ CREATE TABLE IF NOT EXISTS orgs (
   note TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS grps (
+  key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  client TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  value_cents INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  fields TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS grp_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  grp_key TEXT NOT NULL,
+  contact_id INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS grp_contacts_pair ON grp_contacts (grp_key, contact_id) WHERE archived_at = '';
 CREATE TABLE IF NOT EXISTS declined (
   hash TEXT PRIMARY KEY,
   at TEXT NOT NULL,
@@ -248,6 +270,14 @@ def org_key(name: Any) -> str:
     while len(words) > 1 and words[-1] in ORG_TAILS:
         words.pop()
     return " ".join(words)
+
+
+GROUP_STATUS = ("open", "hold", "done", "closed")       # a search, an account, a client engagement: where it stands
+
+
+def group_key(name: Any) -> str:
+    """One key for a group however it is typed: "Staff Backend · Northwind" and "staff backend - northwind" are the same."""
+    return " ".join(re.sub(r"[\W_]+", " ", str(name or "").lower()).split())
 
 
 def email_domain(address: Any) -> str:
@@ -973,24 +1003,7 @@ class Store:
             conn.execute("BEGIN IMMEDIATE")
             if not conn.execute("SELECT 1 FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone():
                 raise KeyError(deal_id)
-            known = conn.execute("SELECT * FROM contacts WHERE lower(email) = ? AND archived_at = ''", (clean["email"],)).fetchone() \
-                if clean["email"] else None
-            said = "Added %s%s" % (name if known is None else known["name"],
-                                   " (%s)" % (clean["role"] or clean["title"]) if clean["role"] or clean["title"] else "")
-            if known is None:
-                contact_id = conn.execute(
-                    "INSERT INTO contacts (name, email, title, linkedin, phone, note, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-                    (name, clean["email"], clean["title"], clean["linkedin"], clean["phone"], clean["note"], stamp, stamp)).lastrowid
-                self._entry(conn, batch, "contact", contact_id, deal_id, "insert", after=dict({key: clean[key] for key in CONTACT if key != "name"}, name=name),
-                            actor=actor, summary=said, at=stamp)
-            else:
-                contact_id, name = known["id"], known["name"]
-                fill = {key: clean[key] for key in CONTACT if key != "name" and clean[key] and not known[key]}     # only what was blank
-                if fill:
-                    conn.execute("UPDATE contacts SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in fill),
-                                 list(fill.values()) + [stamp, contact_id])
-                    self._entry(conn, batch, "contact", contact_id, deal_id, "update", {key: known[key] for key in fill}, fill, actor,
-                                "Updated %s: %s" % (name, ", ".join(fill)), at=stamp)
+            contact_id, name, said = self._contact(conn, batch, name, clean, deal_id, actor, stamp)
             if not conn.execute("SELECT 1 FROM deal_contacts WHERE deal_id = ? AND contact_id = ? AND archived_at = ''", (deal_id, contact_id)).fetchone():
                 link = conn.execute("INSERT INTO deal_contacts (deal_id, contact_id, role, created_at) VALUES (?,?,?,?)",
                                     (deal_id, contact_id, clean["role"], stamp)).lastrowid
@@ -1000,6 +1013,28 @@ class Store:
                              (deal_id, stamp, "person", actor, said, batch))
                 conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
         return self.person(contact_id, deal_id)
+
+    def _contact(self, conn, batch: str, name: str, clean: dict, deal_id: str, actor: str, stamp: str) -> tuple:
+        """The person these details describe: someone already known by that email (blanks filled in), or a new
+        contact. ``(id, name as kept, what to say)``. Runs inside the caller's transaction."""
+        known = conn.execute("SELECT * FROM contacts WHERE lower(email) = ? AND archived_at = ''", (clean["email"],)).fetchone() \
+            if clean["email"] else None
+        said = "Added %s%s" % (name if known is None else known["name"],
+                               " (%s)" % (clean["role"] or clean["title"]) if clean["role"] or clean["title"] else "")
+        if known is None:
+            contact_id = conn.execute(
+                "INSERT INTO contacts (name, email, title, linkedin, phone, note, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (name, clean["email"], clean["title"], clean["linkedin"], clean["phone"], clean["note"], stamp, stamp)).lastrowid
+            self._entry(conn, batch, "contact", contact_id, deal_id, "insert", after=dict({key: clean[key] for key in CONTACT if key != "name"}, name=name),
+                        actor=actor, summary=said, at=stamp)
+            return contact_id, name, said
+        fill = {key: clean[key] for key in CONTACT if key != "name" and clean[key] and not known[key]}     # only what was blank
+        if fill:
+            conn.execute("UPDATE contacts SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in fill),
+                         list(fill.values()) + [stamp, known["id"]])
+            self._entry(conn, batch, "contact", known["id"], deal_id, "update", {key: known[key] for key in fill}, fill, actor,
+                        "Updated %s: %s" % (known["name"], ", ".join(fill)), at=stamp)
+        return known["id"], known["name"], said
 
     def person_update(self, person_id: Any, *, actor: str = "", deal_id: str = "", **values: Any) -> Optional[dict]:
         """Change a person. Their name, email, title and the rest change on every record they are on;
@@ -1244,6 +1279,196 @@ class Store:
     def orgs(self) -> list:
         with self._conn() as conn:
             return [dict(row) for row in conn.execute("SELECT * FROM orgs").fetchall()]
+
+    # -- groups: a search, an account, a client engagement. Records name their group in `grp`; what is known
+    #    about the group itself (who the client is, where it stands, its terms, the people on the client's side)
+    #    is kept here under the same name, however it is typed. A group nobody has said anything about has no row.
+    @staticmethod
+    def _grp(row) -> dict:
+        group = dict(row)
+        try:
+            group["fields"] = json.loads(group.get("fields") or "{}")
+        except ValueError:
+            group["fields"] = {}
+        group["value"] = int(group.pop("value_cents") or 0) / 100
+        return group
+
+    def grp_get(self, name: Any) -> Optional[dict]:
+        key = group_key(name)
+        if not key:
+            return None
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM grps WHERE key = ?", (key,)).fetchone()
+        return self._grp(row) if row else None
+
+    def grps(self) -> list:
+        with self._conn() as conn:
+            return [self._grp(row) for row in conn.execute("SELECT * FROM grps ORDER BY name COLLATE NOCASE").fetchall()]
+
+    def grp_put(self, name: Any, *, actor: str = "", **values: Any) -> Optional[dict]:
+        """Say something about a group: ``client``, ``status``, ``value`` (what one record in it is worth, unless the
+        record says otherwise), ``note``, ``fields`` (merged; an empty value clears one). The row is made on first use."""
+        key = group_key(name)
+        if not key:
+            return None
+        clean: dict = {}
+        if values.get("client") is not None:
+            clean["client"] = " ".join(str(values["client"]).split())[:200]
+        if values.get("status") is not None:
+            status = str(values["status"]).strip().lower()
+            if status not in GROUP_STATUS:
+                raise ValueError("status is one of: %s" % ", ".join(GROUP_STATUS))
+            clean["status"] = status
+        if values.get("value") is not None:
+            clean["value_cents"] = max(0, to_cents(values["value"]))
+        if values.get("note") is not None:
+            clean["note"] = str(values["note"]).strip()[:4000]
+        stamp = now()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            made = conn.execute("INSERT INTO grps (key, name, created_at, updated_at) VALUES (?,?,?,?) ON CONFLICT (key) DO NOTHING",
+                                (key, " ".join(str(name).split())[:200], stamp, stamp)).rowcount == 1
+            was = dict(conn.execute("SELECT * FROM grps WHERE key = ?", (key,)).fetchone())
+            if isinstance(values.get("fields"), dict):
+                fields = json.loads(was["fields"] or "{}")
+                for field, value in values["fields"].items():
+                    text = " ".join(str(value if value is not None else "").split())[:300]
+                    if text:
+                        fields[str(field)[:60]] = text
+                    else:
+                        fields.pop(str(field)[:60], None)
+                clean["fields"] = json.dumps(fields, sort_keys=True)
+            clean = {k: v for k, v in clean.items() if v != was[k]}
+            if clean:
+                conn.execute("UPDATE grps SET %s, updated_at = ? WHERE key = ?" % ", ".join(k + " = ?" for k in clean),
+                             list(clean.values()) + [stamp, key])
+            if clean or made:
+                self._entry(conn, self._op(), "group", key, "", "insert" if made else "update", {k: was[k] for k in clean}, clean, actor,
+                            ("Opened %s" % was["name"]) if made and not clean else "Updated %s: %s" % (
+                                was["name"], ", ".join(k.replace("value_cents", "value") for k in clean)), at=stamp)
+        return self.grp_get(name)
+
+    def grp_rename(self, old: Any, new: Any, *, actor: str = "") -> int:
+        """Give a group another name: on every record in it, and on what is kept about it. Returns how many records."""
+        was, key, name = group_key(old), group_key(new), " ".join(str(new or "").split())[:200]
+        if not was or not key:
+            raise ValueError("a group has a name")
+        with self._conn() as conn:
+            ids = [row["id"] for row in conn.execute("SELECT id, grp FROM deals WHERE archived_at = ''").fetchall() if group_key(row["grp"]) == was]
+            if key != was and conn.execute("SELECT 1 FROM grps WHERE key = ?", (key,)).fetchone():
+                raise ValueError("there is already one called %s" % name)
+        with self.operation():
+            for deal_id in ids:
+                self.update(deal_id, actor=actor, grp=name)
+            stamp = now()
+            with self._conn() as conn:
+                row = conn.execute("SELECT * FROM grps WHERE key = ?", (was,)).fetchone()
+                if row is not None:
+                    conn.execute("UPDATE grps SET key = ?, name = ?, updated_at = ? WHERE key = ?", (key, name, stamp, was))
+                    conn.execute("UPDATE grp_contacts SET grp_key = ? WHERE grp_key = ?", (key, was))
+                    self._entry(conn, self._op(), "group", key, "", "update", {"name": row["name"]}, {"name": name}, actor,
+                                "Renamed %s to %s" % (row["name"], name), at=stamp)
+        return len(ids)
+
+    GRP_PEOPLE = ("SELECT c.id AS id, l.id AS link, l.grp_key AS grp_key, c.name AS name, c.email AS email, c.title AS title, "
+                  "l.role AS role, c.linkedin AS linkedin, c.phone AS phone, c.note AS note FROM grp_contacts l "
+                  "JOIN contacts c ON c.id = l.contact_id WHERE l.archived_at = '' AND c.archived_at = ''")
+
+    def grp_people(self, name: Any = None) -> list:
+        """The people on a group's side (the hiring manager on a search, the sponsor at an account), or all of them."""
+        with self._conn() as conn:
+            if name is None:
+                rows = conn.execute(self.GRP_PEOPLE + " ORDER BY l.id").fetchall()
+            else:
+                rows = conn.execute(self.GRP_PEOPLE + " AND l.grp_key = ? ORDER BY l.id", (group_key(name),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def grp_person_add(self, group: Any, name: str, *, actor: str = "", **values: Any) -> dict:
+        """Put someone on a group. Someone already known by that email is linked, not entered twice."""
+        key, name = group_key(group), " ".join(str(name or "").split())[:120]
+        if not key:
+            raise ValueError("say which group")
+        if not name:
+            raise ValueError("a name is required")
+        clean = {k: " ".join(str(values.get(k) or "").split())[:300] for k in PERSON if k != "name"}
+        clean["email"] = clean["email"].lower()
+        self.grp_put(group, actor=actor)                    # the group has a row from here on
+        stamp, batch = now(), self._op()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            contact_id, name, said = self._contact(conn, batch, name, clean, "", actor, stamp)
+            if not conn.execute("SELECT 1 FROM grp_contacts WHERE grp_key = ? AND contact_id = ? AND archived_at = ''", (key, contact_id)).fetchone():
+                link = conn.execute("INSERT INTO grp_contacts (grp_key, contact_id, role, created_at) VALUES (?,?,?,?)",
+                                    (key, contact_id, clean["role"], stamp)).lastrowid
+                self._entry(conn, batch, "group_link", link, "", "insert", after={"contact_id": contact_id, "role": clean["role"], "group": key},
+                            actor=actor, summary=said, at=stamp)
+        return next(person for person in self.grp_people(group) if person["id"] == contact_id)
+
+    def grp_person_update(self, group: Any, person_id: Any, *, actor: str = "", **values: Any) -> Optional[dict]:
+        """Change someone on a group. What they are (name, email, title...) changes wherever they appear; ``role`` is
+        their part in this group only."""
+        person = next((p for p in self.grp_people(group) if str(p["id"]) == str(person_id)), None)
+        if person is None:
+            return None
+        new = {key: " ".join(str(values[key]).split())[:300] for key in PERSON if values.get(key) is not None}
+        if "email" in new:
+            new["email"] = new["email"].lower()
+        new = {key: value for key, value in new.items() if value != person[key] and (key != "name" or value)}
+        if not new:
+            return person
+        stamp, batch = now(), self._op()
+        said = "Updated %s: %s" % (person["name"], ", ".join(new))
+        with self._conn() as conn:
+            about = {key: value for key, value in new.items() if key in CONTACT}
+            if about:
+                try:
+                    conn.execute("UPDATE contacts SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in about),
+                                 list(about.values()) + [stamp, person["id"]])
+                except sqlite3.IntegrityError:
+                    raise ValueError("that email already belongs to someone else on the desk")
+                self._entry(conn, batch, "contact", person["id"], "", "update", {key: person[key] for key in about}, about, actor, said, at=stamp)
+            if "role" in new:
+                conn.execute("UPDATE grp_contacts SET role = ? WHERE id = ?", (new["role"], person["link"]))
+                self._entry(conn, batch, "group_link", person["link"], "", "update", {"role": person["role"]}, {"role": new["role"]}, actor, said, at=stamp)
+        return next(p for p in self.grp_people(group) if p["id"] == person["id"])
+
+    def grp_person_remove(self, group: Any, person_id: Any, *, actor: str = "") -> bool:
+        key = group_key(group)
+        person = next((p for p in self.grp_people(group) if str(p["id"]) == str(person_id)), None)
+        if person is None:
+            return False
+        stamp = now()
+        with self._conn() as conn:
+            conn.execute("UPDATE grp_contacts SET archived_at = ? WHERE id = ?", (stamp, person["link"]))
+            self._entry(conn, self._op(), "group_link", person["link"], "", "archive", {"archived_at": ""}, {"archived_at": stamp}, actor,
+                        "Removed %s" % person["name"], at=stamp)
+        return True
+
+    # -- a copy of the file each day, beside it --------------------------------------------------------
+    def snapshot(self, folder: Any, keep: int = 14) -> str:
+        """Copy the file as it stands into ``folder`` as ``desk-YYYY-MM-DD.db``, once a day (a copy made earlier
+        today is left alone), and keep the newest ``keep``. Returns the path written, or "" when nothing was."""
+        if self._memory is not None:
+            return ""
+        folder = Path(folder)
+        target = folder / ("desk-%s.db" % today())
+        if target.exists():
+            return ""
+        with self._conn() as conn:
+            if not conn.execute("SELECT (SELECT count(*) FROM deals) + (SELECT count(*) FROM ledger)").fetchone()[0]:
+                return ""                               # nothing has ever been put on this desk
+        folder.mkdir(parents=True, exist_ok=True)
+        part = folder / (target.name + ".part")
+        source, copy = sqlite3.connect(self.path, timeout=15), sqlite3.connect(str(part))
+        try:
+            source.backup(copy)
+        finally:
+            copy.close()
+            source.close()
+        os.replace(str(part), str(target))
+        for old in sorted(folder.glob("desk-????-??-??.db"))[:-max(1, int(keep))]:
+            old.unlink()
+        return str(target)
 
     # -- what was declined, so it is not proposed again ----------------------------------------------
     def decline(self, digest: str, deal_id: str = "", summary: str = "") -> None:

@@ -70,10 +70,10 @@ def _mod(name: str):
     return importlib.import_module(type(desk()).__module__.rsplit(".", 1)[0] + "." + name)
 
 
-def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Optional[dict] = None) -> dict:
-    """One record for the page. ``touches`` and ``pending`` are passed when many are built at once,
-    so the whole board costs two queries instead of two per record."""
-    view = d.view(deal, playbook, touches=touches)
+def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Optional[dict] = None, groups: Optional[dict] = None) -> dict:
+    """One record for the page. ``touches``, ``pending`` and ``groups`` are passed when many are built at
+    once, so the whole board costs three queries instead of three per record."""
+    view = d.view(deal, playbook, touches=touches, groups=groups)
     view["position"] = playbook.position(deal["stage"])
     view["stage_at"] = deal["stage_at"]
     view["updated_at"] = deal["updated_at"]
@@ -113,6 +113,7 @@ def state() -> dict:
     deals = d.store.list(status="all")
     names = {deal["id"]: deal["name"] for deal in deals}
     touches, pending = d.store.touches(), d.store.meta_prefix("pending:")
+    groups = {row["key"]: row for row in d.store.grps()}
     cards = _mod("cards")
     import datetime as _dt
     week_ago = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -159,10 +160,11 @@ def state() -> dict:
                      "stages": [{"id": s["id"], "label": s["label"], "stale_days": playbook.stale_days(s["id"])} for s in playbook.stages],
                      "won": playbook.won, "lost": {"id": playbook.lost["id"], "label": playbook.lost["label"],
                                                   "reasons": playbook.lost["reasons"]},
-                     "fields": playbook.fields},
-        "deals": [_card(d, deal, playbook, touches, pending) for deal in deals],
+                     "fields": playbook.fields, "group_fields": playbook.group_fields},
+        "deals": [_card(d, deal, playbook, touches, pending, groups) for deal in deals],
         "markets": markets,
         "companies": d.companies(),
+        "groups": d.groups(),
         "cash": d.cash(),
         "intakes": d.intake.waiting(),
         "activity": activity,
@@ -292,6 +294,56 @@ def company(body: dict = Body(...)) -> dict:
         raise HTTPException(404, result.get("error") or "no such company")
     if body.get("note") is not None or body.get("domain") is not None:
         d.announce()
+    return result
+
+
+@router.post("/group")
+def group(body: dict = Body(...)) -> dict:
+    """One group (a search, an account, a client): what is known about it, its records and the people on the client's
+    side. With ``client``, ``status``, ``value``, ``note`` or ``fields`` it saves them first; with ``to`` it renames it;
+    with ``new`` it opens one by that exact name."""
+    d = desk()
+    body = body or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "say which one")
+    changes = {key: body[key] for key in ("client", "status", "value", "note", "fields") if key in body}
+    if body.get("to"):
+        result = d.group({"action": "rename", "group": name, "to": body["to"]}, actor="dashboard")
+    elif changes or body.get("new"):
+        result = d.group(dict(changes, action="set", group=name, new=True), actor="dashboard")     # by its exact name: the page never guesses
+    else:
+        result = d.group({"action": "get", "group": name})
+    if not result.get("ok"):
+        raise HTTPException(404 if "matches" in str(result.get("error")) else 400, result.get("error") or "could not do that")
+    if changes or body.get("to") or body.get("new"):
+        d.announce()
+    return result
+
+
+@router.post("/group/person")
+def group_person(body: dict = Body(...)) -> dict:
+    """add | update | remove someone on a group's side."""
+    d = desk()
+    body = body or {}
+    verb = str(body.get("verb") or "")
+    if verb not in ("add", "update", "remove"):
+        raise HTTPException(400, "unknown action")
+    allowed = ("name", "email", "title", "role", "linkedin", "phone", "note", "person", "new_name")
+    result = d.contact(dict({key: body[key] for key in allowed if key in body}, action=verb, group=str(body.get("group") or "")), actor="dashboard")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not save")
+    d.announce()
+    return result
+
+
+@router.post("/approvals")
+def approvals(body: dict = Body(...)) -> dict:
+    """Approve or decline several waiting proposals at once: ``items`` is ``[{intake, n}]``."""
+    d = desk()
+    result = d.intake.decide_many((body or {}).get("items"), str((body or {}).get("verb") or ""), "app")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not do that")
     return result
 
 

@@ -40,7 +40,7 @@ AUTONOMY = {
     "routine": {"label": "Handle the routine", "allows": ("log", "update", "done", "person"),
                 "summary": "A scheduled job may also set next steps, fill in facts and add people to a record. "
                            "Stage changes, new records and closing wait for your approval."},
-    "full": {"label": "Run it", "allows": ("log", "update", "done", "person", "add", "move", "close", "reopen", "snooze", "invoice"),
+    "full": {"label": "Run it", "allows": ("log", "update", "done", "person", "add", "move", "close", "reopen", "snooze", "invoice", "group"),
              "summary": "A scheduled job may make any change itself. Every change is on the log and can be taken back."},
 }
 TOUR_NOTE = ("The desk is showing sample data (a tour): every person and company on it is made up, and the "
@@ -114,12 +114,26 @@ class Desk:
     def store(self) -> st.Store:
         """The ledger in use: the sample one during a tour, otherwise the team's own."""
         tour = self.tour()
-        return self._store_at(tour["file"] if tour else "desk.db")
+        return self._store_at(tour["file"]) if tour else self.own_store
 
     @property
     def own_store(self) -> st.Store:
-        """The team's own ledger, whatever is on show."""
-        return self._store_at("desk.db")
+        """The team's own ledger, whatever is on show. Once a day a copy of it is put beside it (``backups/``,
+        the last fourteen kept): the first time it is opened that day, so the copy is the desk as yesterday left it."""
+        store, day = self._store_at("desk.db"), st.today()
+        if getattr(self, "_copied", "") != day:
+            self._copied = day
+            try:
+                store.snapshot(self.data_dir / "backups")
+            except Exception as exc:
+                log.warning("stoa: could not keep today's copy of the desk: %s", exc)
+        return store
+
+    def backups(self) -> dict:
+        """The daily copies there are: how many, the newest, and where."""
+        folder = self.data_dir / "backups"
+        found = sorted(path.name for path in folder.glob("desk-????-??-??.db")) if folder.is_dir() else []
+        return {"folder": str(folder), "count": len(found), "newest": found[-1][5:15] if found else ""}
 
     # -- the tour: sample data, in a file of its own ----------------------------------------------
     def tour(self) -> dict:
@@ -348,10 +362,11 @@ class Desk:
         return deal, None
 
     def view(self, deal: dict, playbook: Optional[Playbook] = None, activities: int = 0,
-             touches: Optional[dict] = None) -> dict:
+             touches: Optional[dict] = None, groups: Optional[dict] = None) -> dict:
         """A deal as the model sees it: empty values dropped, playbook words applied.
 
-        ``touches`` is ``store.touches()`` when the caller is showing many records at once.
+        ``touches`` is ``store.touches()`` and ``groups`` is ``{key: row}`` of ``store.grps()`` when the caller is
+        showing many records at once.
         """
         playbook = playbook or self.playbook()
         touch = touches.get(deal["id"], "") if touches is not None else self.store.last_touch(deal["id"])
@@ -364,6 +379,10 @@ class Desk:
                "delivery_label": playbook.delivery_label(deal.get("delivery") or "") if deal["status"] == "won" else "",
                "fields": {k: v for k, v in deal["fields"].items() if not k.startswith("_")},
                "last_touch": touch, "stale": cards.is_stale(playbook, deal, touch), "due": cards.is_due(deal)}
+        if deal["grp"]:
+            group = (groups.get(st.group_key(deal["grp"])) if groups is not None else self.store.grp_get(deal["grp"])) or {}
+            out["client"] = group.get("client") or ""
+            out["group_status"] = self.GROUP_LABELS[group["status"]] if group.get("status") not in (None, "open") else ""
         out = {k: v for k, v in out.items() if v not in ("", None, 0, 0.0, {}, False)}
         if activities:
             out["activity"] = [{"at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"]}
@@ -669,7 +688,8 @@ class Desk:
             "data": {"path": str(self.data_dir / "desk.db"), "size": size, "records": real, "open": tally["open"], "won": tally["won"],
                      "lost": tally["lost"], "samples": tally["samples"], "activities": tally["activities"], "maps": tally["maps"],
                      "people": tally["people"], "ledger": tally["ledger"], "archived": tally["archived"],
-                     "lists_waiting": tally["lists_waiting"], "exports": str(self.data_dir / "exports")},
+                     "lists_waiting": tally["lists_waiting"], "exports": str(self.data_dir / "exports"),
+                     "backups": read("the daily copies", self.backups, {"folder": "", "count": 0, "newest": ""})},
             "playbook_sets": {
                 "words": "%s, %s" % (terms["deal"], terms["group"]),
                 "stages": [s["label"] for s in own.stages] + [own.won["label"]],
@@ -752,6 +772,25 @@ class Desk:
                 "note": "%s is off the desk, not destroyed: gtm_deal(action=\"restore\") puts it back." % deal["name"]
                 if result["archived"] else ""}
 
+    def reason_asked(self, args: dict) -> Optional[dict]:
+        """What to answer an agent that is closing a record as lost with a reason in its own words: the playbook's
+        reasons, to pick from. ``None`` when the reason is one of them (however it was put), starts with "Other", or
+        none was given. Buttons and the page offer the list themselves; this is for free text."""
+        action = str((args or {}).get("action") or "").lower()
+        said = " ".join(str((args or {}).get("reason") or "").split())
+        if not said or action not in ("close", "move"):
+            return None
+        playbook = self.playbook()
+        if action == "close" and str(args.get("outcome") or "").lower() != "lost":
+            return None
+        if action == "move" and playbook.resolve_stage(str(args.get("stage") or "")) != playbook.lost["id"]:
+            return None
+        if playbook.reason(said) in playbook.lost["reasons"] or said.lower().startswith("other"):
+            return None
+        return {"ok": False, "reasons": playbook.lost["reasons"],
+                "error": "Give the reason in this playbook's words, so losses can be counted: pass `reason` as one of %s, or as "
+                         "'Other: <a few words>' when none fits. Nothing was changed." % ", ".join(playbook.lost["reasons"])}
+
     def _conflicts(self, conflicts: list) -> list:
         """Each conflict as a line a person can read: what the action left, and what is there now."""
         playbook = self.playbook()
@@ -828,6 +867,13 @@ class Desk:
             if action in ("undo", "restore"):
                 return refused
             return self.hold(action, args or {})
+        unheld = {"ok": False, "error": "A scheduled job cannot change that by itself: the desk's autonomy setting (%s) keeps it for the "
+                                        "person, and nothing has been left for them to approve. Say in your reply what you would "
+                                        "change and why, so they can do it." % AUTONOMY[self.autonomy()]["label"]}
+        if tool == "gtm_group" and action in ("set", "rename") and "group" not in allows:
+            return unheld
+        if tool == "gtm_contact" and action in ("add", "update", "remove") and (args or {}).get("group") and not (args or {}).get("deal"):
+            return None if "group" in allows else unheld        # someone on a group's side: no proposal can carry that yet
         if tool == "gtm_contact" and action in ("add", "update", "remove") and "person" not in allows:
             return self.hold("person", args or {}) if action == "add" else refused
         if tool == "gtm_contact" and action == "company" and "update" not in allows and (
@@ -945,6 +991,8 @@ class Desk:
                                                   ("next_step", "next_step"), ("next_due", "next_due"), ("source", "source"),
                                                   ("close_on", "close_on"), ("delivery", "delivery"))}
             fields = args.get("fields") if isinstance(args.get("fields"), dict) else None
+            if values.get("grp"):
+                values["grp"] = self._group_spelling(str(values["grp"]).strip())
             deal = self.store.update(deal["id"], actor=actor, fields=fields, **values)
         elif action == "move":
             target = str(args.get("stage") or "next")
@@ -1011,7 +1059,7 @@ class Desk:
         name = str(args.get("name") or "").strip()
         if not name:
             return {"ok": False, "error": "add needs a name"}
-        group = str(args.get("group") or "").strip()
+        group = self._group_spelling(str(args.get("group") or "").strip())
         if not args.get("force"):
             for existing in self.store.list(status="open", query=name):
                 if existing["name"].lower() == name.lower() and existing["grp"].lower() == group.lower():
@@ -1020,9 +1068,12 @@ class Desk:
         stage = playbook.resolve_stage(str(args.get("stage") or "")) or playbook.first_stage()
         if playbook.status_of(stage) != "open":
             return {"ok": False, "error": "add a record at an open stage, then close it"}
+        value = args.get("value")
+        if value in (None, "") and group:
+            value = (self.store.grp_get(group) or {}).get("value") or None      # what one record in this group is worth
         deal = self.store.add(
             name, stage, actor=actor, company=str(args.get("company") or ""), grp=group,
-            email=str(args.get("email") or ""), linkedin=str(args.get("linkedin") or ""), value=args.get("value"),
+            email=str(args.get("email") or ""), linkedin=str(args.get("linkedin") or ""), value=value,
             owner=str(args.get("owner") or ""), next_step=str(args.get("next_step") or ""),
             next_due=str(args.get("next_due") or ""), source=str(args.get("source") or ""), close_on=str(args.get("close_on") or ""),
             fields=args.get("fields") if isinstance(args.get("fields"), dict) else None)
@@ -1458,6 +1509,8 @@ class Desk:
             return self.find_people(str(args.get("query") or args.get("name") or ""))
         if action == "company":
             return self.company(args.get("company") or args.get("query"), note=args.get("note"), domain=args.get("domain"))
+        if args.get("group") and not args.get("deal") and action in ("people", "add", "update", "remove"):
+            return self._group_contact(action, args, actor)
         deal, error = self._resolve(args.get("deal"))
         if error:
             return error
@@ -1532,6 +1585,12 @@ class Desk:
             return {"ok": False, "error": "match needs emails: a list of addresses"}
         playbook = self.playbook()
         exact, domains, by_id = self._addresses()
+        names, rows = self._group_names(list(by_id.values())), {row["key"]: row for row in self.store.grps()}
+        sides = {}
+        for person in self.store.grp_people():
+            if person["email"] and person["grp_key"] in names:
+                sides.setdefault(person["email"].lower(), {"who": person["name"], "key": person["grp_key"], "group": names[person["grp_key"]],
+                                                            "client": (rows.get(person["grp_key"]) or {}).get("client") or ""})
         out, seen = [], set()
         for raw in emails[:60]:
             found = re.search(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", str(raw or ""))
@@ -1540,6 +1599,14 @@ class Desk:
                 continue
             seen.add(address)
             hits = sorted(exact.get(address) or [], key=lambda hit: hit[0]["status"] != "open")
+            side = sides.get(address)
+            if side and not hits:           # on a group's side (a hiring manager, a sponsor): the records it could be about
+                inside = [deal for deal in by_id.values() if st.group_key(deal["grp"]) == side["key"]]
+                inside.sort(key=lambda deal: (deal["status"] != "open", deal["name"].lower()))
+                out.append({"email": address, "known": True, "who": side["who"], "group": side["group"], "client": side["client"],
+                            "records": [self._brief(deal, playbook) for deal in inside[:8]],
+                            "note": "On the client's side of %s, not a record. Log what they say on the record it is about." % side["group"]})
+                continue
             if hits:
                 out.append({"email": address, "known": True, "who": hits[0][1], "records": [self._brief(deal, playbook) for deal, _ in hits[:5]]})
                 continue
@@ -1570,7 +1637,14 @@ class Desk:
                                                   st.email_domain(person.get("email")) == st.email_domain(deal["email"]))
                     found.append(dict({key: person.get(key) or "" for key in ("name", "email", "title", "role")},
                                       primary=person["primary"], company=deal["company"] if there else "", record=self._brief(deal, playbook)))
-        found.sort(key=lambda person: (person["record"]["status"] != "open", person["name"].lower()))
+        names, rows = self._group_names(), {row["key"]: row for row in self.store.grps()}
+        for person in self.store.grp_people():
+            group, client = names.get(person["grp_key"]) or "", (rows.get(person["grp_key"]) or {}).get("client") or ""
+            text = " ".join([str(person.get(key) or "") for key in ("name", "email", "title", "role")] + [group, client]).lower()
+            if group and query in text:
+                found.append(dict({key: person.get(key) or "" for key in ("name", "email", "title", "role")}, primary=False,
+                                  company=client, group=group, record=None))
+        found.sort(key=lambda person: ((person["record"] or {"status": "open"})["status"] != "open", person["name"].lower()))
         return {"ok": True, "count": len(found), "people": found[:25]}
 
     def companies(self) -> list:
@@ -1604,6 +1678,9 @@ class Desk:
             return {"ok": False, "error": "say which company"}
         deals = self.store.list(status="all")
         here = [deal for deal in deals if st.org_key(deal["company"]) == key]
+        mine = [group for group in self.store.grps() if group["client"] and st.org_key(group["client"]) == key]
+        if not here and mine:
+            return self._client(key, mine, deals, note, domain)
         if not here:
             near = {st.org_key(deal["company"]): deal["company"] for deal in deals if key in st.org_key(deal["company"])}
             if len(near) == 1:      # "Kestrel" for "Kestrel Labs": only one company it could be
@@ -1643,6 +1720,13 @@ class Desk:
                 if not person["primary"]:
                     seen[person["id"]] = entry
                 people.append(entry)
+        names = self._group_names(deals)
+        for group in mine:                  # and whoever is on the side of a group it is the client of
+            for person in self.store.grp_people(group["name"]):
+                if person["id"] not in seen:
+                    seen[person["id"]] = dict({k: person.get(k) or "" for k in ("name", "email", "title", "role")}, primary=False,
+                                              record="", record_name=names.get(group["key"], group["name"]), group=names.get(group["key"], group["name"]))
+                    people.append(seen[person["id"]])
         guesses: dict = {}
         for person in people:
             found = st.email_domain(person["email"])
@@ -1663,6 +1747,273 @@ class Desk:
                 "people": people[:60],
                 "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"],
                               "by": a["actor"]} for a in recent]}
+
+    def _client(self, key: str, mine: list, deals: list, note: Any, domain: Any) -> dict:
+        """A company that is no record's own but is the client of one or more groups: what is open for it, and
+        who is on its side."""
+        display = mine[0]["client"]
+        if note is not None or domain is not None:
+            self.store.org_put(display, note=note, domain=domain)
+        org = self.store.org_get(display) or {}
+        playbook, touches, names = self.playbook(), self.store.touches(), self._group_names(deals)
+        keys = {group["key"] for group in mine}
+        here = [deal for deal in deals if st.group_key(deal["grp"]) in keys]
+        people, seen = [], set()
+
+        def add(person: dict, **where: Any) -> None:
+            if person["id"] not in seen:
+                seen.add(person["id"])
+                people.append(dict({k: person.get(k) or "" for k in ("name", "email", "title", "role")}, primary=False, **where))
+
+        for group in mine:
+            for person in self.store.grp_people(group["name"]):
+                add(person, record="", record_name=names.get(group["key"], group["name"]), group=names.get(group["key"], group["name"]))
+        for deal in here:                   # someone else put on one of its records is on the client's side too
+            for person in self.store.people(deal["id"]):
+                add(person, record=deal["id"], record_name=deal["name"], group=deal["grp"])
+        guesses: dict = {}
+        for person in people:
+            found = st.email_domain(person["email"])
+            if found:
+                guesses[found] = guesses.get(found, 0) + 1
+        open_here = [deal for deal in here if deal["status"] == "open"]
+        won = [deal for deal in here if deal["status"] == "won"]
+        ids = {deal["id"]: deal["name"] for deal in here}
+        recent = [a for a in self.store.activities(limit=300) if a["deal_id"] in ids][:8]
+        return {"ok": True, "via": "group", "groups": sorted(names.get(group["key"], group["name"]) for group in mine),
+                "company": {"name": display, "key": key, "domain": org.get("domain") or (max(guesses, key=guesses.get) if guesses else ""),
+                            "note": org.get("note") or "", "website": org.get("website") or ""},
+                "open": len(open_here), "open_value": st.total(open_here), "won": len(won), "won_value": st.total(won),
+                "lost": len([deal for deal in here if deal["status"] == "lost"]),
+                "last_touch": max([touches.get(deal["id"], "") for deal in here] or [""]),
+                "records": [self._brief(deal, playbook) for deal in sorted(here, key=lambda d: (d["status"] != "open", -d["value"]))],
+                "people": people[:60],
+                "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"],
+                              "by": a["actor"]} for a in recent]}
+
+    # -- groups: a search, an account, a client engagement -----------------------------------------
+    # A record names its group; what is known about the group itself (who the client is, where it stands, its
+    # terms, who is on the client's side) is kept under the same name. A group nobody has described is still a
+    # group: it has its records, and nothing else yet.
+    GROUP_LABELS = {"open": "Open", "hold": "On hold", "done": "Done", "closed": "Closed"}
+    GROUP_WORDS = {"open": "open", "active": "open", "live": "open", "hold": "hold", "on hold": "hold", "on-hold": "hold", "paused": "hold",
+                   "done": "done", "filled": "done", "won": "done", "complete": "done", "completed": "done",
+                   "closed": "closed", "cancelled": "closed", "canceled": "closed", "lost": "closed"}
+
+    def _group_names(self, deals: Optional[list] = None) -> dict:
+        """``{key: name}`` for every group there is: named on a record (in the spelling most of them use), or
+        opened by itself."""
+        spellings: dict = {}
+        for deal in (deals if deals is not None else self.store.list(status="all")):
+            key = st.group_key(deal["grp"])
+            if key:
+                found = spellings.setdefault(key, {})
+                found[deal["grp"]] = found.get(deal["grp"], 0) + 1
+        names = {key: max(sorted(found), key=found.get) for key, found in spellings.items()}
+        for row in self.store.grps():
+            names[row["key"]] = row["name"]             # once someone has opened or described it, that is its name
+        return names
+
+    def _group_spelling(self, group: str) -> str:
+        """A group's name as the desk already has it, so one group typed two ways does not become two."""
+        key = st.group_key(group)
+        return self._group_names().get(key, group) if key else group
+
+    def _resolve_group(self, ref: Any, names: Optional[dict] = None) -> tuple:
+        """``(name, error)`` for a group by its name, or by a part of it that only one group has."""
+        term, key = self.playbook().terms["group"], st.group_key(ref)
+        if not key:
+            return "", {"ok": False, "error": "say which %s: pass `group` (its name)" % term}
+        names = names if names is not None else self._group_names()
+        if key in names:
+            return names[key], None
+        near = sorted(name for found, name in names.items() if " %s " % key in " %s " % found)
+        if len(near) == 1:
+            return near[0], None
+        if near:
+            return "", {"ok": False, "error": "'%s' matches several; use one of these names" % str(ref)[:60], "groups": near[:20]}
+        return "", {"ok": False, "error": "no %s on the desk matches '%s'" % (term, str(ref)[:60]), "groups": sorted(names.values())[:20]}
+
+    def groups(self) -> list:
+        """Every group, with who the client is, where it stands and what is in it."""
+        deals, touches = self.store.list(status="all"), self.store.touches()
+        names, rows = self._group_names(deals), {row["key"]: row for row in self.store.grps()}
+        inside: dict = {}
+        for deal in deals:
+            key = st.group_key(deal["grp"])
+            if key:
+                inside.setdefault(key, []).append(deal)
+        sides: dict = {}                    # per group, everyone on the client's side once: put on the group, or on one of its records
+        for person in self.store.grp_people():
+            sides.setdefault(person["grp_key"], set()).add(person["id"])
+        where = {deal["id"]: st.group_key(deal["grp"]) for deal in deals}
+        for person in self.store.people():
+            if where.get(person["deal_id"]):
+                sides.setdefault(where[person["deal_id"]], set()).add(person["id"])
+        people = {key: len(found) for key, found in sides.items()}
+        out = []
+        for key, name in names.items():
+            row, here = rows.get(key) or {}, inside.get(key, [])
+            open_here, won = [d for d in here if d["status"] == "open"], [d for d in here if d["status"] == "won"]
+            status = row.get("status") or "open"
+            out.append({"name": name, "key": key, "client": row.get("client") or "", "status": status, "status_label": self.GROUP_LABELS[status],
+                        "value": row.get("value") or 0, "note": row.get("note") or "", "fields": row.get("fields") or {},
+                        "records": len(here), "open": len(open_here), "open_value": st.total(open_here), "won": len(won),
+                        "won_value": st.total(won), "lost": len([d for d in here if d["status"] == "lost"]), "people": people.get(key, 0),
+                        "last_touch": max([touches.get(d["id"], "") or d["updated_at"] for d in here] or [row.get("updated_at") or ""])})
+        order = {"open": 0, "hold": 1, "done": 2, "closed": 3}
+        out.sort(key=lambda group: (order[group["status"]], -group["open_value"], group["name"].lower()))
+        return out
+
+    @staticmethod
+    def _side(person: dict, **where: Any) -> dict:
+        return dict({key: person.get(key) or "" for key in ("id", "name", "email", "title", "role", "linkedin", "phone")}, **where)
+
+    def group_view(self, ref: Any) -> dict:
+        """One group: what is known about it, the records in it, and who is on the client's side."""
+        name, error = self._resolve_group(ref)
+        if error:
+            return error
+        playbook, key, touches = self.playbook(), st.group_key(name), self.store.touches()
+        row = self.store.grp_get(name) or {}
+        deals = [deal for deal in self.store.list(status="all") if st.group_key(deal["grp"]) == key]
+        people = [self._side(person, on="group") for person in self.store.grp_people(name)]
+        seen = {person["id"] for person in people}
+        for deal in deals:                  # the other people on its records: on the client's side as well, kept where they were put
+            for person in self.store.people(deal["id"]):
+                if person["id"] not in seen:
+                    seen.add(person["id"])
+                    people.append(self._side(person, on="record", record=deal["id"], record_name=deal["name"]))
+        status = row.get("status") or "open"
+        open_here, won = [d for d in deals if d["status"] == "open"], [d for d in deals if d["status"] == "won"]
+        ids = {deal["id"]: deal["name"] for deal in deals}
+        recent = [a for a in self.store.activities(limit=300) if a["deal_id"] in ids][:8]
+        return {"ok": True,
+                "group": {"name": name, "key": key, "client": row.get("client") or "", "status": status, "status_label": self.GROUP_LABELS[status],
+                          "value": row.get("value") or 0, "note": row.get("note") or "", "fields": row.get("fields") or {},
+                          "facts": [{"key": field["key"], "label": field["label"], "value": (row.get("fields") or {}).get(field["key"], "")}
+                                    for field in playbook.group_fields]},
+                "open": len(open_here), "open_value": st.total(open_here), "won": len(won), "won_value": st.total(won),
+                "lost": len([d for d in deals if d["status"] == "lost"]),
+                "last_touch": max([touches.get(d["id"], "") for d in deals] or [""]),
+                "records": [self._brief(deal, playbook) for deal in
+                            sorted(deals, key=lambda d: (d["status"] != "open", -playbook.position(d["stage"]), d["name"].lower()))],
+                "people": people[:60],
+                "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"],
+                              "by": a["actor"]} for a in recent]}
+
+    def group(self, args: dict, actor: str = "") -> dict:
+        """gtm_group: list | get | set | rename."""
+        action, actor = str(args.get("action") or "list").lower(), actor or self.actor()
+        playbook = self.playbook()
+        term = playbook.terms["group"]
+        if action == "list":
+            listed = self.groups()
+            return {"ok": True, "called": term, "count": len(listed),
+                    "groups": [{k: v for k, v in group.items() if k in ("name", "status") or v not in ("", 0, 0.0, {}, None)}
+                               for group in listed[:80]]}
+        ref = args.get("group") or args.get("name")
+        if action == "get":
+            return self.group_view(ref)
+        if action == "set":
+            key, names = st.group_key(ref), self._group_names()
+            if not key:
+                return {"ok": False, "error": "set needs `group`: the name of the %s" % term}
+            created = False
+            if key in names:
+                name = names[key]
+            elif args.get("new"):
+                name, created = " ".join(str(ref).split())[:200], True
+            else:
+                name, error = self._resolve_group(ref, names)
+                if error and "several" in error["error"]:
+                    return dict(error, note="Pass new=true to open a %s with exactly this name." % term)
+                if error:                               # none like it: this opens it
+                    name, created = " ".join(str(ref).split())[:200], True
+            status = None
+            if args.get("status") not in (None, ""):
+                status = self.GROUP_WORDS.get(" ".join(str(args["status"]).lower().split()))
+                if status is None:
+                    return {"ok": False, "error": "status is one of: open, on hold, done, closed. Nothing was changed."}
+            fields, ignored = None, []
+            if isinstance(args.get("fields"), dict):
+                by_key = {field["key"]: field["key"] for field in playbook.group_fields}
+                by_label = {field["label"].lower(): field["key"] for field in playbook.group_fields}
+                fields = {}
+                for field, value in args["fields"].items():
+                    found = by_key.get(str(field)) or by_label.get(" ".join(str(field).lower().split()))
+                    if found:
+                        fields[found] = value
+                    else:
+                        ignored.append(str(field)[:60])
+            try:
+                with self.store.operation():
+                    self.store.grp_put(name, actor=actor, client=args.get("client"), status=status, value=args.get("value"),
+                                       note=args.get("note"), fields=fields)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            out = self.group_view(name)
+            out.update(action="set", created=created)
+            if ignored:
+                out["ignored"] = ignored
+                out["note"] = "Not kept: %s. On a %s this playbook keeps: %s." % (
+                    ", ".join(ignored), term, ", ".join(field["label"] for field in playbook.group_fields) or "no extra facts")
+            return out
+        if action == "rename":
+            name, error = self._resolve_group(ref)
+            if error:
+                return error
+            new = " ".join(str(args.get("to") or "").split())
+            if not new:
+                return {"ok": False, "error": "rename needs `to`: the new name"}
+            try:
+                moved = self.store.grp_rename(name, new, actor=actor)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            out = self.group_view(new)
+            out.update(action="rename", renamed_on=moved)
+            return out
+        return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["list", "get", "set", "rename"]}
+
+    def _group_contact(self, action: str, args: dict, actor: str) -> dict:
+        """The people on a group's side, through gtm_contact: people | add | update | remove with `group`."""
+        name, error = self._resolve_group(args.get("group"))
+        if error:
+            return error
+
+        def out(**more: Any) -> dict:
+            return dict({"ok": True, "action": action, "group": name,
+                         "people": [self._side(person, on="group") for person in self.store.grp_people(name)]}, **more)
+
+        listed = self.store.grp_people(name)
+        if action == "people":
+            return out()
+        if action == "add":
+            who, email = str(args.get("name") or "").strip(), str(args.get("email") or "").strip().lower()
+            if not who:
+                return {"ok": False, "error": "add needs the person's name"}
+            for known in listed:
+                if (email and (known["email"] or "").lower() == email) or known["name"].lower() == who.lower():
+                    return out(exists=True)
+            with self.store.operation():
+                self.store.grp_person_add(name, who, actor=actor, **{key: args.get(key) for key in st.PERSON if key != "name"})
+            return out()
+        want = str(args.get("person") or args.get("name") or "").strip().lower()
+        found = [p for p in listed if str(p["id"]) == want or p["name"].lower() == want or (p["email"] and p["email"].lower() == want)]
+        if len(found) != 1:
+            return dict(out(), ok=False, error="say which person on %s: pass `person` (a name, an email or an id)" % name)
+        if action == "remove":
+            self.store.grp_person_remove(name, found[0]["id"], actor=actor)
+        else:
+            values = {key: args.get(key) for key in st.PERSON if key != "name" and args.get(key) is not None}
+            if args.get("new_name"):
+                values["name"] = args["new_name"]
+            try:
+                with self.store.operation():
+                    self.store.grp_person_update(name, found[0]["id"], actor=actor, **values)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+        return out()
 
     # -- gtm_card -------------------------------------------------------------------------------
     def card(self, args: dict, session: Optional[dict] = None) -> dict:
