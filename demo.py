@@ -516,6 +516,35 @@ def _load_around(desk, example: dict, playbook) -> None:
         rows.append(row)
     if rows:
         desk.intake.propose({"rows": rows, "source": PROPOSAL_SOURCE, "kind": "proposal"}, {})
+    _load_money(desk, playbook, by_name)
+
+
+def _load_money(desk, playbook, by_name: dict) -> None:
+    """The money side of the example: when the open ones are expected to close, where the won work
+    stands, and a spread of invoices (paid, part-paid and late, not yet due, and one win nobody billed)."""
+    store, today = desk.store, dt.date.today()
+    day = lambda offset: (today + dt.timedelta(days=offset)).isoformat()      # noqa: E731
+    last = len(playbook.stages) - 1
+    with store._conn() as conn:       # seeded straight in: a sample's dates are not things anybody did
+        for number, deal in enumerate(sorted(by_name.values(), key=lambda d: d["name"])):
+            at = playbook.position(deal["stage"])
+            if deal["status"] == "open" and at > 0:
+                conn.execute("UPDATE deals SET close_on = ? WHERE id = ?", (day((last - at) * 21 + (number % 3) * 6 - 6), deal["id"]))
+    won = sorted((d for d in by_name.values() if d["status"] == "won"), key=lambda d: d["name"])
+    for number, deal in enumerate(won):
+        if playbook.delivery:
+            with store._conn() as conn:
+                conn.execute("UPDATE deals SET delivery = ? WHERE id = ?", (playbook.delivery[min(number, len(playbook.delivery) - 1)]["id"], deal["id"]))
+        plan, ref = number % 4, "10%d" % (41 + number)
+        if plan == 0:           # billed and paid
+            bill = store.invoice_add(deal["id"], deal["value"], actor="demo", number=ref, issued_on=day(-20), due_on=day(10))
+            store.invoice_pay(bill["id"], actor="demo")
+        elif plan == 1:         # billed, half paid, and now late
+            bill = store.invoice_add(deal["id"], deal["value"], actor="demo", number=ref, issued_on=day(-39), due_on=day(-9))
+            store.invoice_pay(bill["id"], deal["value"] / 2, actor="demo")
+        elif plan == 2:         # half billed up front, not due yet
+            store.invoice_add(deal["id"], deal["value"] / 2, actor="demo", number=ref, issued_on=day(-9), due_on=day(21))
+        # plan 3: won, and nobody has sent an invoice
 
 
 def summary(desk, which: str = "") -> str:

@@ -38,7 +38,7 @@ function matches(deal, f) {
 }
 const STATE = ['stoa', 'state']
 const refresh = () => queryClient.invalidateQueries({ queryKey: ['stoa'] })
-const $tab = atom('today') // the page's tab: today | pipeline | market | activity | setup
+const $tab = atom('today') // the page's tab: today | pipeline | cash | market | activity | setup
 const $draft = atom('') // words put in the dock for the person to finish and send
 let onPage = false // the Stoa page is what is on screen: a click that calls for writing goes to its dock
 const $view = atom('board') // the pipeline tab: board | companies
@@ -491,6 +491,31 @@ const CSS = `
 .stoa-pickdate { display: inline-flex; gap: 4px; align-items: center; }
 .stoa-pickdate .stoa-field { width: 138px; }
 .stoa-pace { margin: -4px 2px 9px; font-size: 10.5px; color: var(--ui-text-quaternary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Cash: the strip, the forecast, what has been billed, and invoices */
+.stoa-cash { min-width: 0; }
+.stoa-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+.stoa-tile { padding: 12px 14px 11px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
+.stoa-tile b { display: block; margin: 5px 0 1px; font-size: 23px; font-weight: 600; letter-spacing: -.015em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stoa-tile[data-tone="bad"] b { color: var(--ui-red); }
+.stoa-tile[data-tone="warn"] b { color: var(--ui-orange); }
+.stoa-tile[data-tone="good"] b { color: var(--stoa-accent-text); }
+.stoa-fc { display: grid; grid-template-columns: 120px minmax(0, 1fr) 200px; gap: 12px; align-items: center; padding: 5px 0; }
+.stoa-fc u { position: relative; display: block; height: 10px; border-radius: 3px; background: var(--ui-stroke-tertiary); text-decoration: none; overflow: hidden; }
+.stoa-fc u i, .stoa-fc u b { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 3px; transition: width .4s ease; }
+.stoa-fc u i { background: color-mix(in srgb, var(--ui-text-primary) 24%, transparent); }
+.stoa-fc u b { background: var(--stoa-accent); }
+.stoa-fc[data-key="past"] > span:first-child { color: var(--ui-orange); }
+.stoa-fc[data-key="none"] u b { background: color-mix(in srgb, var(--stoa-accent) 55%, transparent); }
+.stoa-fc .stoa-num { text-align: right; }
+.stoa-billbar { position: relative; height: 4px; margin: 8px 0 2px; border-radius: 2px; background: var(--ui-stroke-secondary); overflow: hidden; }
+.stoa-billbar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; transition: width .4s ease; }
+.stoa-billbar i[data-kind="invoiced"] { background: color-mix(in srgb, var(--ui-text-primary) 42%, transparent); }
+.stoa-billbar i[data-kind="paid"] { background: var(--stoa-accent); }
+.stoa-irow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-irow > .stoa-grow { flex: 1 1 200px; }      /* in a narrow panel the moves drop to a second line; the words are never squeezed */
+.stoa-irow > .stoa-tacts { margin-left: auto; }
+.stoa-irow[data-state="void"] { opacity: .5; }
+.stoa-log > .stoa-irow:first-of-type { border-top: 0; }
 /* Approvals, undo, people and companies */
 .stoa-approvals { margin-top: 14px; }
 .stoa-proposal { margin-bottom: 10px; padding: 11px 14px 12px; border: 1px solid var(--ui-stroke-secondary); border-left: 2px solid var(--stoa-accent); border-radius: 4px 10px 10px 4px; background: var(--ui-bg-card); animation: stoa-lift .2s ease both; }
@@ -585,7 +610,7 @@ const uniq = values => [...new Set(values.filter(Boolean))].sort()
 function Edit({ deal, state, done }) {
   const pb = state.playbook, terms = pb.terms
   const start = { next_step: deal.next_step || '', next_due: deal.next_due || '', value: deal.value ? String(deal.value) : '', owner: deal.owner || '',
-    company: deal.company || '', group: deal.group || '', email: deal.email || '' }
+    company: deal.company || '', group: deal.group || '', email: deal.email || '', close_on: deal.close_on || '' }
   const [v, setV] = useState(start)
   const [note, setNote] = useState('')
   const [kind, setKind] = useState('note')
@@ -614,7 +639,8 @@ function Edit({ deal, state, done }) {
       h(Field, { label: cap(terms.owner), value: v.owner, onChange: set('owner') }),
       h(Field, { label: cap(terms.company), value: v.company, onChange: set('company') }),
       h(Field, { label: cap(terms.group), value: v.group, onChange: set('group') }),
-      h(Field, { label: 'Email', wide: true, type: 'email', value: v.email, onChange: set('email') })),
+      open ? h(Field, { label: 'Expected close', type: 'date', value: v.close_on, title: 'The forecast puts it in this month', onChange: set('close_on') }) : h('span'),
+      h(Field, { label: 'Email', type: 'email', value: v.email, onChange: set('email') })),
     h('div', { className: 'stoa-btns' },
       h(Btn, { kind: 'primary', disabled: busy, onClick: save }, 'Save'),
       h(Btn, { kind: 'quiet', disabled: busy, onClick: done }, 'Cancel')),
@@ -685,7 +711,8 @@ function Record({ id, state, sessionId, close, onCompany }) {
   if (!deal) return h('div', { className: 'stoa-box stoa-sub' }, 'Loading…')
   const open = deal.status === 'open'
   const run = body => { setBusy(true); act(id, body, sessionId).then(() => setBusy(false)) }
-  const facts = [[cap(pb.terms.group), deal.group], [pb.terms.value, money(deal.value, pb.currency)], [cap(pb.terms.owner), deal.owner]]
+  const facts = [[cap(pb.terms.group), deal.group], [pb.terms.value, money(deal.value, pb.currency)], [cap(pb.terms.owner), deal.owner],
+    ['Expected close', open && deal.close_on ? shortDate(deal.close_on) + (deal.close_on < today() ? ' (past)' : '') : '']]
     .concat(pb.fields.map(field => [field.label, (deal.fields || {})[field.key]]))
     .concat([['Email', deal.email]]).filter(pair => pair[1])
   return h('div', { className: 'stoa-box' },
@@ -716,12 +743,16 @@ function Record({ id, state, sessionId, close, onCompany }) {
         onChange: event => { if (event.target.value !== '') run({ verb: 'lost', extra: event.target.value }) } },
         [h('option', { key: 'none', value: '' }, pb.lost.label + '…')].concat(pb.lost.reasons.map((reason, index) =>
           h('option', { key: index, value: String(index) }, reason)))) : null,
-      !open ? h(Btn, { kind: 'primary', disabled: busy, onClick: () => run({ verb: 'reopen' }) }, 'Reopen') : null,
+      deal.status === 'won' && (deal.delivery_stages || []).length ? h('select', { className: 'stoa-select', value: deal.delivery || '', disabled: busy,
+        'aria-label': 'Where the work stands', title: 'Where the work stands', onChange: event => run({ verb: 'update', delivery: event.target.value }) },
+        deal.delivery_stages.map(stage => h('option', { key: stage.id, value: stage.id }, stage.label))) : null,
+      !open ? h(Btn, { kind: deal.status === 'won' ? '' : 'primary', disabled: busy, onClick: () => run({ verb: 'reopen' }) }, 'Reopen') : null,
       h(Btn, { kind: 'quiet', onClick: () => setEditing(!editing) }, editing ? 'Close editing' : 'Edit')),
     finishing && open && deal.next_step ? h(NextStep, { deal, mode: 'done', close: () => setFinishing(false) }) : null,
     editing ? h(Edit, { key: deal.stage, deal, state, done: () => setEditing(false) }) : null,
     facts.length ? h('div', { className: 'stoa-facts' }, facts.map(pair =>
       h('div', { key: pair[0], style: pair[0] === 'Email' ? { gridColumn: '1 / -1' } : undefined }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, String(pair[1]))))) : null,
+    close || (deal.invoices || []).length ? h(Money, { deal, pb }) : null,
     close ? h(People, { deal, term: pb.terms.deal }) : (deal.people || []).length ? h('div', { className: 'stoa-log' },
       h('small', { className: 'stoa-eyebrow' }, 'Also on this ' + pb.terms.deal),
       deal.people.map(person => h('p', { key: person.id }, person.name, h('span', { className: 'stoa-sub' }, '  ' + [person.role, person.title].filter(Boolean).join(' · '))))) : null,
@@ -1116,6 +1147,8 @@ const TODAY_LISTS = [
   { key: 'overdue', title: 'Overdue', tone: 'bad', help: 'The next step had a date, and the date has passed.' },
   { key: 'due_today', title: 'Due today', tone: 'warn', help: 'The next step is dated today.' },
   { key: 'drafts', title: 'Writing waiting for Hermes', tone: 'good', help: 'A button asked for a draft and nobody has picked it up yet.' },
+  { key: 'invoices_overdue', title: 'Invoices overdue', tone: 'bad', help: 'Sent, not paid in full, and past the due date.' },
+  { key: 'to_invoice', title: 'Won, not invoiced', tone: 'warn', help: 'Won in the last two months with no invoice on the record. Shown once the desk keeps invoices at all.' },
   { key: 'quiet', title: 'Gone quiet', tone: '', help: 'No call, email, note or move for longer than the stage allows. Your playbook sets the days for each stage.' },
   { key: 'new', title: 'New, nothing planned', tone: '', help: 'Added in the last week, with no next step yet.' }
 ]
@@ -1130,12 +1163,22 @@ function Today({ state, openId, setOpenId }) {
     overdue: (deal, row) => [deal.next_step || deal.stage_label, row.days + 'd overdue'],
     due_today: deal => [deal.next_step || deal.stage_label, 'today'],
     drafts: deal => [deal.stage_label + ' · a draft is waiting to be written', ''],
+    invoices_overdue: (deal, row) => ['Invoice' + (row.number ? ' #' + row.number : '') + ' · ' + exact(row.owed, pb.currency) + ' owed', row.days + 'd late'],
+    to_invoice: (deal, row) => [exact(row.amount, pb.currency) + ' · ' + pb.won.label.toLowerCase() + (row.days ? ' ' + row.days + 'd ago' : ' today'), ''],
     quiet: (deal, row) => [deal.stage_label + ' · nothing for ' + row.days + 'd', 'nudge due after ' + row.expected + 'd'],
     new: deal => [[deal.company, 'added ' + ago(deal.created_at)].filter(Boolean).join(' · '), '']
   }
   const moves = {
     overdue: deal => [h(Btn, { key: 'done', kind: 'go', title: 'Log it as done and say what comes next', onClick: () => setForm({ id: deal.id, mode: 'done' }) }, '✓  Done'),
       h(Btn, { key: 'draft', title: 'Hermes drafts what this step needs', onClick: () => draftFor(deal) }, 'Draft it'),
+      h(Snooze, { key: 'snooze', deal, busy: busy === deal.id, run: body => run(deal.id, body) })],
+    invoices_overdue: (deal, row) => [
+      h(Btn, { key: 'paid', kind: 'go', title: 'Everything still owed came in', onClick: () => bill(deal.id, { verb: 'pay', invoice: String(row.invoice) }) }, 'Paid'),
+      h(Btn, { key: 'remind', title: 'Hermes drafts a payment reminder', onClick: () => toChat('On the Stoa desk, ' + deal.name + ' (record ' + deal.id + ') has an invoice'
+        + (row.number ? ' #' + row.number : '') + ' with ' + exact(row.owed, pb.currency) + ' still owed, ' + row.days + ' days past due. Draft a short, polite payment reminder and show me.') }, 'Draft a reminder'),
+      h(Snooze, { key: 'snooze', deal, busy: busy === deal.id, run: body => run(deal.id, body) })],
+    to_invoice: deal => [
+      h(Btn, { key: 'bill', kind: 'go', onClick: () => { $billing.set(deal.id); setOpenId(deal.id) } }, 'Add invoice'),
       h(Snooze, { key: 'snooze', deal, busy: busy === deal.id, run: body => run(deal.id, body) })],
     drafts: deal => [h(Btn, { key: 'write', kind: 'go', onClick: () => toChat('Do the writing task waiting on ' + deal.name + ' on the Stoa desk (record ' + deal.id + ').') }, 'Write it now')],
     quiet: deal => [h(Btn, { key: 'draft', kind: 'go', title: 'Hermes drafts a follow-up from the record and its log', onClick: () => draftFor(deal, true) }, 'Draft a nudge'),
@@ -1148,7 +1191,7 @@ function Today({ state, openId, setOpenId }) {
     if (!deal) return null
     const [sub, right] = facts[key](deal, row)
     const open = Boolean(form) && form.id === deal.id
-    return h('div', { key: key + deal.id, className: 'stoa-trow', 'data-open': openId === deal.id ? '1' : '0' },
+    return h('div', { key: key + deal.id + ':' + (row.invoice || ''), className: 'stoa-trow', 'data-open': openId === deal.id ? '1' : '0' },
       h('button', { type: 'button', className: 'stoa-tmain', title: 'Open the record', onClick: () => setOpenId(openId === deal.id ? '' : deal.id) },
         h('i', { className: 'stoa-dot', 'data-tone': tone }),
         h('span', { className: 'stoa-grow' },
@@ -1156,11 +1199,12 @@ function Today({ state, openId, setOpenId }) {
             deal.value ? h('span', { className: 'stoa-sub', style: { fontWeight: 400 } }, '  ' + money(deal.value, pb.currency)) : null),
           h('span', { className: 'stoa-sub stoa-clip', style: { display: 'block' } }, sub))),
       right ? h('span', { className: 'stoa-num', 'data-tone': tone }, right) : null,
-      h('span', { className: 'stoa-tacts' }, moves[key](deal)),
+      h('span', { className: 'stoa-tacts' }, moves[key](deal, row)),
       open ? h(NextStep, { deal, mode: form.mode, close: () => setForm(null) }) : null)
   })
   const counts = day.counts
   const tally = [[counts.overdue, 'overdue', 'bad'], [counts.due_today, 'due today', 'warn'], [counts.approvals, 'to approve', 'good'],
+    [counts.invoices_overdue, counts.invoices_overdue === 1 ? 'invoice overdue' : 'invoices overdue', 'bad'], [counts.to_invoice, 'to invoice', 'warn'],
     [counts.drafts, counts.drafts === 1 ? 'draft waiting' : 'drafts waiting', 'good'], [counts.quiet, 'gone quiet', ''], [counts.new, 'new', '']].filter(item => item[0])
   return h('div', { className: 'stoa-today' },
     h('div', { className: 'stoa-todayhead' },
@@ -1170,7 +1214,8 @@ function Today({ state, openId, setOpenId }) {
     h(Approvals, { state, setOpenId }),
     TODAY_LISTS.map(list => (day[list.key] || []).length ? h('div', { key: list.key, className: 'stoa-tsec' },
       h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
-        h('span', { className: 'stoa-eyebrow', title: list.help }, list.title), h('span', { className: 'stoa-num' }, String(counts[list.key]))),
+        h('span', { className: 'stoa-eyebrow', title: list.help }, list.key === 'to_invoice' ? pb.won.label + ', not invoiced' : list.title),
+        h('span', { className: 'stoa-num' }, String(counts[list.key]))),
       rows(list.key, list.tone)) : null))
 }
 
@@ -1282,13 +1327,15 @@ function download(name, text, type) {
 
 const SAY = ['Add Priya Raman from Lumen Health, met at the conference, call her Friday', 'I spoke to Dana: she wants the proposal by Thursday',
   'Add their CFO, Lena Ortiz, to the Kestrel deal', 'Who do we know at Kestrel?', 'Undo that',
+  'I invoiced Kestrel 12k today, net 30', 'Kestrel paid half of invoice 1042', 'How is cash looking, and what is likely to close this month?',
   'Move Marcus to the next stage and draft the email', 'Who has gone quiet, and what should I send each of them?', 'Here are my leads (then drop a CSV on the page)',
   'Map the market for us and add the three best fits', 'Write me a playbook for selling to dental practices']
 const BY_HAND = ['Drag a card to another column to move it; drop it on the last column to close it as won.', 'Changed your mind? Undo appears above the box at the foot of the page, and on the record.',
   'Press a stage in the funnel to pick out its column on the board; press it again to let go.', 'Press a company name on a record, or Companies on the pipeline, for everything at that company.',
   'Press a card or a row to open the record: advance it, mark the step done, snooze it, or edit any fact.', 'Drop a CSV anywhere on the page. It comes back as a review; nothing is written until you apply.',
   'Use the microphone in the box at the foot of the page to dictate.']
-const TYPED = [['/gtm', 'the board, in any Hermes chat'], ['/gtm today', 'what needs you, most pressing first'], ['/gtm brief', 'the morning brief'], ['/gtm <name>', 'one record as a card'],
+const TYPED = [['/gtm', 'the board, in any Hermes chat'], ['/gtm today', 'what needs you, most pressing first'],
+  ['/gtm cash', 'won, invoiced, collected, overdue, and the forecast'], ['/gtm brief', 'the morning brief'], ['/gtm <name>', 'one record as a card'],
   ['/gtm map', 'your market map'], ['!gtm …', 'the same in Slack, which keeps the slash for itself'], ['/blueprint', 'switch on an automation'], ['hermes stoa status', 'in a terminal: what is connected']]
 const ALWAYS = ['Keeps one ledger: every change to a record or a person, what it replaced and what it left. Lines are never altered.',
   'Keeps each person once, however many records they are on.', 'Gives each record one next step and a date, and tells you when the date comes.',
@@ -1296,6 +1343,7 @@ const ALWAYS = ['Keeps one ledger: every change to a record or a person, what it
   'Remembers a no, and does not ask again.', 'Lets you take a change back, whoever made it, unless that would overwrite a later one.',
   'Takes a record off the desk without destroying it, so it can be put back.',
   'Logs what it finds in your email, calls and Slack on the right record, whoever on it sent it.', 'Posts cards in Slack whose buttons act at once, and only for the people allowed to press them.',
+  'Keeps the invoices on a record in whole cents, and tells you what is late and what was won but never billed.',
   'Lets you snooze anything until a date, and export everything at any time.']
 
 /** An error from the desk's backend, as a line a person can pass on: its message, and the status if there is one. */
@@ -1621,6 +1669,205 @@ function Autonomy({ setup }) {
       setup.declined ? h('div', { className: 'stoa-btns', style: { marginTop: 6 } }, h(Btn, { disabled: busy, onClick: forget }, 'Forget them')) : null))
 }
 
+// -- money: invoices on a record, where won work stands, and what is likely to come in ---------------
+// Stoa sends no invoices and moves no money. It keeps the account of them, so the desk can say what
+// is owed, what is late, and what was won but never billed.
+const $billing = atom('') // the record whose "new invoice" form should be open when its panel appears
+const BILL_TONE = { overdue: 'bad', partial: 'warn', paid: 'good' }
+const BILL_WORD = { overdue: 'overdue', partial: 'part paid', sent: 'sent', draft: 'draft', paid: 'paid', void: 'void' }
+
+/** An amount in full: an invoice is not rounded to the nearest thousand. */
+function exact(value, currency) {
+  const number = Number(value || 0)
+  const text = number.toLocaleString(undefined, { minimumFractionDigits: Number.isInteger(number) ? 0 : 2, maximumFractionDigits: 2 })
+  const sign = SYMBOL[currency] ?? ''
+  return sign ? sign + text : text + ' ' + (currency || '')
+}
+
+const inDays = days => { const d = new Date(Date.now() + days * 864e5); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') }
+
+async function bill(dealId, body) {
+  try {
+    const result = await rest('/deal/' + encodeURIComponent(dealId) + '/invoice', { method: 'POST', body })
+    refresh()
+    if (result.last) offerUndo(result.last)
+    return result
+  } catch (error) {
+    host.notifyError(error, 'Stoa could not save that')
+    return null
+  }
+}
+
+/** One invoice, with the moves that fit where it stands. */
+function Invoice({ invoice, dealId, currency, name, onOpen }) {
+  const [busy, setBusy] = useState(false)
+  const [part, setPart] = useState(null) // null, or the amount being typed for a part payment
+  const run = body => { setBusy(true); return bill(dealId, { invoice: String(invoice.id), ...body }).then(result => { setBusy(false); return result }) }
+  const owing = invoice.state === 'sent' || invoice.state === 'partial' || invoice.state === 'overdue'
+  const takePart = () => { const amount = Number(part); if (amount > 0) run({ verb: 'pay', amount }).then(result => { if (result) setPart(null) }) }
+  const when = invoice.state === 'paid' ? (invoice.paid_on ? 'paid ' + shortDate(invoice.paid_on) : 'paid')
+    : invoice.state === 'overdue' ? invoice.days_overdue + 'd late'
+      : invoice.due_on && owing ? 'due ' + shortDate(invoice.due_on) : ''
+  return h('div', { className: 'stoa-irow', 'data-state': invoice.state },
+    h('span', { className: 'stoa-grow', style: { minWidth: 0 } },
+      name ? h('button', { type: 'button', className: 'stoa-proplink stoa-name stoa-clip', style: { display: 'block', maxWidth: '100%' }, title: 'Open the record', onClick: onOpen }, name) : null,
+      h('span', { className: name ? 'stoa-sub' : 'stoa-name' }, (invoice.number ? '#' + invoice.number + ' · ' : '') + exact(invoice.amount, currency)),
+      invoice.state === 'partial' || (invoice.state === 'overdue' && invoice.paid) ? h('span', { className: 'stoa-sub' }, ' · ' + exact(invoice.owed, currency) + ' still owed') : null,
+      invoice.note ? h('span', { className: 'stoa-sub', style: { display: 'block' } }, invoice.note) : null),
+    when ? h('span', { className: 'stoa-num', 'data-tone': BILL_TONE[invoice.state] || '' }, when) : null,
+    h(Chip, { tone: BILL_TONE[invoice.state] || '' }, BILL_WORD[invoice.state] || invoice.state),
+    h('span', { className: 'stoa-tacts' },
+      part !== null ? [
+        h('input', { key: 'amount', className: 'stoa-field', type: 'number', min: 0, step: 'any', autoFocus: true, value: part, placeholder: 'Amount received', 'aria-label': 'Amount received',
+          style: { width: 124, marginTop: 0 }, onChange: event => setPart(event.target.value),
+          onKeyDown: event => { if (event.key === 'Enter') takePart(); if (event.key === 'Escape') setPart(null) } }),
+        h(Btn, { key: 'ok', kind: 'go', disabled: busy || !(Number(part) > 0), onClick: takePart }, 'Record'),
+        h(Btn, { key: 'no', kind: 'quiet', onClick: () => setPart(null), 'aria-label': 'Cancel' }, '×')
+      ] : [
+        owing ? h(Btn, { key: 'paid', kind: 'go', disabled: busy, title: 'Everything still owed came in', onClick: () => run({ verb: 'pay' }) }, 'Paid') : null,
+        owing ? h(Btn, { key: 'part', disabled: busy, title: 'Part of it came in', onClick: () => setPart('') }, 'Part') : null,
+        invoice.state === 'draft' ? h(Btn, { key: 'send', kind: 'go', disabled: busy, onClick: () => run({ verb: 'send' }) }, 'Mark sent') : null,
+        h('select', { key: 'more', className: 'stoa-select', value: '', disabled: busy, 'aria-label': 'More', style: { maxWidth: 74 },
+          onChange: event => { const verb = event.target.value; if (verb) run({ verb }) } },
+        [h('option', { key: '', value: '' }, 'More…')].concat(invoice.state !== 'void' && invoice.state !== 'paid' ? [h('option', { key: 'void', value: 'void' }, 'Void it')] : [],
+          [h('option', { key: 'remove', value: 'remove' }, 'Remove (entered by mistake)')]))
+      ]))
+}
+
+/** The money on one record: what was billed, what came in, and a form to add an invoice. */
+function Money({ deal, pb }) {
+  const billing = useValue($billing)
+  const money = deal.money || { invoiced: 0, paid: 0, owed: 0, uninvoiced: 0 }
+  const invoices = deal.invoices || []
+  const suggested = deal.status === 'won' ? money.uninvoiced : Math.max(0, (deal.value || 0) - money.invoiced)
+  const [adding, setAdding] = useState(false)
+  const [v, setV] = useState({ amount: '', number: '', due: inDays(30), draft: false })
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (billing !== deal.id) return
+    setAdding(true)
+    $billing.set('')
+  }, [billing, deal.id])
+  useEffect(() => { if (adding) setV(now => ({ ...now, amount: now.amount || (suggested ? String(suggested) : '') })) }, [adding])
+  const set = key => event => setV({ ...v, [key]: event.target.value })
+  const add = () => {
+    if (!(Number(v.amount) > 0) || busy) return
+    setBusy(true)
+    bill(deal.id, { verb: 'add', amount: Number(v.amount), number: v.number.trim(), due: v.due, status: v.draft ? 'draft' : 'sent' }).then(result => {
+      setBusy(false)
+      if (result) { setAdding(false); setV({ amount: '', number: '', due: inDays(30), draft: false }) }
+    })
+  }
+  if (!invoices.length && deal.status !== 'won' && !adding) {
+    return h('div', { className: 'stoa-log' }, h('div', { className: 'stoa-sechead', style: { padding: 0, alignItems: 'center' } },
+      h('small', { className: 'stoa-eyebrow' }, 'Money'), h(Btn, { kind: 'quiet', onClick: () => setAdding(true) }, '+  Invoice')))
+  }
+  const line = [money.invoiced ? 'invoiced ' + exact(money.invoiced, pb.currency) : '', money.paid ? 'paid ' + exact(money.paid, pb.currency) : '',
+    money.owed ? 'owed ' + exact(money.owed, pb.currency) : '', deal.status === 'won' && money.uninvoiced ? exact(money.uninvoiced, pb.currency) + ' not invoiced' : '']
+    .filter(Boolean).join(' · ')
+  return h('div', { className: 'stoa-log' },
+    h('div', { className: 'stoa-sechead', style: { padding: 0, alignItems: 'center' } },
+      h('small', { className: 'stoa-eyebrow' }, 'Money'), h(Btn, { kind: 'quiet', onClick: () => setAdding(!adding) }, adding ? 'Close' : '+  Invoice')),
+    line ? h('div', { className: 'stoa-sub', style: { marginBottom: 2 } }, cap(line)) : null,
+    deal.value ? h(BillBar, { value: deal.value, invoiced: money.invoiced, paid: money.paid }) : null,
+    invoices.map(invoice => h(Invoice, { key: invoice.id, invoice, dealId: deal.id, currency: pb.currency })),
+    adding ? h('div', null,
+      h('div', { className: 'stoa-form', style: { marginTop: 8 } },
+        h(Field, { label: 'Amount', type: 'number', min: 0, step: 'any', autoFocus: true, value: v.amount, onChange: set('amount') }),
+        h(Field, { label: 'Number', value: v.number, placeholder: '1042', onChange: set('number') }),
+        h(Field, { label: 'Due', type: 'date', value: v.due, onChange: set('due') }),
+        h('label', { style: { alignSelf: 'end', display: 'flex', gap: 6, alignItems: 'center', height: 28, fontSize: 12 } },
+          h('input', { type: 'checkbox', checked: v.draft, onChange: event => setV({ ...v, draft: event.target.checked }) }), 'Not sent yet')),
+      h('div', { className: 'stoa-btns', style: { marginTop: 8 } },
+        h(Btn, { kind: 'primary', disabled: busy || !(Number(v.amount) > 0), onClick: add }, 'Add invoice'),
+        h('span', { className: 'stoa-sub', style: { alignSelf: 'center' } }, 'Stoa keeps the record. It does not send the invoice.'))) : null)
+}
+
+/** How much of a record's value has been billed, and how much of that has come in. */
+function BillBar({ value, invoiced, paid }) {
+  const of = Math.max(value || 0, invoiced || 0, 1)
+  return h('div', { className: 'stoa-billbar', title: 'Paid, then invoiced, out of the full amount' },
+    h('i', { 'data-kind': 'invoiced', style: { width: Math.min(100, (100 * (invoiced || 0)) / of) + '%' } }),
+    h('i', { 'data-kind': 'paid', style: { width: Math.min(100, (100 * (paid || 0)) / of) + '%' } }))
+}
+
+const BASIS = {
+  history: 'Each stage counts for how often records there have gone on to close on this desk.',
+  playbook: 'Each stage counts for the odds your playbook gives it. Your own history takes over once twelve have closed.',
+  even: 'Each stage counts for an even step toward closing. Your own history takes over once twelve have closed.'
+}
+
+/** The Cash tab: what came in and what is owed, what the open pipeline is likely to bring, and where won work stands. */
+function Cash({ state, openId, setOpenId }) {
+  const cash = state.cash, pb = state.playbook
+  const [over, setOver] = useState('')
+  if (!cash) return h('p', { className: 'stoa-sub' }, 'The money side needs the gateway restarted after this update (hermes gateway restart).')
+  const strip = cash.strip, forecast = cash.forecast, lane = cash.delivery
+  const tiles = [
+    [pb.won.label + ' this month', strip.won_month.value, plural(strip.won_month.count, pb.terms.deal, pb.terms.deals), '', 'What was closed as ' + pb.won.label.toLowerCase() + ' since the first of the month.'],
+    ['Collected this month', strip.collected_month.value, 'payments recorded', 'good', 'Every payment recorded on an invoice this month.'],
+    ['Invoiced, not yet paid', strip.owed.value, plural(strip.owed.count, 'invoice', 'invoices'), '', 'What is still owed on invoices that have been sent.'],
+    ['Overdue', strip.overdue.value, plural(strip.overdue.count, 'invoice', 'invoices') + ' past due', strip.overdue.count ? 'bad' : '', 'Owed on invoices whose due date has passed.'],
+    [pb.won.label + ', not invoiced', strip.uninvoiced.value, plural(strip.uninvoiced.count, pb.terms.deal, pb.terms.deals), strip.uninvoiced.count ? 'warn' : '', 'Won work whose invoices add up to less than its value.']]
+  const most = Math.max(1, ...forecast.buckets.map(bucket => bucket.value))
+  const shown = forecast.buckets.filter(bucket => bucket.count)
+  const stages = lane.stages.length ? lane.stages : [{ id: '', label: pb.won.label }]
+  const owing = cash.invoices.filter(invoice => invoice.state !== 'paid')
+  const settled = cash.invoices.filter(invoice => invoice.state === 'paid')
+  const drop = (event, stage) => {
+    const id = event.dataTransfer.getData(DRAG)
+    setOver('')
+    if (!id || !stage.id) return
+    event.preventDefault()
+    const record = lane.records.find(item => item.id === id)
+    if (record && record.delivery !== stage.id) act(id, { verb: 'update', delivery: stage.id })
+  }
+  return h('div', { className: 'stoa-cash' },
+    h('div', { className: 'stoa-strip' }, tiles.map(tile => h('div', { key: tile[0], className: 'stoa-tile', 'data-tone': tile[3], title: tile[4] },
+      h('span', { className: 'stoa-eyebrow' }, tile[0]), h('b', null, money(tile[1], pb.currency) || '0'), h('span', { className: 'stoa-sub' }, tile[2])))),
+    h('div', { className: 'stoa-h2' }, 'Likely to come in'),
+    h('div', { className: 'stoa-box' },
+      h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 14px' } },
+        h('span', { className: 'stoa-name', style: { fontSize: 18 } }, money(forecast.weighted, pb.currency) || '0'),
+        h('span', { className: 'stoa-sub' }, 'weighted, of ' + (money(forecast.value, pb.currency) || '0') + ' open')),
+      shown.length ? h('div', { style: { marginTop: 10 } }, shown.map(bucket => h('div', { key: bucket.key, className: 'stoa-fc', 'data-key': bucket.key },
+        h('span', { className: 'stoa-clip' }, bucket.label),
+        h('u', null, h('i', { style: { width: (100 * bucket.value) / most + '%' } }), h('b', { style: { width: (100 * bucket.weighted) / most + '%' } })),
+        h('span', { className: 'stoa-num' }, (money(bucket.weighted, pb.currency) || '0') + ' of ' + (money(bucket.value, pb.currency) || '0') + ' · ' + bucket.count))))
+        : h('div', { className: 'stoa-sub', style: { marginTop: 6 } }, 'Nothing is open.'),
+      h('div', { className: 'stoa-sub', style: { marginTop: 10 } }, BASIS[forecast.basis] + ' A ' + pb.terms.deal + ' goes in a month by its expected close date (Edit on the record).'),
+      h('div', { className: 'stoa-chain', style: { margin: '6px 0 0' } }, forecast.odds.map(item => item.label + ' ' + item.odds + '%').join('  ·  '))),
+    h('div', { className: 'stoa-h2' }, 'After the win'),
+    lane.records.length ? h('div', { className: 'stoa-board', style: { gridAutoColumns: 'minmax(200px, 1fr)' } }, stages.map(stage => {
+      const here = lane.records.filter(record => (record.delivery || '') === stage.id)
+      return h('div', { key: stage.id || 'won', className: 'stoa-col', 'data-over': over === stage.id && stage.id ? '1' : '0',
+        onDragOver: event => { if (dragging(event) && stage.id) { event.preventDefault(); if (over !== stage.id) setOver(stage.id) } },
+        onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setOver('') },
+        onDrop: event => drop(event, stage) },
+      h('div', { className: 'stoa-colhead' }, h('span', { className: 'stoa-eyebrow stoa-clip' }, stage.label), h('span', { className: 'stoa-num' }, String(here.length))),
+      h('div', { className: 'stoa-weight' }),
+      here.length ? here.map(record => h('button', { type: 'button', key: record.id, className: 'stoa-card', 'data-open': openId === record.id ? '1' : '0',
+        draggable: Boolean(stage.id), title: stage.id ? 'Drag to another column as the work moves on' : undefined,
+        onDragStart: event => { event.dataTransfer.setData(DRAG, record.id); event.dataTransfer.effectAllowed = 'move' }, onDragEnd: () => setOver(''),
+        onClick: () => setOpenId(openId === record.id ? '' : record.id) },
+      h('h5', null, h('span', { className: 'stoa-clip' }, record.name), record.value ? h('span', { className: 'stoa-num' }, money(record.value, pb.currency)) : null),
+      h('div', { className: 'stoa-sub stoa-clip' }, record.company || ' '),
+      record.value ? h(BillBar, { value: record.value, invoiced: record.invoiced, paid: record.paid }) : null,
+      h('div', { className: 'stoa-chips', style: { marginTop: 6 } },
+        record.overdue ? h(Chip, { tone: 'bad' }, 'invoice overdue') : null,
+        !record.invoiced && record.value ? h(Chip, { tone: 'warn' }, 'not invoiced')
+          : record.uninvoiced ? h(Chip, null, (money(record.uninvoiced, pb.currency) || '') + ' to bill') : null,
+        record.value && record.paid >= record.value ? h(Chip, { tone: 'good' }, 'paid') : record.owed && !record.overdue ? h(Chip, null, 'awaiting payment') : null)))
+        : h('div', { className: 'stoa-empty' }, over === stage.id && stage.id ? 'Drop it here' : '—'))
+    })) : h('p', { className: 'stoa-sub' }, 'Nothing has been ' + pb.won.label.toLowerCase() + ' yet. When something is, it lands here: where the work stands, and whether it has been billed.'),
+    h('div', { className: 'stoa-h2' }, 'Invoices'),
+    owing.length || settled.length ? h('div', { style: { maxWidth: 980 } },
+      owing.map(invoice => h(Invoice, { key: invoice.id, invoice, dealId: invoice.deal, currency: pb.currency, name: invoice.name, onOpen: () => setOpenId(invoice.deal) })),
+      settled.length ? h('div', { className: 'stoa-eyebrow', style: { margin: '14px 0 2px' } }, 'Lately paid') : null,
+      settled.map(invoice => h(Invoice, { key: invoice.id, invoice, dealId: invoice.deal, currency: pb.currency, name: invoice.name, onOpen: () => setOpenId(invoice.deal) })))
+      : h('p', { className: 'stoa-sub' }, 'No invoices yet. Open a record and press + Invoice, or tell Stoa: “I invoiced Kestrel 12k today, net 30.”'))
+}
+
 // -- the full page -------------------------------------------------------------------------------
 // The board is worked by hand as well as by talking: drag a card to another column to move it.
 const DRAG = 'text/stoa-deal'
@@ -1814,7 +2061,8 @@ function Page() {
         onClick: item[3] ? () => setTab(item[3]) : undefined }, h('span', { className: 'stoa-eyebrow' }, item[0]), h('b', null, String(item[1])))))),
     h('div', { className: 'stoa-rule' }),
     h('div', { className: 'stoa-tabsrow' },
-      h('div', { className: 'stoa-tabs', role: 'tablist' }, [['today', 'Today', day.needs], ['pipeline', 'Pipeline', totals.open], ['market', 'Market map', totals.mapped],
+      h('div', { className: 'stoa-tabs', role: 'tablist' }, [['today', 'Today', day.needs], ['pipeline', 'Pipeline', totals.open],
+        ['cash', 'Cash', state.cash ? state.cash.strip.overdue.count : 0], ['market', 'Market map', totals.mapped],
         ['activity', 'Activity', 0], ['setup', 'Setup', 0]].map(item =>
         h('button', { type: 'button', key: item[0], role: 'tab', 'aria-selected': tab === item[0], className: 'stoa-tab', 'data-on': tab === item[0] ? '1' : '0',
           onClick: () => setTab(item[0]) }, item[1], item[2] ? h('small', null, String(item[2])) : null))),
@@ -1835,6 +2083,8 @@ function Page() {
       h('div', { className: 'stoa-split', ref: split, 'data-side': side ? '1' : '0' },
         !state.deals.length ? nothing : view === 'companies' ? h(Companies, { state, current: companyName, openCompany })
           : h(Board, { state, openId, setOpenId: openRecord }), side)) : null,
+    tab === 'cash' ? h('div', { className: 'stoa-split', ref: split, 'data-side': side ? '1' : '0' },
+      h(Cash, { state, openId, setOpenId: openRecord }), side) : null,
     tab === 'market' ? (market
       ? h('div', null,
         state.markets.length > 1 ? h('div', { className: 'stoa-tabs', style: { marginTop: 0 } }, state.markets.map(item =>

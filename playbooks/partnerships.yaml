@@ -17,25 +17,35 @@ enrich: company
 
 stages:
   - id: identified
+    win_probability: 5
     label: Identified
     stale_days: 7
     advance: Get an intro
   - id: intro
+    win_probability: 15
     label: Intro made
     stale_days: 5
     advance: Book first meeting
   - id: meeting
+    win_probability: 30
     label: First meeting
     stale_days: 7
     advance: Start evaluation
   - id: evaluating
+    win_probability: 50
     label: Evaluating
     stale_days: 10
     advance: Send terms
   - id: terms
+    win_probability: 80
     label: Terms
     stale_days: 5
     advance: Mark signed
+
+# After a win: where the work stands until it is done. Invoices are kept on the record beside this.
+delivery:
+  - {id: launch, label: Launch planning}
+  - {id: live, label: Live}
 
 won:
   id: signed

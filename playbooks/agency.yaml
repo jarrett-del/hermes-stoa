@@ -16,25 +16,36 @@ enrich: company
 
 stages:
   - id: inbound
+    win_probability: 10
     label: Inbound
     stale_days: 2
     advance: Book intro call
   - id: intro
+    win_probability: 25
     label: Intro call
     stale_days: 5
     advance: Scope it
   - id: scoping
+    win_probability: 45
     label: Scoping
     stale_days: 6
     advance: Send proposal
   - id: proposal
+    win_probability: 60
     label: Proposal sent
     stale_days: 5
     advance: Send contract
   - id: contract
+    win_probability: 85
     label: Contract out
     stale_days: 4
     advance: Mark signed
+
+# After a win: where the work stands until it is done. Invoices are kept on the record beside this.
+delivery:
+  - {id: kickoff, label: Kickoff}
+  - {id: delivering, label: In delivery}
+  - {id: delivered, label: Delivered}
 
 won:
   id: signed

@@ -47,6 +47,7 @@ class Playbook:
         self.fields: list = self.data.get("fields") or []
         self.drafts: dict = self.data.get("drafts") or {}
         self.default_stale: int = int(self.data.get("stale_days") or 7)
+        self.delivery: list = self.data.get("delivery") or []      # what happens after a win, in order: [{id, label}]
         self.enrich: str = self.data.get("enrich") or "person"
 
     # -- stages ---------------------------------------------------------------------------------
@@ -104,6 +105,9 @@ class Playbook:
             if stage["label"].lower().startswith(want) or stage["id"].startswith(want.replace(" ", "-")):
                 return stage["id"]
         return None
+
+    def delivery_label(self, delivery_id: str) -> str:
+        return next((item["label"] for item in self.delivery if item["id"] == delivery_id), delivery_id)
 
     def stale_days(self, stage_id: str) -> int:
         stage = self.stage(stage_id) or {}
@@ -178,6 +182,12 @@ def validate(data: Any) -> dict:
         if stage["id"] in seen:
             raise PlaybookError("stage id %r is used twice" % stage["id"])
         stage["stale_days"] = _days(raw.get("stale_days"), "stale_days for stage %r" % stage["id"])
+        odds = raw.get("win_probability")
+        if odds not in (None, ""):
+            try:
+                stage["win_probability"] = max(0, min(100, int(float(odds))))
+            except (TypeError, ValueError):
+                raise PlaybookError("win_probability for stage %r must be a number from 0 to 100" % stage["id"])
         stage["advance"] = _text(raw.get("advance"), "advance for stage %r" % stage["id"], 70)
         stage = {key: value for key, value in stage.items() if value not in (None, "")}
         seen.add(stage["id"])
@@ -225,6 +235,18 @@ def validate(data: Any) -> dict:
         if isinstance(raw, dict) and raw.get("key"):
             fields.append({"key": str(raw["key"]), "label": str(raw.get("label") or raw["key"])})
     out["fields"] = fields[:12]
+    after = data.get("delivery") or []
+    if not isinstance(after, list) or len(after) > 6:
+        raise PlaybookError("delivery must be a list of at most 6 stages (what happens after a win)")
+    out["delivery"] = []
+    for raw in after:
+        if isinstance(raw, str):
+            raw = {"id": re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-"), "label": raw}
+        if not isinstance(raw, dict) or not NAME_RE.match(str(raw.get("id") or "")):
+            raise PlaybookError("each delivery stage needs an id (lowercase letters, digits and dashes)")
+        if any(item["id"] == str(raw["id"]) for item in out["delivery"]):
+            raise PlaybookError("delivery stage id %r is used twice" % raw["id"])
+        out["delivery"].append({"id": str(raw["id"]), "label": _text(raw.get("label"), "a delivery stage label", 60) or str(raw["id"])})
     if out.get("enrich") not in (None, "person", "company", "none"):
         raise PlaybookError("enrich must be person, company or none")
     return out

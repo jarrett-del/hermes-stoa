@@ -130,6 +130,22 @@ CREATE TABLE IF NOT EXISTS deal_contacts (
 );
 CREATE INDEX IF NOT EXISTS deal_contacts_deal ON deal_contacts (deal_id);
 CREATE UNIQUE INDEX IF NOT EXISTS deal_contacts_pair ON deal_contacts (deal_id, contact_id) WHERE archived_at = '';
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deal_id TEXT NOT NULL,
+  number TEXT NOT NULL DEFAULT '',
+  amount_cents INTEGER NOT NULL DEFAULT 0,
+  paid_cents INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'sent',
+  issued_on TEXT NOT NULL DEFAULT '',
+  due_on TEXT NOT NULL DEFAULT '',
+  paid_on TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS invoices_deal ON invoices (deal_id);
 CREATE TABLE IF NOT EXISTS ledger (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -176,18 +192,22 @@ ADDED_COLUMNS = {
     "activities": {"before": "TEXT NOT NULL DEFAULT ''", "op": "TEXT NOT NULL DEFAULT ''", "undone": "TEXT NOT NULL DEFAULT ''"},
     # money as whole cents (`value` stays beside it for older versions reading the file), and a record taken off
     # the desk without being destroyed
-    "deals": {"value_cents": "INTEGER NOT NULL DEFAULT 0", "archived_at": "TEXT NOT NULL DEFAULT ''"},
+    "deals": {"value_cents": "INTEGER NOT NULL DEFAULT 0", "archived_at": "TEXT NOT NULL DEFAULT ''",
+              # when it is expected to close (for the forecast), and where the work stands once it is won
+              "close_on": "TEXT NOT NULL DEFAULT ''", "delivery": "TEXT NOT NULL DEFAULT ''"},
     "intakes": {"origin": "TEXT NOT NULL DEFAULT 'list'"},    # list: rows someone sent. proposal: changes Hermes suggests
 }
 
-EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source")
+EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source", "close_on", "delivery")
 PERSON = ("name", "email", "title", "role", "linkedin", "phone", "note")
 CONTACT = ("name", "email", "title", "linkedin", "phone", "note")       # what a person is, on every record they are on
 # A deal's values as the ledger keeps them: its columns, with money in cents and each custom field as fields.<key>.
 TRACKED = ("name", "company", "grp", "email", "linkedin", "value_cents", "owner", "next_step", "next_due", "source",
-           "stage", "status", "lost_reason", "snoozed_until", "stage_at")
+           "stage", "status", "lost_reason", "snoozed_until", "stage_at", "close_on", "delivery")
 # Put back by an undo only if nothing has touched them since; a difference there never stops the undo.
-SOFT = ("stage_at", "snoozed_until", "lost_reason", "fields._prev_stage")
+SOFT = ("stage_at", "snoozed_until", "lost_reason", "fields._prev_stage", "delivery")
+INVOICE = ("number", "amount_cents", "paid_cents", "status", "issued_on", "due_on", "paid_on", "note")
+INVOICE_STATUS = ("draft", "sent", "paid", "void")
 UNDOABLE = "('insert', 'update', 'archive')"
 STANDING = ("op IN " + UNDOABLE + " AND seq NOT IN (SELECT reverts FROM ledger WHERE reverts IS NOT NULL)")
 QUIET_KINDS = "('snooze', 'card', 'undo')"      # bookkeeping: on the log, but not a touch and not something to take back
@@ -196,7 +216,7 @@ FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.
              "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.net",
              "fastmail.com", "hey.com", "zoho.com", "mail.com", "yandex.com", "qq.com", "163.com"}
 CSV_COLUMNS = ("id", "name", "company", "grp", "email", "linkedin", "stage", "status", "value", "owner",
-               "next_step", "next_due", "source", "lost_reason", "created_at", "updated_at", "stage_at")
+               "next_step", "next_due", "source", "lost_reason", "created_at", "updated_at", "stage_at", "close_on", "delivery")
 ID_MAX = 48  # Slack caps an overflow option's value at 75 characters; ids travel in those values
 
 
@@ -257,6 +277,12 @@ def flat(deal: Optional[dict]) -> dict:
     for key, value in (deal.get("fields") or {}).items():
         out["fields." + str(key)] = value
     return out
+
+
+def _plain(cents: int) -> str:
+    """Cents as a plain amount for a log line: 1200000 -> 12,000 and 1999 -> 19.99 (the currency is the playbook's to say)."""
+    whole, part = divmod(abs(int(cents)), 100)
+    return ("-" if cents < 0 else "") + ("{:,}".format(whole) + (".%02d" % part if part else ""))
 
 
 def slugify(text: str) -> str:
@@ -533,10 +559,10 @@ class Store:
             cents = to_cents(values.get("value"))
             conn.execute(
                 "INSERT INTO deals (id, name, company, grp, email, linkedin, stage, value, value_cents, owner, next_step, next_due, "
-                "source, fields, created_at, updated_at, stage_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "source, fields, created_at, updated_at, stage_at, close_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (deal_id, name, row["company"] or "", row["grp"] or "", row["email"] or "", row["linkedin"] or "", stage,
                  cents / 100, cents, row["owner"] or "", row["next_step"] or "", row["next_due"] or "",
-                 row["source"] or "", json.dumps(fields), stamp, stamp, stamp))
+                 row["source"] or "", json.dumps(fields), stamp, stamp, stamp, row["close_on"] or ""))
             made = self._deal(conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone())
             self._entry(conn, batch, "deal", deal_id, deal_id, "insert", after=flat(made), actor=actor,
                         summary="Added at %s" % stage, at=stamp)
@@ -590,7 +616,7 @@ class Store:
         return self.get(deal_id)
 
     def move(self, deal_id: str, stage: str, *, status: str = "open", reason: str = "", actor: str = "",
-             label: str = "", expect: Optional[str] = None) -> Optional[dict]:
+             label: str = "", expect: Optional[str] = None, delivery: Optional[str] = None) -> Optional[dict]:
         """Change a record's stage and log it.
 
         With ``expect`` the change only happens if the record is still at that stage. The check and
@@ -600,8 +626,8 @@ class Store:
         stamp, batch = now(), self._op()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT stage, status, fields, lost_reason, snoozed_until, stage_at FROM deals WHERE id = ? AND archived_at = ''",
-                               (deal_id,)).fetchone()
+            row = conn.execute("SELECT stage, status, fields, lost_reason, snoozed_until, stage_at, delivery FROM deals "
+                               "WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone()
             if row is None:
                 raise KeyError(deal_id)
             if expect is not None and row["stage"] != expect:
@@ -612,7 +638,9 @@ class Store:
             except ValueError:
                 was = {}
             before = {"stage": row["stage"], "status": row["status"], "lost_reason": row["lost_reason"],
-                      "snoozed_until": row["snoozed_until"], "stage_at": row["stage_at"], "fields._prev_stage": was.get("_prev_stage")}
+                      "snoozed_until": row["snoozed_until"], "stage_at": row["stage_at"], "fields._prev_stage": was.get("_prev_stage"),
+                      "delivery": row["delivery"]}
+            delivery = row["delivery"] if delivery is None else delivery
             if status != "open" and row["status"] == "open":    # remember where it was, for a later reopen
                 try:
                     data = json.loads(fields or "{}")
@@ -624,13 +652,14 @@ class Store:
             if reason:
                 text += " (%s)" % reason
             conn.execute("UPDATE deals SET stage = ?, status = ?, lost_reason = ?, snoozed_until = '', fields = ?, stage_at = ?, "
-                         "updated_at = ? WHERE id = ?", (stage, status, reason if status == "lost" else "", fields, stamp, stamp, deal_id))
+                         "updated_at = ?, delivery = ? WHERE id = ?",
+                         (stage, status, reason if status == "lost" else "", fields, stamp, stamp, delivery, deal_id))
             try:
                 kept = json.loads(fields or "{}").get("_prev_stage")
             except ValueError:
                 kept = None
             after = {"stage": stage, "status": status, "lost_reason": reason if status == "lost" else "", "snoozed_until": "",
-                     "stage_at": stamp, "fields._prev_stage": kept}
+                     "stage_at": stamp, "fields._prev_stage": kept, "delivery": delivery}
             changed = [key for key in after if after[key] != before[key]]
             self._entry(conn, batch, "deal", deal_id, deal_id, "update", {key: before[key] for key in changed},
                         {key: after[key] for key in changed}, actor, text, at=stamp)
@@ -672,6 +701,7 @@ class Store:
             conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
             conn.execute("DELETE FROM activities WHERE deal_id = ?", (deal_id,))
             conn.execute("DELETE FROM deal_contacts WHERE deal_id = ?", (deal_id,))
+            conn.execute("DELETE FROM invoices WHERE deal_id = ?", (deal_id,))
             conn.execute("DELETE FROM cards WHERE deal_id = ?", (deal_id,))
             conn.execute("DELETE FROM meta WHERE k IN (?, ?)", ("pending:" + deal_id, "handoff:" + deal_id))
         return True
@@ -791,7 +821,7 @@ class Store:
         if entry["entity"] == "deal":
             row = conn.execute("SELECT * FROM deals WHERE id = ? AND archived_at = ''", (entry["entity_id"],)).fetchone()
             return flat(Store._deal(row)) if row else None
-        table = {"contact": "contacts", "link": "deal_contacts"}.get(entry["entity"])
+        table = {"contact": "contacts", "link": "deal_contacts", "invoice": "invoices"}.get(entry["entity"])
         if table is None:
             return None
         row = conn.execute("SELECT * FROM %s WHERE id = ?" % table, (entry["entity_id"],)).fetchone()
@@ -822,7 +852,7 @@ class Store:
                 if entry["entity"] == "deal" and entry["op"] == "insert":
                     if any(row["batch"] != target for row in standing):     # the record has been worked on since it was added
                         conflicts.append({"field": "record", "then": "just added", "now": "changed since"})
-                elif entry["op"] == "update" and entry["entity"] in ("deal", "contact", "link"):
+                elif entry["op"] == "update" and entry["entity"] in ("deal", "contact", "link", "invoice"):
                     live = self._live(conn, entry)
                     if live is None or (entry["entity"] != "deal" and live.get("archived_at")):
                         conflicts.append({"field": entry["entity"], "then": "there", "now": "gone"})
@@ -876,8 +906,12 @@ class Store:
                                         (entry["entity_id"], deal_id)).fetchone():        # nobody else has them: off they go too
                         conn.execute("UPDATE contacts SET archived_at = ?, updated_at = ? WHERE id = ?", (stamp, stamp, entry["entity_id"]))
                         before, after = {"archived_at": ""}, {"archived_at": stamp}
-                elif kind in ("contact", "link") and what == "update":
-                    table, keys = ("contacts", CONTACT) if kind == "contact" else ("deal_contacts", ("role",))
+                elif kind == "invoice" and what in ("insert", "archive"):
+                    gone = stamp if what == "insert" else ""                 # an added one goes; a removed one comes back
+                    conn.execute("UPDATE invoices SET archived_at = ?, updated_at = ? WHERE id = ?", (gone, stamp, entry["entity_id"]))
+                    before, after = {"archived_at": "" if what == "insert" else entry["after"].get("archived_at")}, {"archived_at": gone}
+                elif kind in ("contact", "link", "invoice") and what == "update":
+                    table, keys = {"contact": ("contacts", CONTACT), "link": ("deal_contacts", ("role",)), "invoice": ("invoices", INVOICE)}[kind]
                     put = {key: was for key, was in entry["before"].items() if key in keys}
                     if put:
                         conn.execute("UPDATE %s SET %s WHERE id = ?" % (table, ", ".join(key + " = ?" for key in put)),
@@ -1010,6 +1044,154 @@ class Store:
                         "Removed %s" % person["name"], at=stamp)
             conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
                          (person["deal_id"], stamp, "person", actor, "Removed %s" % person["name"], batch))
+        return True
+
+    # -- invoices: what has been billed on a record, and what has come in ----------------------------
+    # Stoa does not send invoices or move money. It keeps the account of them, in whole cents, so the
+    # desk can say what is owed, what is late, and what was won but never billed.
+    @staticmethod
+    def _invoice(row) -> dict:
+        invoice = dict(row)
+        amount, paid = int(invoice["amount_cents"] or 0), int(invoice["paid_cents"] or 0)
+        invoice["amount"], invoice["paid"], invoice["owed"] = amount / 100, paid / 100, 0.0
+        invoice["owed_cents"], invoice["days_overdue"] = 0, 0
+        if invoice["status"] in ("void", "draft"):
+            invoice["state"] = invoice["status"]
+        elif invoice["status"] == "paid" or (amount and paid >= amount):
+            invoice["state"] = "paid"
+        else:
+            invoice["owed_cents"] = max(0, amount - paid)
+            invoice["owed"] = invoice["owed_cents"] / 100
+            late = invoice["due_on"] and invoice["due_on"] < today()
+            invoice["state"] = "overdue" if late else "partial" if paid else "sent"
+            if late:
+                invoice["days_overdue"] = (dt.date.today() - dt.date.fromisoformat(invoice["due_on"])).days
+        return invoice
+
+    def invoices(self, deal_id: str = "") -> list:
+        """The invoices on one record, or every invoice on the desk, oldest first. Removed ones are left out."""
+        sql = ("SELECT i.* FROM invoices i JOIN deals d ON d.id = i.deal_id WHERE i.archived_at = '' AND d.archived_at = ''"
+               + (" AND i.deal_id = ?" if deal_id else "") + " ORDER BY i.id")
+        with self._conn() as conn:
+            return [self._invoice(row) for row in conn.execute(sql, [deal_id] if deal_id else []).fetchall()]
+
+    def invoice(self, invoice_id: Any) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM invoices WHERE id = ? AND archived_at = ''", (invoice_id,)).fetchone()
+        return self._invoice(row) if row else None
+
+    @staticmethod
+    def _named(invoice: dict) -> str:
+        return "Invoice %s" % invoice["number"] if invoice.get("number") else "Invoice"
+
+    def invoice_add(self, deal_id: str, amount: Any, *, actor: str = "", number: str = "", due_on: str = "", issued_on: str = "",
+                    status: str = "sent", note: str = "") -> dict:
+        cents = to_cents(amount)
+        if cents <= 0:
+            raise ValueError("an invoice needs an amount above zero")
+        for name, value in (("due", due_on), ("issued", issued_on)):
+            if value and not ISO_DATE.match(value):
+                raise ValueError("the %s date must be YYYY-MM-DD" % name)
+        status = status if status in ("draft", "sent") else "sent"
+        issued_on = issued_on or (today() if status == "sent" else "")
+        number, note = " ".join(str(number or "").split())[:40], str(note or "").strip()[:500]
+        stamp, batch = now(), self._op()
+        with self._conn() as conn:
+            if not conn.execute("SELECT 1 FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone():
+                raise KeyError(deal_id)
+            made = conn.execute("INSERT INTO invoices (deal_id, number, amount_cents, status, issued_on, due_on, note, created_at, updated_at) "
+                                "VALUES (?,?,?,?,?,?,?,?,?)", (deal_id, number, cents, status, issued_on, due_on, note, stamp, stamp)).lastrowid
+            said = "%s for %s%s%s" % ("Invoice %s" % number if number else "Invoice", _plain(cents), " (draft)" if status == "draft" else "",
+                                      ", due %s" % due_on if due_on else "")
+            self._entry(conn, batch, "invoice", made, deal_id, "insert",
+                        after={"number": number, "amount_cents": cents, "status": status, "issued_on": issued_on, "due_on": due_on},
+                        actor=actor, summary=said, at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (deal_id, stamp, "invoice", actor, said, batch))
+            conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
+        return self.invoice(made)
+
+    def invoice_update(self, invoice_id: Any, *, actor: str = "", said: str = "", **values: Any) -> Optional[dict]:
+        """Change an invoice. ``amount`` and ``paid`` are amounts; the rest are its own columns."""
+        invoice = self.invoice(invoice_id)
+        if invoice is None:
+            return None
+        new: dict = {}
+        if values.get("amount") is not None:
+            new["amount_cents"] = to_cents(values["amount"])
+            if new["amount_cents"] <= 0:
+                raise ValueError("an invoice needs an amount above zero")
+        if values.get("paid") is not None:
+            new["paid_cents"] = max(0, to_cents(values["paid"]))
+        for key in ("number", "status", "issued_on", "due_on", "paid_on", "note"):
+            if values.get(key) is not None:
+                new[key] = str(values[key]).strip()[:500 if key == "note" else 40]
+        if "status" in new and new["status"] not in INVOICE_STATUS:
+            raise ValueError("status is one of: %s" % ", ".join(INVOICE_STATUS))
+        for key in ("issued_on", "due_on", "paid_on"):
+            if new.get(key) and not ISO_DATE.match(new[key]):
+                raise ValueError("dates must be YYYY-MM-DD")
+        new = {key: value for key, value in new.items() if value != invoice[key]}
+        if not new:
+            return invoice
+        stamp, batch = now(), self._op()
+        said = said or "%s updated: %s" % (self._named(invoice), ", ".join(key.replace("_cents", "").replace("_on", " date") for key in new))
+        with self._conn() as conn:
+            conn.execute("UPDATE invoices SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in new),
+                         list(new.values()) + [stamp, invoice_id])
+            self._entry(conn, batch, "invoice", invoice_id, invoice["deal_id"], "update", {key: invoice[key] for key in new}, new, actor, said, at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (invoice["deal_id"], stamp, "invoice", actor, said, batch))
+            conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, invoice["deal_id"]))
+        return self.invoice(invoice_id)
+
+    def invoice_pay(self, invoice_id: Any, amount: Any = None, *, on: str = "", actor: str = "") -> Optional[dict]:
+        """Record money that came in: the amount given, or whatever was still owed. Paid in full closes it."""
+        invoice = self.invoice(invoice_id)
+        if invoice is None:
+            return None
+        if invoice["status"] == "void":
+            raise ValueError("that invoice was voided")
+        came = to_cents(amount) if amount not in (None, "") else max(0, invoice["amount_cents"] - invoice["paid_cents"])
+        if came <= 0:
+            raise ValueError("nothing is owed on that invoice" if amount in (None, "") else "a payment needs an amount above zero")
+        paid = invoice["paid_cents"] + came
+        full = paid >= invoice["amount_cents"]
+        said = "%s: %s received%s" % (self._named(invoice), _plain(came), ", paid in full" if full else ", %s still owed" % _plain(invoice["amount_cents"] - paid))
+        return self.invoice_update(invoice_id, actor=actor, said=said, paid=paid / 100, status="paid" if full else "sent",
+                                   paid_on=(on or today()) if full else None)
+
+    def collected(self, month: str) -> int:
+        """Cents received during a month (``YYYY-MM``): every recorded payment that still stands, read off the ledger."""
+        with self._conn() as conn:
+            live = {str(row["id"]) for row in conn.execute(
+                "SELECT i.id FROM invoices i JOIN deals d ON d.id = i.deal_id WHERE i.archived_at = '' AND d.archived_at = ''").fetchall()}
+            rows = conn.execute("SELECT at, entity_id, before, after FROM ledger WHERE entity = 'invoice' AND op = 'update' AND " + STANDING).fetchall()
+        total = 0
+        for row in rows:
+            when = parse_ts(row["at"])
+            if not when or when.astimezone().date().isoformat()[:7] != month or row["entity_id"] not in live:
+                continue
+            try:
+                before, after = json.loads(row["before"] or "{}"), json.loads(row["after"] or "{}")
+            except ValueError:
+                continue
+            if "paid_cents" in after:
+                total += int(after["paid_cents"] or 0) - int(before.get("paid_cents") or 0)
+        return total
+
+    def invoice_remove(self, invoice_id: Any, *, actor: str = "") -> bool:
+        """Take an invoice off the record (entered by mistake). It is archived, and can be put back by an undo."""
+        invoice = self.invoice(invoice_id)
+        if invoice is None:
+            return False
+        stamp, batch = now(), self._op()
+        with self._conn() as conn:
+            conn.execute("UPDATE invoices SET archived_at = ?, updated_at = ? WHERE id = ?", (stamp, stamp, invoice_id))
+            self._entry(conn, batch, "invoice", invoice_id, invoice["deal_id"], "archive", {"archived_at": ""}, {"archived_at": stamp}, actor,
+                        "%s removed" % self._named(invoice), at=stamp)
+            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                         (invoice["deal_id"], stamp, "invoice", actor, "%s removed" % self._named(invoice), batch))
         return True
 
     # -- companies: a few facts kept per company, whatever records it has ---------------------------
@@ -1206,6 +1388,7 @@ class Store:
                     "activities": one("SELECT count(*) FROM activities"),
                     "from_sweeps": one("SELECT count(*) FROM activities WHERE ref != ''"),
                     "maps": one("SELECT count(*) FROM markets"),
+                    "invoices": one("SELECT count(*) FROM invoices WHERE archived_at = ''"),
                     "people": one("SELECT count(*) FROM deal_contacts l JOIN contacts c ON c.id = l.contact_id "
                                   "WHERE l.archived_at = '' AND c.archived_at = ''"),
                     "declined": one("SELECT count(*) FROM declined"),

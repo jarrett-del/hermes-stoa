@@ -120,6 +120,20 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 
 ![A company: its records, its people, and the notes kept on it](docs/desktop-company.jpg)
 
+- **Cash.** The other half of lead to cash, on its own tab. Five figures across the top: won this
+  month, collected this month, invoiced and not yet paid, overdue, and won but never invoiced.
+  Beneath them, what the open pipeline is likely to bring in, weighted by stage and laid out by
+  expected close date, with anything past its date called out; where each won piece of work
+  stands; and every open invoice with **Paid** and **Part** beside it.
+
+![Cash: what came in, what is owed, and what is likely to come in](docs/desktop-cash.jpg)
+
+- **Invoices on the record.** A record's **Money** section holds its invoices: the amount, the
+  number, when it is due, what has come in. Stoa does not send invoices or take payments; it
+  keeps the account, so it can tell you what is late and what you forgot to bill.
+
+![A won record with its invoice, part paid and overdue](docs/desktop-cash-record.jpg)
+
 - **Setup.** One tab that says where things stand: a short get-started list that ticks itself off,
   what is connected (a key shows as set or not set, never its value), the rules in force (which
   chats the desk answers in, who may press a Slack button, which folders it reads), the
@@ -219,16 +233,17 @@ change are one database transaction, so it holds across Slack, the web tab and t
 
 | | |
 |---|---|
-| **10 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_contact`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **11 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_contact`, `gtm_invoice`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **Cash** | Invoices on a record in whole cents, what is owed and overdue, won work that was never billed, a delivery lane after the win, and a forecast weighted by stage |
 | **Approvals** | What Hermes suggests waits for your yes or no, one decision each, with its evidence; a no is remembered; a scheduled job changes only what you allow |
 | **Undo and a ledger** | Every change is kept with what it replaced, never altered; an action can be taken back unless that would overwrite a later change |
 | **People and companies** | Several people on a record, each kept once across records, mail matched to the right record by whoever sent it, and one view per company |
 | **Intake** | Send a list in any form; review what is new and what would change; apply what you tick |
 | **Market maps** | Segments, fit scores, evidence and sources, with an **Add to pipeline** button per company |
 | **Slack cards** | Advance, Draft follow-up, Enrich, close with a reason, snooze, reopen |
-| **Desktop app and Webapp** | A live pane beside the chat, a Stoa page (Today, pipeline, companies, market map, activity, setup), and cards and maps drawn inside the conversation |
+| **Desktop app and Webapp** | A live pane beside the chat, a Stoa page (Today, pipeline, companies, cash, market map, activity, setup), and cards and maps drawn inside the conversation |
 | **Web dashboard tab** | Live funnel, pipeline board, market map, activity feed, record side panels with actions |
-| **`/gtm`** | The board, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
+| **`/gtm`** | The board, today, cash, the brief, a map or one record, on every surface Hermes runs on (CLI, Telegram, Desktop…). In Slack, `!gtm`, where a record or a map arrives with its buttons |
 | **`hermes stoa`** | Status, board, brief, map, the ledger (`history`), autonomy, sample data, CSV import and export from a terminal |
 | **7 automations** | Morning brief, email-call-and-Slack activity sweep, meeting-notes sweep, weekly market watch, Friday review, mirror to a Google Sheet, bring Sheet edits back, under `/blueprint` |
 | **3 skills** | `stoa:desk` (how the agent runs the desk), `stoa:market-map`, `stoa:playbook-authoring` |
@@ -359,6 +374,31 @@ In a chat you are there, so Hermes does what you ask. The rest is for when you a
   action whose values are untouched still goes back, whatever was logged after it. Undoing an add
   takes the record off the desk, and it can be put back.
 
+### Cash: invoices, delivery and the forecast
+
+*"I invoiced Kestrel 12k today, net 30." "Kestrel paid half of 1042." "How is cash looking?"
+"What is likely to close this month?"*
+
+- **Invoices** live on a record (`gtm_invoice`): add one (the amount defaults to whatever of the
+  record's value is not billed yet, the due date to thirty days out), record a payment in part or
+  in full, void it, correct it. Amounts are whole cents; an invoice is *overdue* when it is past
+  its date and not paid in full, and *part paid* in between. Every change is on the ledger and
+  can be taken back. Stoa sends nothing and moves no money.
+- **Today** lists invoices that have gone overdue (with **Paid**, and **Draft a reminder** for
+  Hermes to write), and, once you keep invoices on the desk at all, recent wins nobody has billed.
+- **After the win**, a record sits in a delivery lane that your playbook names (`delivery:` in the
+  YAML: Kickoff → In delivery → Delivered, say). Drag it along, or tell Hermes.
+- **The forecast** weights each open record by how likely its stage is to close and puts it in
+  the month of its expected close date (`close_on`, the **Expected close** field): past its date,
+  this month, next month, later, no date. The odds come from this desk's own history once twelve
+  records have closed; before that, from `win_probability` on each stage of the playbook; failing
+  that, an even climb.
+- **Hermes proposes, here too.** A sweep that sees a remittance email proposes the payment, with
+  the email as evidence, for you to approve. A scheduled job never records money by itself
+  unless you have set autonomy to *Run it*.
+
+`/gtm cash` (or `gtm_pipeline(view="cash")`) gives the same picture in any chat.
+
 ### People and companies
 
 *"Add their CFO, Lena Ortiz, to the Kestrel deal." "Who do we know at Kestrel?" "What do we have
@@ -393,7 +433,9 @@ drafts:
 
 `stale_days` decides when a record counts as gone quiet at that stage. `advance` is the label on
 the button. `drafts.on_enter` is what Hermes writes when a record arrives at a stage. An optional
-`door` is the short name the first-launch chooser shows for it.
+`door` is the short name the first-launch chooser shows for it. Two more optional keys feed the
+Cash tab: `win_probability` (0 to 100) on a stage, and a top-level `delivery:` list of what
+happens after a win.
 
 To make your own, tell Hermes how you sell: *"We install commercial solar. Set the desk up for
 us."* It asks a few questions, shows you the stages, and saves the playbook. Or copy one from
@@ -569,7 +611,9 @@ What the plugin does that you would want to know before installing it:
 - **Messages to the agent.** With `allow_gateway_injection` granted, a button click queues one
   instruction for the agent in the card's thread. The agent drafts; it is told not to send.
 - **Stored data.** Names, emails, notes and enrichment results for the people in your pipeline,
-  and for the other people you add to a record, sit unencrypted in `plugin-data/stoa/desk.db`.
+  the other people you add to a record, and the invoices and payments you record (amounts, numbers
+  and dates; no bank or card details, which Stoa never asks for) sit unencrypted in
+  `plugin-data/stoa/desk.db`.
   Every change is kept on a ledger in that file with the values before and after it, and the
   ledger is never trimmed; a record or a person taken off the desk is archived there, not erased;
   what you declined is kept for 90 days; evidence quoted in a proposal is kept with it. To erase
@@ -579,7 +623,7 @@ What the plugin does that you would want to know before installing it:
   `channels`, and then changes only what the autonomy setting allows; the rest is held for you.
 - **No shell commands, no background processes, no self-updates, no Python dependencies.**
 
-## Limits in 0.12
+## Limits in 0.13
 
 - Buttons are Slack-only. Other platforms get the text card, the text map and `/gtm`.
 - In the Desktop app and Webapp the half ships switched off, like every plugin's: turn it on under
@@ -609,6 +653,10 @@ What the plugin does that you would want to know before installing it:
   deals is linked only where they were added as an extra person. The company view shows both.
 - The ledger grows for as long as the desk is used. It is small, and nothing prunes it.
 - A proposal is as good as the evidence the agent quotes. Read it before you approve.
+- Stoa keeps the account of invoices; it does not create, send or collect them, and it has no link
+  to an accounting system. One currency per desk (the playbook's). An invoice belongs to one
+  record. "Collected this month" counts payments recorded since 0.13.
+- The forecast is arithmetic, not a prediction: stage odds times amounts, by the dates you set.
 - On a tour, what you do is thrown away when you leave, Slack cards posted from it stop working,
   lookups are off, and scheduled jobs do nothing until it ends.
 - The dock on the page runs a turn of your agent's model, the same as typing in a chat. It takes
@@ -620,7 +668,7 @@ What the plugin does that you would want to know before installing it:
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 191 tests, no network
+python3 -m unittest discover -s tests     # 202 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

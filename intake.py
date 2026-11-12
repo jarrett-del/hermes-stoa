@@ -24,9 +24,11 @@ ALIASES = {"group": "grp", "account": "grp", "deal": "name", "contact": "name", 
            "candidate": "name", "amount": "value", "deal_size": "value", "linkedin_url": "linkedin", "next_action": "next_step",
            "due": "next_due", "due_date": "next_due", "next_date": "next_due", "organization": "company",
            "organisation": "company", "employer": "company", "notes": "note", "comment": "note", "comments": "note",
-           "e-mail": "email", "email_address": "email", "record_id": "record", "id": "record"}
+           "e-mail": "email", "email_address": "email", "record_id": "record", "id": "record",
+           "close": "close_on", "close_date": "close_on", "expected_close": "close_on", "closing": "close_on"}
 # "record" is the id of the record a row is about, to settle a match; "deal" in a spreadsheet header means the name.
-CORE = ("name", "company", "grp", "email", "linkedin", "stage", "value", "owner", "next_step", "next_due", "source", "note", "record")
+CORE = ("name", "company", "grp", "email", "linkedin", "stage", "value", "owner", "next_step", "next_due", "source", "note", "record",
+        "close_on")
 READ_ONLY = ("updated", "status", "last_touch", "added", "created")     # columns the desk writes out and never reads back
 
 
@@ -240,8 +242,16 @@ class Intake:
         row["case"] = _text(raw.get("why") or raw.get("because"), 300)
         row["person"] = _person(raw.get("person"))
         row["lost_reason"] = _text(raw.get("lost_reason"), 60)
+        bill, came = raw.get("invoice"), raw.get("payment")
+        # money a proposal may carry: an invoice to put on the record, or a payment that came in on one
+        row["invoice"] = {"amount": st.to_cents(bill.get("amount")) / 100, "number": _text(bill.get("number"), 40),
+                          "due": _text(bill.get("due") or bill.get("due_on"), 40), "note": _text(bill.get("note"), 300)} \
+            if isinstance(bill, dict) and st.to_cents(bill.get("amount")) > 0 else {}
+        row["payment"] = {"invoice": _text(came.get("invoice") or came.get("number"), 40),
+                          "amount": st.to_cents(came.get("amount")) / 100 if came.get("amount") not in (None, "") else None,
+                          "on": _text(came.get("on") or came.get("date"), 40)} if isinstance(came, dict) else {}
         for column, value in raw.items():
-            if column is None or column in ("fields", "evidence", "why", "because", "person", "lost_reason"):
+            if column is None or column in ("fields", "evidence", "why", "because", "person", "lost_reason", "invoice", "payment"):
                 continue
             label = str(column).strip().lower()
             key = label.replace(" ", "_")
@@ -270,6 +280,11 @@ class Intake:
             warnings.append("due date '%s' was not understood and was left out" % _text(row.get("next_due"), 30))
             due = ""
         row["next_due"] = due
+        close = st.parse_due(row.get("close_on", ""))
+        if close is None:
+            warnings.append("close date '%s' was not understood and was left out" % _text(row.get("close_on"), 30))
+            close = ""
+        row["close_on"] = close
         stage = playbook.resolve_stage(_text(row.get("stage")))
         if _text(row.get("stage")) and not stage:
             warnings.append("stage '%s' is not in this playbook" % _text(row.get("stage"), 30))
@@ -320,7 +335,7 @@ class Intake:
         terms = playbook.terms
         named = (("name", terms["deal"].capitalize()),) if row.get("record") else ()      # found by id: the name may be the edit
         labels = named + (("company", terms["company"]), ("grp", terms["group"].capitalize()), ("email", "Email"), ("linkedin", "LinkedIn"),
-                  ("owner", terms["owner"].capitalize()), ("next_step", "Next step"), ("next_due", "Due"))
+                  ("owner", terms["owner"].capitalize()), ("next_step", "Next step"), ("next_due", "Due"), ("close_on", "Expected close"))
         changes = []
         for key, label in labels:
             new, old = _text(row.get(key)), str(record.get(key) or "")
@@ -344,6 +359,15 @@ class Intake:
                     or p["name"].lower() == person["name"].lower()]
             if not same:
                 changes.append({"key": "person", "field": "Person", "from": "", "to": _person_line(person)})
+        bill, came = row.get("invoice") or {}, row.get("payment") or {}
+        if bill:
+            changes.append({"key": "invoice", "field": "Invoice", "from": "", "to": " ".join(bit for bit in (
+                cards.money(bill["amount"], playbook.currency), "#" + bill["number"] if bill["number"] else "",
+                "due " + bill["due"] if bill["due"] else "") if bit)})
+        if came:
+            changes.append({"key": "payment", "field": "Payment", "from": "", "to": "%s%s" % (
+                cards.money(came["amount"], playbook.currency) if came.get("amount") else "in full",
+                " on invoice #" + came["invoice"] if came.get("invoice") else "")})
         if _text(row.get("note")):
             changes.append({"key": "note", "field": "Note", "from": "", "to": _text(row.get("note"), 160)})
         return changes
@@ -639,6 +663,7 @@ class Intake:
                               company=values.get("company") or "", grp=group, email=values.get("email") or "",
                               linkedin=values.get("linkedin") or "", value=values.get("value"), owner=values.get("owner") or "",
                               next_step=values.get("next_step") or "", next_due=values.get("next_due") or "",
+                              close_on=values.get("close_on") or "",
                               source=values.get("source") or label, fields=values.get("fields") or None)
         if closing:
             deal = self.desk._move(deal, stage, playbook, actor, values.get("lost_reason") or "") or deal
@@ -657,7 +682,7 @@ class Intake:
         if not changes:
             return None
         plain = {c["key"]: (values["value"] if c["key"] == "value" else c["to"]) for c in changes
-                 if c["key"] not in ("stage", "note", "person") and not c["key"].startswith("fields.")}
+                 if c["key"] not in ("stage", "note", "person", "invoice", "payment") and not c["key"].startswith("fields.")}
         fields = {c["key"][len("fields."):]: c["to"] for c in changes if c["key"].startswith("fields.")}
         if plain or fields:
             record = self.store.update(record["id"], actor=actor, fields=fields or None, **plain)
@@ -665,6 +690,17 @@ class Intake:
             record = self.desk._move(record, values["stage"], playbook, actor, values.get("lost_reason") or "") or self.store.get(record["id"])
         if any(c["key"] == "person" for c in changes):
             self.store.person_add(record["id"], actor=actor, **values["person"])
+        if any(c["key"] == "invoice" for c in changes):
+            due, problem = self.desk._due_on(values["invoice"].get("due"))
+            if problem:
+                raise ValueError(problem["error"])
+            self.store.invoice_add(record["id"], values["invoice"]["amount"], actor=actor, number=values["invoice"].get("number") or "",
+                                   due_on=due, note=values["invoice"].get("note") or "")
+        if any(c["key"] == "payment" for c in changes):
+            found, problem = self.desk._which_invoice(record, values["payment"].get("invoice"))
+            if problem:
+                raise ValueError(problem["error"])
+            self.store.invoice_pay(found["id"], values["payment"].get("amount"), on=st.parse_due(values["payment"].get("on") or "") or "", actor=actor)
         if _text(values.get("note")):
             self.store.log(record["id"], "note", "%s (%s)" % (_text(values["note"], 4000), label), actor=actor)
         return self.store.get(record["id"])

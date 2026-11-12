@@ -9,14 +9,17 @@ GTM_PIPELINE = {
         "Use it before answering any question about the "
         "pipeline, who is at which stage, what is due, or what has gone quiet. view='board' gives every open record by "
         "stage; 'today' gives what needs the person now, most pressing first (overdue, due today, lists waiting for "
-        "approval, gone quiet, new with nothing planned, coming up; snoozed records are left out); 'brief' is the "
+        "approval, invoices overdue, gone quiet, new with nothing planned, coming up; snoozed records are left out); "
+        "'cash' is the money side (won this month, invoiced and owed, collected, overdue, won but not invoiced, a "
+        "forecast of the open pipeline weighted by stage and bucketed by expected close date, and where won work "
+        "stands in delivery); 'brief' is the "
         "morning summary (due, quiet, this week's movement); 'stale' and 'due' filter to those; 'list' is a flat "
         "filtered list; 'activity' is the recent activity log."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "view": {"type": "string", "enum": ["board", "today", "brief", "list", "stale", "due", "activity"], "description": "Default board."},
+            "view": {"type": "string", "enum": ["board", "today", "cash", "brief", "list", "stale", "due", "activity"], "description": "Default board."},
             "group": {"type": "string", "description": "Filter by group (account, search, client: whatever the playbook calls it)."},
             "stage": {"type": "string", "description": "Filter by stage id or label."},
             "owner": {"type": "string", "description": "Filter by owner."},
@@ -60,6 +63,8 @@ GTM_DEAL = {
             "source": {"type": "string", "description": "Where the record came from (referral, inbound, event…)."},
             "next_step": {"type": "string", "description": "The single next action. Pass an empty string to clear it."},
             "next_due": {"type": "string", "description": "Due date for the next step: YYYY-MM-DD (tomorrow, friday and +3d also work; '' clears it)."},
+            "close_on": {"type": "string", "description": "add/update: when the record is expected to close, as a date (the forecast is bucketed by it; '' clears it)."},
+            "delivery": {"type": "string", "description": "update, once won: where the work stands, as a delivery stage id or label from the playbook, or 'next'."},
             "fields": {"type": "object", "description": "Extra facts keyed by the playbook's field keys; an empty value removes a key."},
             "note": {"type": "string", "description": "add: an opening note for the activity log."},
             "kind": {"type": "string", "enum": ["note", "call", "email", "meeting", "task"], "description": "log: what happened."},
@@ -315,6 +320,14 @@ GTM_INTAKE = {
                                        "properties": {"name": {"type": "string"}, "email": {"type": "string"},
                                                       "title": {"type": "string"}, "role": {"type": "string"}}},
                             "lost_reason": {"type": "string", "description": "When stage is the losing one: why."},
+                            "close_on": {"type": "string", "description": "When the record is expected to close: YYYY-MM-DD."},
+                            "invoice": {"type": "object", "description": "A proposal: an invoice to put on the record.",
+                                        "properties": {"amount": {"type": "number"}, "number": {"type": "string"},
+                                                       "due": {"type": "string", "description": "A date, or 'net 30'."}}},
+                            "payment": {"type": "object", "description": "A proposal: money that came in on one of the record's invoices.",
+                                        "properties": {"invoice": {"type": "string", "description": "Its number or id; may be left out when only one is open."},
+                                                       "amount": {"type": "number", "description": "Left out: whatever is still owed."},
+                                                       "on": {"type": "string", "description": "The date it arrived."}}},
                         },
                     }],
                 },
@@ -361,6 +374,36 @@ GTM_CONTACT = {
             "new_name": {"type": "string", "description": "update: a corrected name."},
             "company": {"type": "string", "description": "company: which company."},
             "domain": {"type": "string", "description": "company: its email domain (kestrel.com), so mail from anyone there is recognised."},
+        },
+        "required": ["action"],
+    },
+}
+
+GTM_INVOICE = {
+    "name": "gtm_invoice",
+    "description": (
+        "Keep the invoices on a Stoa desk record: billed, received and still owed. "
+        "Stoa does not send invoices or take payments; it keeps the account of them so the desk can say what is "
+        "owed, what is late and what was won but never billed. action='add' records an invoice on a record (amount "
+        "defaults to whatever of the record's value is not billed yet; due defaults to 30 days from today; "
+        "status='draft' for one not sent yet), 'send' marks a draft sent, 'pay' records money received (the amount, "
+        "or everything still owed), 'void' cancels one, 'update' corrects amount, number or due date, 'remove' takes "
+        "off one entered by mistake, 'list' shows a record's invoices, or with no deal every open invoice and the "
+        "cash totals. Use it when the person says they billed someone or were paid. For the whole picture and the "
+        "forecast, gtm_pipeline(view='cash')."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list", "add", "send", "pay", "void", "update", "remove"]},
+            "deal": _DEAL_REF,
+            "invoice": {"type": "string", "description": "send/pay/void/update/remove: which invoice, by its number or id. May be left out when the record has only one open."},
+            "amount": {"type": "number", "description": "add/update: the invoice amount. pay: how much came in (left out: all that is owed)."},
+            "number": {"type": "string", "description": "add/update: the invoice number as the person writes it (\"1042\")."},
+            "due": {"type": "string", "description": "add/send/update: when it is due: a date, '+14d', or 'net 30'."},
+            "on": {"type": "string", "description": "pay: the date the money arrived (default today)."},
+            "status": {"type": "string", "enum": ["sent", "draft"], "description": "add: draft if it has not gone out yet (default sent)."},
+            "note": {"type": "string", "description": "add/update: a line kept with the invoice."},
         },
         "required": ["action"],
     },

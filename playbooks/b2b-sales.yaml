@@ -16,25 +16,35 @@ enrich: person
 
 stages:
   - id: lead
+    win_probability: 10
     label: Lead
     stale_days: 5
     advance: Qualify
   - id: qualified
+    win_probability: 25
     label: Qualified
     stale_days: 7
     advance: Book discovery
   - id: discovery
+    win_probability: 40
     label: Discovery
     stale_days: 7
     advance: Send proposal
   - id: proposal
+    win_probability: 60
     label: Proposal
     stale_days: 5
     advance: Start negotiation
   - id: negotiation
+    win_probability: 80
     label: Negotiation
     stale_days: 4
     advance: Mark won
+
+# After a win: where the work stands until it is done. Invoices are kept on the record beside this.
+delivery:
+  - {id: onboarding, label: Onboarding}
+  - {id: live, label: Live}
 
 won:
   id: won

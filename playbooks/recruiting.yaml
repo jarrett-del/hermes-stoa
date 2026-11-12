@@ -17,29 +17,42 @@ enrich: person
 
 stages:
   - id: sourced
+    win_probability: 5
     label: Sourced
     stale_days: 4
     advance: Reach out
   - id: contacted
+    win_probability: 10
     label: Contacted
     stale_days: 5
     advance: Phone screen done
   - id: screened
+    win_probability: 20
     label: Screened
     stale_days: 3
     advance: Submit to client
   - id: submitted
+    win_probability: 35
     label: Submitted
     stale_days: 4
     advance: Client interview
   - id: interview
+    win_probability: 55
     label: Client interview
     stale_days: 5
     advance: Offer out
   - id: offer
+    win_probability: 85
     label: Offer
     stale_days: 3
     advance: Mark placed
+
+# After a win: where the work stands until it is done. Invoices are kept on the record beside this.
+delivery:
+  - {id: start-set, label: Start date set}
+  - {id: started, label: Started}
+  - {id: guarantee, label: In guarantee period}
+  - {id: complete, label: Guarantee complete}
 
 won:
   id: placed

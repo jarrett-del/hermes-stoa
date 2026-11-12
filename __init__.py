@@ -137,6 +137,7 @@ def register(ctx) -> None:
         (schemas.GTM_EXPORT, desk.export, "📤"),
         (schemas.GTM_INTAKE, lambda args: desk.intake.run(args, _session()), "📥"),
         (schemas.GTM_CONTACT, desk.contact, "👥"),
+        (schemas.GTM_INVOICE, desk.invoice, "🧾"),
     ):
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, emoji=emoji,
                           handler=_tool(fn, desk, quiet=schema is schemas.GTM_PIPELINE, name=schema["name"]))    # a read changes nothing

@@ -163,6 +163,7 @@ def state() -> dict:
         "deals": [_card(d, deal, playbook, touches, pending) for deal in deals],
         "markets": markets,
         "companies": d.companies(),
+        "cash": d.cash(),
         "intakes": d.intake.waiting(),
         "activity": activity,
         "flow": d.flow(deals, playbook),
@@ -194,6 +195,10 @@ def deal(deal_id: str) -> dict:
                        for a in d.store.activities(deal_id, limit=30)]
     out["pending_task"] = d.store.meta_get("pending:" + deal_id)
     out["people"] = d.people(record)[1:]             # the others on the record; its own person is the record itself
+    bills = d.store.invoices(deal_id)
+    out["invoices"] = [d._bill(bill) for bill in bills]
+    out["money"] = d.money(record, bills)
+    out["delivery_stages"] = playbook.delivery if record["status"] == "won" else []
     out["undo"] = d.store.undoable(deal_id)          # the last action, if it can be taken back
     return out
 
@@ -260,6 +265,23 @@ def person(deal_id: str, body: dict = Body(...)) -> dict:
     return {"ok": True, "exists": bool(result.get("exists")), "people": result["people"][1:], "last": _last(d, deal_id)}
 
 
+@router.post("/deal/{deal_id}/invoice")
+def invoice(deal_id: str, body: dict = Body(...)) -> dict:
+    """add | send | pay | void | update | remove an invoice on a record: the same path as the agent's tool."""
+    d = desk()
+    if d.store.get(deal_id) is None:
+        raise HTTPException(404, "no such record")
+    verb = str((body or {}).get("verb") or "")
+    if verb not in ("add", "send", "pay", "void", "update", "remove"):
+        raise HTTPException(400, "unknown action")
+    allowed = ("invoice", "amount", "number", "due", "on", "status", "note")
+    result = d.invoice(dict({k: body[k] for k in allowed if k in body}, action=verb, deal=deal_id), actor="dashboard")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not save")
+    d.announce()
+    return {"ok": True, "invoices": result["invoices"], "money": result["money"], "last": _last(d, deal_id)}
+
+
 @router.post("/company")
 def company(body: dict = Body(...)) -> dict:
     """One company: its records, everyone known there, and the notes kept on it. With ``note`` or ``domain``, saves them first."""
@@ -314,7 +336,7 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
                 "last": _last(d, deal_id) if verb not in ("draft", "enrich") else None}
     if verb in ("log", "update", "move", "done", "snooze"):
         allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage",
-                   "days", "until")
+                   "days", "until", "close_on", "delivery")
         args = {k: body[k] for k in allowed if k in body}
         result = d.deal(dict(args, action=verb, deal=deal_id), actor="dashboard")
         if not result.get("ok"):

@@ -1359,6 +1359,177 @@ class MoneyTests(unittest.TestCase):
         self.assertEqual([line["op"] for line in self.desk.store.ledger(made)], ["insert"])
 
 
+class CashTests(unittest.TestCase):
+    """Invoices on a record, where won work stands, and what the pipeline is likely to bring in."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name, playbook="agency")
+        add = lambda name, **more: self.desk.deal(dict({"action": "add", "name": name}, **more))["deal"]["id"]      # noqa: E731
+        self.site = add("Website rebuild", company="Kestrel Labs", value=30000)
+        self.brand = add("Brand refresh", company="Lumen Health", value=12000, stage="proposal", close_on="+10d")
+        self.desk.deal({"action": "close", "deal": self.site, "outcome": "won"})
+
+    def day(self, offset):
+        return (dt.date.today() + dt.timedelta(days=offset)).isoformat()
+
+    def test_a_win_starts_delivery_and_reopening_ends_it(self):
+        won = self.desk.store.get(self.site)
+        self.assertEqual((won["status"], won["delivery"], self.desk.view(won)["delivery_label"]), ("won", "kickoff", "Kickoff"))
+        self.assertEqual(self.desk.deal({"action": "update", "deal": self.site, "delivery": "next"})["deal"]["delivery"], "delivering")
+        self.assertEqual(self.desk.deal({"action": "update", "deal": self.site, "delivery": "Delivered"})["deal"]["delivery"], "delivered")
+        self.assertFalse(self.desk.deal({"action": "update", "deal": self.site, "delivery": "shipped"})["ok"])
+        self.assertFalse(self.desk.deal({"action": "update", "deal": self.brand, "delivery": "kickoff"})["ok"])      # not won yet
+        self.desk.deal({"action": "reopen", "deal": self.site})
+        self.assertEqual(self.desk.store.get(self.site)["delivery"], "")
+        self.desk.undo(self.site)                                                 # the reopen goes back, and so does where it stood
+        self.assertEqual((self.desk.store.get(self.site)["status"], self.desk.store.get(self.site)["delivery"]), ("won", "delivered"))
+
+    def test_invoices_are_billed_part_paid_paid_and_voided(self):
+        made = self.desk.invoice({"action": "add", "deal": "Website rebuild", "amount": 15000, "number": "1041", "due": "net 14"})
+        bill = made["invoice"]
+        self.assertEqual((made["ok"], bill["state"], bill["due_on"], bill["issued_on"], made["money"]["uninvoiced"]),
+                         (True, "sent", self.day(14), self.day(0), 15000))
+        rest = self.desk.invoice({"action": "add", "deal": self.site})            # no amount: whatever is not billed yet; due in thirty days
+        self.assertEqual((rest["invoice"]["amount"], rest["invoice"]["due_on"], rest["money"]["uninvoiced"]), (15000, self.day(30), 0))
+        self.assertFalse(self.desk.invoice({"action": "pay", "deal": self.site})["ok"])               # two are open: which one?
+        part = self.desk.invoice({"action": "pay", "deal": self.site, "invoice": "#1041", "amount": 5000.50})
+        self.assertEqual((part["invoice"]["state"], part["invoice"]["paid"], part["invoice"]["owed"]), ("partial", 5000.5, 9999.5))
+        full = self.desk.invoice({"action": "pay", "deal": self.site, "invoice": "1041"})             # the rest
+        self.assertEqual((full["invoice"]["state"], full["invoice"]["owed"], full["invoice"]["paid_on"], full["money"]["paid"]), ("paid", 0, self.day(0), 15000))
+        self.assertIn("nothing is owed", self.desk.invoice({"action": "pay", "deal": self.site, "invoice": "1041"})["error"])
+        other = str(rest["invoice"]["id"])
+        self.assertEqual(self.desk.invoice({"action": "void", "deal": self.site, "invoice": other})["invoice"]["state"], "void")
+        self.assertEqual(self.desk.money(self.desk.store.get(self.site))["uninvoiced"], 15000)        # a voided invoice bills nothing
+        self.assertFalse(self.desk.invoice({"action": "add", "deal": self.site, "amount": 0})["ok"])
+        self.assertFalse(self.desk.invoice({"action": "add", "deal": self.site, "amount": 10, "due": "whenever"})["ok"])
+        log = [a["text"] for a in self.desk.store.activities(self.site, limit=10)]
+        self.assertIn("Invoice 1041: 5,000.50 received, 9,999.50 still owed", log)
+        self.assertIn("Invoice 1041 for 15,000, due %s" % self.day(14), log)
+
+    def test_money_changes_are_on_the_ledger_and_go_back(self):
+        bill = self.desk.invoice({"action": "add", "deal": self.site, "amount": 30000, "number": "1042"})["invoice"]
+        self.desk.invoice({"action": "pay", "deal": self.site, "amount": 10000})
+        self.assertEqual(self.desk.store.collected(dt.date.today().isoformat()[:7]), 1000000)
+        self.assertTrue(self.desk.undo(self.site)["ok"])                          # the payment was entered by mistake
+        after = self.desk.store.invoice(bill["id"])
+        self.assertEqual((after["paid"], after["state"], self.desk.store.collected(dt.date.today().isoformat()[:7])), (0, "sent", 0))
+        self.assertTrue(self.desk.undo(self.site)["ok"])                          # and so was the invoice
+        self.assertEqual((self.desk.store.invoices(self.site), self.desk.store.invoice(bill["id"])), ([], None))
+        lines = [(line["entity"], line["op"]) for line in self.desk.store.ledger(self.site, limit=4)]
+        self.assertEqual(lines[:2], [("invoice", "undo"), ("invoice", "undo")])
+        self.desk.invoice({"action": "add", "deal": self.site, "amount": 500})
+        self.desk.invoice({"action": "remove", "deal": self.site})
+        self.assertEqual(self.desk.store.invoices(self.site), [])
+        self.desk.undo(self.site)                                                 # a removal goes back too
+        self.assertEqual(len(self.desk.store.invoices(self.site)), 1)
+
+    def test_the_cash_picture_adds_up(self):
+        late = self.desk.store.invoice_add(self.site, 10000, number="1040", issued_on=self.day(-40), due_on=self.day(-10))
+        self.desk.store.invoice_pay(late["id"], 4000)
+        self.desk.store.invoice_add(self.site, 8000, number="1043", due_on=self.day(20))
+        cash = self.desk.cash()
+        strip = cash["strip"]
+        self.assertEqual((strip["won_month"], strip["owed"], strip["overdue"], strip["uninvoiced"], strip["collected_month"]),
+                         ({"count": 1, "value": 30000}, {"count": 2, "value": 14000}, {"count": 1, "value": 6000}, {"count": 1, "value": 12000},
+                          {"value": 4000}))
+        self.assertEqual([(i["number"], i["state"], i["days_overdue"]) for i in cash["invoices"]], [("1040", "overdue", 10), ("1043", "sent", 0)])
+        lane = cash["delivery"]
+        self.assertEqual(([s["id"] for s in lane["stages"]], lane["records"][0]["delivery"], lane["records"][0]["uninvoiced"]),
+                         (["kickoff", "delivering", "delivered"], "kickoff", 12000))
+        text = self.desk.slash("cash")
+        self.assertIn("Overdue: $6,000 (1)", text)
+        self.assertIn("Kestrel", self.desk.store.get(self.site)["company"])
+        self.assertEqual(self.desk.pipeline({"view": "cash"})["view"], "cash")
+
+    def test_the_forecast_weights_by_stage_and_buckets_by_date(self):
+        self.desk.deal({"action": "add", "name": "Retainer", "value": 20000, "stage": "contract", "close_on": self.day(-3)})
+        self.desk.deal({"action": "add", "name": "Audit", "value": 5000, "stage": "intro"})
+        forecast = self.desk.cash()["forecast"]
+        got = {b["key"]: (b["count"], b["value"], b["weighted"]) for b in forecast["buckets"]}
+        this_or_next = "this" if self.day(10)[:7] == self.day(0)[:7] else "next"
+        self.assertEqual((forecast["basis"], got["past"], got[this_or_next], got["none"]),
+                         ("playbook", (1, 20000, 17000), (1, 12000, 7200), (1, 5000, 1250)))        # contract 85%, proposal 60%, intro 25%
+        self.assertEqual((forecast["value"], forecast["weighted"]), (37000, 25450))
+        self.assertFalse(self.desk.deal({"action": "update", "deal": self.brand, "close_on": "the 45th"})["ok"])
+        self.desk.deal({"action": "update", "deal": self.brand, "close_on": ""})
+        self.assertEqual(self.desk.store.get(self.brand)["close_on"], "")
+
+    def test_odds_come_from_history_once_enough_has_closed(self):
+        playbook = self.desk.playbook()
+        self.assertEqual(self.desk.odds(playbook, self.desk.store.list(status="all"))["basis"], "playbook")
+        for index in range(12):
+            made = self.desk.deal({"action": "add", "name": "Past %d" % index, "stage": "scoping", "value": 1000})["deal"]["id"]
+            self.desk.deal({"action": "close", "deal": made, "outcome": "won" if index % 3 == 0 else "lost", "reason": "Budget"})
+        odds = self.desk.odds(playbook, self.desk.store.list(status="all"))
+        self.assertEqual((odds["basis"], odds["by_stage"]["scoping"], odds["by_stage"]["contract"]), ("history", 38, 100))     # 5 of 13 that reached scoping
+        bare = Playbook({"name": "bare", "stages": ["One", "Two", "Three"]})
+        self.assertEqual(self.desk.odds(bare, [])["by_stage"], {"one": 25, "two": 50, "three": 75})
+        self.assertEqual((bare.delivery, self.desk.odds(bare, [])["basis"]), ([], "even"))
+        for bad in ({"delivery": "kickoff"}, {"delivery": [{"label": "No id"}]}, {"delivery": ["A", "A"]}, {"stages": [{"id": "one", "win_probability": "likely"}, "Two"]}):
+            with self.assertRaises(PlaybookError):
+                validate(dict({"name": "bad", "stages": ["One", "Two"]}, **bad))
+
+    def test_today_lists_late_invoices_and_recent_wins_nobody_billed(self):
+        self.assertEqual(self.desk.today()["counts"]["to_invoice"], 0)            # nothing nags until the desk keeps invoices at all
+        self.fees = self.desk.deal({"action": "add", "name": "Workshop", "value": 4000})["deal"]["id"]
+        self.desk.deal({"action": "close", "deal": self.fees, "outcome": "won"})
+        self.desk.store.invoice_add(self.fees, 4000, number="1050", issued_on=self.day(-45), due_on=self.day(-15))
+        today = self.desk.today()
+        self.assertEqual([(r["name"], r["number"], r["owed"], r["days"]) for r in today["invoices_overdue"]], [("Workshop", "1050", 4000, 15)])
+        self.assertEqual([(r["name"], r["amount"]) for r in today["to_invoice"]], [("Website rebuild", 30000)])
+        self.assertEqual((today["counts"]["invoices_overdue"], today["counts"]["to_invoice"], today["needs"]), (1, 1, 3))    # and one new record
+        text = self.desk.today_text()
+        self.assertIn("Invoices overdue (1)", text)
+        self.assertIn("Workshop — $4,000 (#1050), 15d late", text)
+        self.assertIn("Signed, not invoiced (1)", text)
+        self.desk.deal({"action": "snooze", "deal": self.fees, "days": 5})
+        self.assertEqual(self.desk.today()["counts"]["invoices_overdue"], 0)
+
+    def test_a_proposal_can_carry_an_invoice_a_payment_and_a_close_date(self):
+        self.desk.store.invoice_add(self.site, 30000, number="1042", due_on=self.day(20))
+        out = self.desk.intake.propose({"kind": "proposal", "source": "activity sweep", "rows": [
+            {"record": self.site, "payment": {"invoice": "1042", "amount": 30000, "on": "today"}, "why": "Their remittance advice arrived.",
+             "evidence": [{"kind": "email", "who": "Kestrel accounts", "text": "Payment of $30,000 sent today, ref 1042."}]},
+            {"record": self.brand, "close_on": "+5d", "why": "She said the board meets Friday."},
+            {"record": self.brand, "invoice": {"amount": 3000, "number": "1060", "due": "net 15"}, "why": "Deposit agreed."}]}, {})
+        queue = self.desk.intake.queue()
+        self.assertEqual([item["changes"][0]["field"] + ": " + item["changes"][0]["to"] for item in queue],
+                         ["Payment: $30k on invoice #1042", "Expected close: " + self.day(5), "Invoice: $3,000 #1060 due net 15"])
+        for item in queue:
+            self.assertTrue(self.desk.intake.decide(out["id"], item["n"], "approve", "jo")["applied"], item)
+        self.assertEqual(self.desk.store.invoices(self.site)[0]["state"], "paid")
+        self.assertEqual((self.desk.store.get(self.brand)["close_on"], self.desk.store.invoices(self.brand)[0]["due_on"]), (self.day(5), self.day(15)))
+
+    def test_a_scheduled_job_does_not_touch_money_by_itself(self):
+        job = {"platform": "cron"}
+        self.desk.store.invoice_add(self.site, 30000, number="1042", due_on=self.day(20))
+        self.assertIsNone(self.desk.guard("gtm_invoice", {"action": "list"}, job))
+        self.assertIsNone(self.desk.guard("gtm_pipeline", {"view": "cash"}, job))
+        held = self.desk.guard("gtm_invoice", {"action": "pay", "deal": self.site, "invoice": "1042", "why": "Remittance advice."}, job)
+        self.assertEqual((held["held"], self.desk.store.invoices(self.site)[0]["state"]), (True, "sent"))
+        self.assertTrue(self.desk.guard("gtm_invoice", {"action": "add", "deal": self.brand, "amount": 3000}, job)["held"])
+        self.assertEqual(self.desk.guard("gtm_invoice", {"action": "void", "deal": self.site}, job)["ok"], False)
+        self.assertEqual([item["changes"][0]["field"] for item in self.desk.intake.queue()], ["Payment", "Invoice"])
+        self.desk.set_autonomy("routine")
+        self.assertTrue(self.desk.guard("gtm_invoice", {"action": "pay", "deal": self.site}, job)["ok"])      # held again (the same one: left out as waiting)
+        self.desk.set_autonomy("full")
+        self.assertIsNone(self.desk.guard("gtm_invoice", {"action": "pay", "deal": self.site}, job))
+
+    def test_the_sample_tours_have_money_in_them(self):
+        for which in ("recruiting", "saas"):
+            self.desk.tour_start(which)
+            cash = self.desk.cash()
+            self.assertGreater(cash["strip"]["overdue"]["value"], 0, which)
+            self.assertGreater(cash["strip"]["collected_month"]["value"], 0, which)
+            self.assertGreater(cash["strip"]["uninvoiced"]["value"], 0, which)
+            self.assertGreaterEqual(len([b for b in cash["forecast"]["buckets"] if b["count"]]), 3, which)
+            self.assertTrue(all(r["delivery"] for r in cash["delivery"]["records"]), which)
+            self.assertEqual(self.desk.today()["counts"]["invoices_overdue"], 1, which)
+        self.desk.tour_end()
+
+
 class SharedContactTests(unittest.TestCase):
     """A person is kept once and linked to every record they are on."""
 
@@ -1973,7 +2144,7 @@ class RegisterTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_everything_the_manifest_promises_is_registered(self):
-        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_contact", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_intake", "gtm_market",
+        self.assertEqual(sorted(self.ctx.tools), ["gtm_card", "gtm_contact", "gtm_deal", "gtm_enrich", "gtm_export", "gtm_intake", "gtm_invoice", "gtm_market",
                                                   "gtm_notes", "gtm_pipeline", "gtm_playbook"])
         self.assertEqual(sorted(self.ctx.blueprints), ["activity-sweep", "friday-review", "market-watch", "morning-brief",
                                                        "notes-sweep", "sheet-mirror", "sheet-pull"])
@@ -2037,7 +2208,7 @@ class RegisterTests(unittest.TestCase):
         self.assertIn("before saying it cannot be found", text)        # an agent with other places to look still checks here
         self.assertLessEqual(len(text), limit)
         for schema in (schemas.GTM_PIPELINE, schemas.GTM_DEAL, schemas.GTM_CARD, schemas.GTM_MARKET, schemas.GTM_ENRICH,
-                       schemas.GTM_NOTES, schemas.GTM_PLAYBOOK, schemas.GTM_EXPORT, schemas.GTM_INTAKE, schemas.GTM_CONTACT):
+                       schemas.GTM_NOTES, schemas.GTM_PLAYBOOK, schemas.GTM_EXPORT, schemas.GTM_INTAKE, schemas.GTM_CONTACT, schemas.GTM_INVOICE):
             first = " ".join(schema["description"].split()).split(". ")[0]
             self.assertLessEqual(len(first), 79, schema["name"])       # Hermes lists a deferred tool by this one line, cut at 80
             self.assertTrue("Stoa desk" in first or "People Data Labs" in first, schema["name"])
@@ -2171,6 +2342,31 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(self.api.forget_declined(), {"ok": True, "forgotten": 1})
         with self.assertRaises(self.api.HTTPException):
             self.api.intake_row("in-nothere0", {"n": 1, "verb": "approve"})
+
+    def test_the_page_keeps_invoices_and_shows_the_cash_picture(self):
+        dana = self.desk.store.find("Dana Whitfield")["id"]
+        self.api.act(dana, {"verb": "update", "close_on": "2031-02-01"})
+        self.assertEqual(self.api.deal(dana)["close_on"], "2031-02-01")
+        self.api.act(dana, {"verb": "move", "stage": "placed"})
+        record = self.api.deal(dana)
+        self.assertEqual((record["delivery"], [s["id"] for s in record["delivery_stages"]][:2], record["money"]["uninvoiced"]),
+                         ("start-set", ["start-set", "started"], 42000))
+        self.assertTrue(self.api.act(dana, {"verb": "update", "delivery": "started"})["ok"])
+        added = self.api.invoice(dana, {"verb": "add", "amount": 42000, "number": "2001", "due": "2031-03-01"})
+        self.assertEqual(([i["number"] for i in added["invoices"]], added["money"]["owed"], added["last"]["text"]),
+                         (["2001"], 42000, "Invoice 2001 for 42,000, due 2031-03-01"))
+        bill = str(added["invoices"][0]["id"])
+        part = self.api.invoice(dana, {"verb": "pay", "invoice": bill, "amount": 20000})
+        self.assertEqual((part["invoices"][0]["state"], part["money"]["paid"]), ("partial", 20000))
+        cash = self.api.state()["cash"]
+        self.assertEqual((cash["strip"]["owed"], cash["strip"]["collected_month"], cash["delivery"]["records"][0]["delivery"]),
+                         ({"count": 1, "value": 22000}, {"value": 20000}, "started"))
+        self.assertEqual(self.api.undo(dana, {"op": part["last"]["op"]})["undid"], "Invoice 2001: 20,000 received, 22,000 still owed")
+        self.assertEqual(self.api.deal(dana)["invoices"][0]["paid"], 0)
+        for bad in ({"verb": "pay", "invoice": "9999"}, {"verb": "add", "amount": -5}, {"verb": "refund"}):
+            with self.assertRaises(self.api.HTTPException):
+                self.api.invoice(dana, bad)
+        self.assertEqual(self.api.invoice(dana, {"verb": "remove", "invoice": bill})["invoices"], [])
 
     def test_the_page_sets_how_much_a_job_may_do(self):
         self.assertEqual(self.api.setup()["autonomy"]["level"], "ask")

@@ -161,6 +161,32 @@ you, say so in one line and stop.
   the record off the desk without destroying it: `gtm_deal(action="restore", deal="<name>")` puts
   it back.
 
+## Money: invoices, delivery and the forecast
+
+Stoa keeps the account of invoices; it does not send them or take payments. When the person says
+they billed someone or were paid, record it:
+
+- "I invoiced Kestrel 12k, net 30" → `gtm_invoice(action="add", deal="kestrel", amount=12000,
+  due="net 30", number=...)`. With no amount it bills whatever of the record's value is not billed
+  yet. `status="draft"` if it has not gone out.
+- "Kestrel paid" / "they paid half" → `gtm_invoice(action="pay", deal=..., invoice="1042",
+  amount=...)`; without an amount, everything still owed. Name the invoice when the record has
+  more than one open.
+- "How is cash?" / "what is overdue?" / "what will close this month?" →
+  `gtm_pipeline(view="cash")`: won this month, collected, owed, overdue, won but not invoiced, the
+  forecast by expected close date, and where won work stands. Lead with what is overdue and what
+  was never billed; give amounts as the tool gives them, never rounded differently.
+- The forecast needs dates: when someone says when a deal should close, set it with
+  `gtm_deal(action="update", close_on=...)`. Do not guess one.
+- After a win, the work moves through the playbook's delivery stages:
+  `gtm_deal(action="update", delivery="next")` or a stage by name.
+- On your own initiative (a remittance email in a sweep, an invoice mentioned in a call note),
+  propose it: a `gtm_intake` proposal row with `payment: {invoice, amount, on}` or
+  `invoice: {amount, number, due}`, with `why` and `evidence`. In a scheduled job a money change
+  is held for the person unless they have set autonomy to its highest level.
+- Never tell the person an invoice was sent or a payment was collected because you recorded it:
+  you recorded what they told you.
+
 ## People and companies
 
 A record has its own person (its name and email). Everyone else around it, a buyer's boss, the

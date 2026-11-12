@@ -40,7 +40,7 @@ AUTONOMY = {
     "routine": {"label": "Handle the routine", "allows": ("log", "update", "done", "person"),
                 "summary": "A scheduled job may also set next steps, fill in facts and add people to a record. "
                            "Stage changes, new records and closing wait for your approval."},
-    "full": {"label": "Run it", "allows": ("log", "update", "done", "person", "add", "move", "close", "reopen", "snooze"),
+    "full": {"label": "Run it", "allows": ("log", "update", "done", "person", "add", "move", "close", "reopen", "snooze", "invoice"),
              "summary": "A scheduled job may make any change itself. Every change is on the log and can be taken back."},
 }
 TOUR_NOTE = ("The desk is showing sample data (a tour): every person and company on it is made up, and the "
@@ -59,16 +59,19 @@ def _int(value: Any, default: int, low: int = 0, high: int = 10000) -> int:
 def _due(args: dict) -> tuple:
     """``(args with next_due as YYYY-MM-DD, error)``. A due date that cannot be read is an error, not a
     guess; an empty one means "no date", which is how a date is taken off."""
-    if args.get("next_due") is None:
-        return args, None
-    if not str(args["next_due"]).strip():
-        return dict(args, next_due=""), None
-    due = st.parse_due(args["next_due"])
-    if due is None:
-        return args, {"ok": False, "error": "next_due should be a date such as %s (tomorrow, friday, +3d and 12/01/2026 "
-                                            "also work); got '%s'. Nothing was changed."
-                                            % ((dt.date.today() + dt.timedelta(days=3)).isoformat(), str(args["next_due"])[:40])}
-    return dict(args, next_due=due), None
+    for key in ("next_due", "close_on"):        # the same for when the record is expected to close
+        if args.get(key) is None:
+            continue
+        if not str(args[key]).strip():
+            args = dict(args, **{key: ""})
+            continue
+        due = st.parse_due(args[key])
+        if due is None:
+            return args, {"ok": False, "error": "%s should be a date such as %s (tomorrow, friday, +3d and 12/01/2026 "
+                                                "also work); got '%s'. Nothing was changed."
+                                                % (key, (dt.date.today() + dt.timedelta(days=3)).isoformat(), str(args[key])[:40])}
+        args = dict(args, **{key: due})
+    return args, None
 
 
 class _Blank(dict):
@@ -356,7 +359,9 @@ class Desk:
                "stage": deal["stage"], "stage_label": playbook.label(deal["stage"]), "status": deal["status"],
                "value": deal["value"], "owner": deal["owner"], "next_step": deal["next_step"], "next_due": deal["next_due"],
                "email": deal["email"], "linkedin": deal["linkedin"], "source": deal["source"],
-               "lost_reason": deal["lost_reason"], "snoozed_until": deal["snoozed_until"],
+               "lost_reason": deal["lost_reason"], "snoozed_until": deal["snoozed_until"], "close_on": deal.get("close_on") or "",
+               "delivery": deal.get("delivery") or "" if deal["status"] == "won" else "",
+               "delivery_label": playbook.delivery_label(deal.get("delivery") or "") if deal["status"] == "won" else "",
                "fields": {k: v for k, v in deal["fields"].items() if not k.startswith("_")},
                "last_touch": touch, "stale": cards.is_stale(playbook, deal, touch), "due": cards.is_due(deal)}
         out = {k: v for k, v in out.items() if v not in ("", None, 0, 0.0, {}, False)}
@@ -390,6 +395,8 @@ class Desk:
             return self.brief()
         if view == "today":
             return self.today()
+        if view == "cash":
+            return self.cash(limit=15)
         if view == "activity":
             days = _int(args.get("days") or 7, 7, 1, 3650)
             since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -496,8 +503,24 @@ class Desk:
         lists["coming"].sort(key=lambda row: row["due"])
         lists["snoozed"].sort(key=lambda row: row["until"])
         approvals = self.intake.queue()
+        # Money: invoices past their date, and (once the desk keeps invoices at all) recent wins with nothing billed.
+        everyone = {deal["id"]: deal for deal in self.store.list(status="all")}
+        invoices = [i for i in self.store.invoices() if i["deal_id"] in everyone]
+        lists["invoices_overdue"] = sorted(
+            [{"id": i["deal_id"], "invoice": i["id"], "number": i["number"], "owed": i["owed"], "days": i["days_overdue"], "due": i["due_on"]}
+             for i in invoices if i["state"] == "overdue" and not cards.snoozed(everyone[i["deal_id"]])], key=lambda row: -row["days"])
+        billed: dict = {}
+        for invoice in invoices:
+            if invoice["state"] not in ("void", "draft"):
+                billed[invoice["deal_id"]] = billed.get(invoice["deal_id"], 0) + invoice["amount_cents"]
+        recent = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lists["to_invoice"] = [{"id": deal["id"], "amount": deal["value"], "days": int(st.days_since(deal["stage_at"]) or 0)}
+                               for deal in everyone.values()
+                               if invoices and deal["status"] == "won" and deal["value_cents"] > 0 and not billed.get(deal["id"])
+                               and deal["stage_at"] >= recent and not cards.snoozed(deal)]
+        by_id = dict(everyone, **by_id)
         counts = dict({key: len(rows) for key, rows in lists.items()}, approvals=len(approvals))
-        needs = sum(counts[key] for key in ("overdue", "due_today", "quiet", "new", "drafts", "approvals"))
+        needs = sum(counts[key] for key in ("overdue", "due_today", "quiet", "new", "drafts", "approvals", "invoices_overdue", "to_invoice"))
         if full:
             lists = {key: [dict(self.view(by_id[row["id"]], playbook, touches=touches), **{k: v for k, v in row.items() if k != "id"})
                            for row in rows[:15]] for key, rows in lists.items()}
@@ -526,6 +549,10 @@ class Desk:
                 "  " + (self.intake.headline(self.store.intake_get(item["intake"])) if item.get("list")
                         else self.intake._line(item)[len("%d. " % item["n"]):]) for item in data["approvals"]]
         section("Writing waiting to be picked up", "drafts", lambda d: "%s — %s" % (d["name"], d["stage_label"]))
+        money = lambda value: cards.money(value, playbook.currency) or "0"       # noqa: E731
+        section("Invoices overdue", "invoices_overdue", lambda d: "%s — %s%s, %dd late" % (
+            d["name"], money(d["owed"]), " (#%s)" % d["number"] if d["number"] else "", d["days"]))
+        section("%s, not invoiced" % playbook.won["label"], "to_invoice", lambda d: "%s — %s, %dd ago" % (d["name"], money(d["amount"]), d["days"]))
         section("Gone quiet", "quiet", lambda d: "%s — %s, quiet %dd (a nudge is due after %dd)"
                 % (d["name"], d["stage_label"], d["days"], d["expected"]))
         section("New, nothing planned yet", "new", lambda d: "%s — %s" % (d["name"], d.get("company") or d["stage_label"]))
@@ -806,6 +833,8 @@ class Desk:
         if tool == "gtm_contact" and action == "company" and "update" not in allows and (
                 args.get("note") is not None or args.get("domain") is not None):
             return refused
+        if tool == "gtm_invoice" and action not in ("", "list") and "invoice" not in allows:
+            return self.hold("invoice_" + action, args or {}) if action in ("add", "pay") else refused
         if tool == "gtm_intake" and action in ("apply", "discard"):
             return {"ok": False, "error": "A scheduled job cannot approve or discard what is waiting: that is the person's call, "
                                           "on the Today tab. Leave it there."}
@@ -853,6 +882,10 @@ class Desk:
             elif action == "person":
                 row["person"] = {key: args.get(key) for key in ("name", "email", "title", "role", "linkedin", "phone")}
                 row["person"]["name"] = args.get("name") or args.get("person") or ""
+            elif action == "invoice_add":
+                row["invoice"] = {key: args.get(key) for key in ("amount", "number", "due", "note") if args.get(key) not in (None, "")}
+            elif action == "invoice_pay":
+                row["payment"] = {key: args.get(key) for key in ("invoice", "amount", "on") if args.get(key) not in (None, "")}
             else:
                 return {"ok": False, "error": "A scheduled job cannot %s a record. Say in your reply that you would, and why."
                                               % action}
@@ -873,6 +906,21 @@ class Desk:
         args, error = _due(args)
         if error and action in ("add", "update", "log", "done"):
             return error
+        if action == "update" and args.get("delivery") is not None:       # where the work stands, once it is won
+            deal, missing = self._resolve(args.get("deal"))
+            if missing:
+                return missing
+            want = str(args["delivery"]).strip().lower()
+            ids = [item["id"] for item in playbook.delivery]
+            if deal["status"] != "won":
+                return {"ok": False, "error": "%s is not %s yet, so there is no delivery stage to set." % (deal["name"], playbook.won["label"].lower())}
+            if want == "next":
+                at = ids.index(deal["delivery"]) if deal["delivery"] in ids else -1
+                want = ids[min(at + 1, len(ids) - 1)] if ids else ""
+            found = next((item["id"] for item in playbook.delivery if want in (item["id"], item["label"].lower())), None)
+            if found is None:
+                return {"ok": False, "error": "unknown delivery stage '%s'" % want[:40], "delivery_stages": ids}
+            args = dict(args, delivery=found)
         if action == "add":
             return self._add(args, playbook, actor)
         deal, error = self._resolve(args.get("deal"))
@@ -891,7 +939,8 @@ class Desk:
         if action == "update":
             values = {k: args.get(a) for k, a in (("name", "name"), ("company", "company"), ("grp", "group"), ("email", "email"),
                                                   ("linkedin", "linkedin"), ("value", "value"), ("owner", "owner"),
-                                                  ("next_step", "next_step"), ("next_due", "next_due"), ("source", "source"))}
+                                                  ("next_step", "next_step"), ("next_due", "next_due"), ("source", "source"),
+                                                  ("close_on", "close_on"), ("delivery", "delivery"))}
             fields = args.get("fields") if isinstance(args.get("fields"), dict) else None
             deal = self.store.update(deal["id"], actor=actor, fields=fields, **values)
         elif action == "move":
@@ -972,7 +1021,7 @@ class Desk:
             name, stage, actor=actor, company=str(args.get("company") or ""), grp=group,
             email=str(args.get("email") or ""), linkedin=str(args.get("linkedin") or ""), value=args.get("value"),
             owner=str(args.get("owner") or ""), next_step=str(args.get("next_step") or ""),
-            next_due=str(args.get("next_due") or ""), source=str(args.get("source") or ""),
+            next_due=str(args.get("next_due") or ""), source=str(args.get("source") or ""), close_on=str(args.get("close_on") or ""),
             fields=args.get("fields") if isinstance(args.get("fields"), dict) else None)
         if args.get("note"):
             self.store.log(deal["id"], "note", str(args["note"])[:4000], actor=actor)
@@ -980,14 +1029,17 @@ class Desk:
 
     def _move(self, deal: dict, stage: str, playbook: Playbook, actor: str, reason: str = "") -> Optional[dict]:
         """Move a record from the stage it was read at. ``None`` means someone else moved it first."""
-        return self.store.move(deal["id"], stage, status=playbook.status_of(stage), reason=reason, actor=actor,
-                               label=playbook.label(stage), expect=deal["stage"])
+        status = playbook.status_of(stage)
+        # Won: the work begins, at the playbook's first delivery stage. Anything else: there is no delivery to speak of.
+        delivery = (playbook.delivery[0]["id"] if playbook.delivery else "") if status == "won" else ""
+        return self.store.move(deal["id"], stage, status=status, reason=reason, actor=actor,
+                               label=playbook.label(stage), expect=deal["stage"], delivery=delivery)
 
     def _reopen(self, deal: dict, playbook: Playbook, actor: str, stage: str = "") -> Optional[dict]:
         target = playbook.resolve_stage(stage) or deal["fields"].get("_prev_stage") or playbook.first_stage()
         if playbook.status_of(target) != "open" or playbook.position(target) < 0:
             target = playbook.first_stage()
-        return self.store.move(deal["id"], target, status="open", actor=actor, label=playbook.label(target), expect=deal["stage"])
+        return self.store.move(deal["id"], target, status="open", actor=actor, label=playbook.label(target), expect=deal["stage"], delivery="")
 
     def _raced(self, deal_id: str, playbook: Playbook, action: str) -> dict:
         """Someone else changed the stage between our read and our write: say where it stands now."""
@@ -1121,6 +1173,214 @@ class Desk:
     # -- gtm_market -----------------------------------------------------------------------------
     def market(self, args: dict, session: Optional[dict] = None) -> dict:
         return self.markets.run(args, session)
+
+    # -- gtm_invoice, and the cash picture ------------------------------------------------------------
+    @staticmethod
+    def _bill(invoice: dict, name: str = "") -> dict:
+        """An invoice as the page and the model see it."""
+        out = {key: invoice[key] for key in ("id", "number", "amount", "paid", "owed", "state", "issued_on", "due_on", "paid_on",
+                                             "days_overdue", "note")}
+        out["deal"] = invoice["deal_id"]
+        if name:
+            out["name"] = name
+        return out
+
+    def money(self, deal: dict, invoices: Optional[list] = None) -> dict:
+        """What has been billed and paid on one record, and what is left."""
+        bills = [i for i in (self.store.invoices(deal["id"]) if invoices is None else invoices) if i["state"] not in ("void", "draft")]
+        billed, paid = sum(i["amount_cents"] for i in bills), sum(i["paid_cents"] for i in bills)
+        return {"invoiced": billed / 100, "paid": paid / 100, "owed": sum(i["owed_cents"] for i in bills) / 100,
+                "overdue": sum(i["owed_cents"] for i in bills if i["state"] == "overdue") / 100,
+                "uninvoiced": max(0, deal["value_cents"] - billed) / 100 if deal["status"] == "won" else 0.0}
+
+    def _due_on(self, value: Any) -> tuple:
+        """``(YYYY-MM-DD, error)`` for an invoice's due date: a date, "net 30", or nothing (thirty days from today)."""
+        text = str(value or "").strip().lower()
+        if not text:
+            return (dt.date.today() + dt.timedelta(days=30)).isoformat(), None
+        net = re.fullmatch(r"net\s*(\d{1,3})(\s*days?)?", text)
+        due = (dt.date.today() + dt.timedelta(days=int(net.group(1)))).isoformat() if net else st.parse_due(text)
+        if due is None:
+            return "", {"ok": False, "error": "due should be a date such as %s, or 'net 30'; got '%s'. Nothing was changed."
+                                              % ((dt.date.today() + dt.timedelta(days=30)).isoformat(), text[:40])}
+        return due, None
+
+    def _which_invoice(self, deal: dict, ref: Any) -> tuple:
+        """``(invoice, error)``: the one named by id or number, or the only one still open."""
+        listed, want = self.store.invoices(deal["id"]), str(ref or "").strip().lower().lstrip("#")
+        if want:
+            found = [i for i in listed if str(i["id"]) == want or (i["number"] and i["number"].lower().lstrip("#") == want)]
+        else:
+            found = [i for i in listed if i["state"] in ("sent", "partial", "overdue", "draft")]
+        if len(found) == 1:
+            return found[0], None
+        return None, {"ok": False, "error": ("no invoice '%s' on %s" % (want, deal["name"])) if want and not found
+                      else "say which invoice on %s: pass `invoice` (its number or id)" % deal["name"],
+                      "invoices": [self._bill(i) for i in listed]}
+
+    def invoice(self, args: dict, actor: str = "") -> dict:
+        action = str(args.get("action") or "list").lower()
+        actor = actor or self.actor()
+        if action == "list" and not args.get("deal"):
+            cash = self.cash()
+            return {"ok": True, "action": "list", "invoices": cash["invoices"], "strip": cash["strip"]}
+        deal, error = self._resolve(args.get("deal"))
+        if error:
+            return error
+        if action == "list":
+            return {"ok": True, "action": "list", "deal": deal["id"], "name": deal["name"], "money": self.money(deal),
+                    "invoices": [self._bill(i) for i in self.store.invoices(deal["id"])]}
+        try:
+            with self.store.operation():
+                if action == "add":
+                    amount = args.get("amount")
+                    if amount in (None, ""):                         # nothing said: whatever of the record's value is not billed yet
+                        amount = self.money(deal)["uninvoiced"] if deal["status"] == "won" else deal["value"] - self.money(deal)["invoiced"]
+                    due, error = self._due_on(args.get("due"))
+                    if error:
+                        return error
+                    draft = str(args.get("status") or "").lower() == "draft"
+                    made = self.store.invoice_add(deal["id"], amount, actor=actor, number=str(args.get("number") or ""), due_on=due,
+                                                  status="draft" if draft else "sent", note=str(args.get("note") or ""))
+                else:
+                    found, error = self._which_invoice(deal, args.get("invoice"))
+                    if error:
+                        return error
+                    if action == "pay":
+                        on = st.parse_due(args["on"]) if args.get("on") else ""
+                        made = self.store.invoice_pay(found["id"], args.get("amount"), on=on or "", actor=actor)
+                    elif action == "send":
+                        due = None
+                        if args.get("due"):
+                            due, error = self._due_on(args.get("due"))
+                            if error:
+                                return error
+                        made = self.store.invoice_update(found["id"], actor=actor, status="sent", issued_on=st.today(), due_on=due,
+                                                         said="%s sent" % self.store._named(found))
+                    elif action == "void":
+                        made = self.store.invoice_update(found["id"], actor=actor, status="void", said="%s voided" % self.store._named(found))
+                    elif action == "update":
+                        due = None
+                        if args.get("due") not in (None, ""):
+                            due, error = self._due_on(args.get("due"))
+                            if error:
+                                return error
+                        made = self.store.invoice_update(found["id"], actor=actor, amount=args.get("amount"), number=args.get("number"),
+                                                         due_on=due, note=args.get("note"))
+                    elif action == "remove":
+                        self.store.invoice_remove(found["id"], actor=actor)
+                        made = None
+                    else:
+                        return {"ok": False, "error": "unknown action '%s'" % action,
+                                "actions": ["list", "add", "send", "pay", "void", "update", "remove"]}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        deal = self.store.get(deal["id"])
+        self._changed(deal)
+        return {"ok": True, "action": action, "deal": deal["id"], "name": deal["name"], "invoice": self._bill(made) if made else None,
+                "money": self.money(deal), "invoices": [self._bill(i) for i in self.store.invoices(deal["id"])]}
+
+    def odds(self, playbook: Playbook, deals: list) -> dict:
+        """How likely a record at each stage is to be won, as a percentage, and what that rests on:
+        this desk's own history once enough records have closed, else the playbook's figures, else
+        an even climb through the stages."""
+        stages = playbook.stages
+        closed = [d for d in deals if d["status"] in ("won", "lost")]
+        even = {stage["id"]: round(100 * (index + 1) / (len(stages) + 1)) for index, stage in enumerate(stages)}
+        stated = {stage["id"]: stage["win_probability"] for stage in stages if stage.get("win_probability") is not None}
+        if len(closed) >= 12:
+            reached, won = [0] * len(stages), [0] * len(stages)
+            for deal in closed:
+                far = len(stages) - 1 if deal["status"] == "won" else max(0, playbook.position(str(deal["fields"].get("_prev_stage") or "")))
+                for index in range(far + 1):
+                    reached[index] += 1
+                    won[index] += deal["status"] == "won"
+            if all(count >= 3 for count in reached):
+                return {"basis": "history", "closed": len(closed),
+                        "by_stage": {stage["id"]: round(100 * won[index] / reached[index]) for index, stage in enumerate(stages)}}
+        if stated:
+            return {"basis": "playbook", "closed": len(closed), "by_stage": dict(even, **stated)}
+        return {"basis": "even", "closed": len(closed), "by_stage": even}
+
+    def cash(self, limit: int = 40) -> dict:
+        """The money side of the desk: what was won, billed, collected and is late; what the open
+        pipeline is likely to bring in and when; and where the won work stands."""
+        playbook, today = self.playbook(), dt.date.today()
+        deals = self.store.list(status="all")
+        names = {deal["id"]: deal for deal in deals}
+        invoices = [i for i in self.store.invoices() if i["deal_id"] in names]
+        month = today.isoformat()[:7]
+        nxt = (today.replace(day=1) + dt.timedelta(days=32)).isoformat()[:7]
+        local_month = lambda stamp: (st.parse_ts(stamp).astimezone().date().isoformat()[:7] if st.parse_ts(stamp) else "")      # noqa: E731
+        won = [d for d in deals if d["status"] == "won"]
+        won_now = [d for d in won if local_month(d["stage_at"]) == month]
+        per: dict = {}
+        for invoice in invoices:
+            per.setdefault(invoice["deal_id"], []).append(invoice)
+        owing = [i for i in invoices if i["state"] in ("sent", "partial", "overdue")]
+        late = [i for i in owing if i["state"] == "overdue"]
+        unbilled = [(d, self.money(d, per.get(d["id"], []))["uninvoiced"]) for d in won]
+        unbilled = [(d, amount) for d, amount in unbilled if amount > 0]
+        strip = {
+            "won_month": {"count": len(won_now), "value": st.total(won_now)},
+            "owed": {"count": len(owing), "value": sum(i["owed_cents"] for i in owing) / 100},
+            "collected_month": {"value": self.store.collected(month) / 100},
+            "overdue": {"count": len(late), "value": sum(i["owed_cents"] for i in late) / 100},
+            "uninvoiced": {"count": len(unbilled), "value": round(sum(amount for _, amount in unbilled), 2)},
+        }
+        odds = self.odds(playbook, deals)
+        buckets = {key: {"key": key, "label": label, "count": 0, "cents": 0, "weighted": 0.0} for key, label in (
+            ("past", "Past its date"), ("this", today.strftime("%B")), ("next", dt.date.fromisoformat(nxt + "-01").strftime("%B")),
+            ("later", "Later"), ("none", "No date set"))}
+        for deal in deals:
+            if deal["status"] != "open" or playbook.position(deal["stage"]) < 0:
+                continue
+            close = deal.get("close_on") or ""
+            key = "none" if not close else "past" if close < today.isoformat() else "this" if close[:7] == month \
+                else "next" if close[:7] == nxt else "later"
+            bucket = buckets[key]
+            bucket["count"] += 1
+            bucket["cents"] += deal["value_cents"]
+            bucket["weighted"] += deal["value_cents"] * odds["by_stage"].get(deal["stage"], 0) / 100
+        forecast = [{"key": b["key"], "label": b["label"], "count": b["count"], "value": b["cents"] / 100, "weighted": round(b["weighted"] / 100, 2)}
+                    for b in buckets.values()]
+        lane = []
+        for deal in sorted(won, key=lambda d: d["stage_at"], reverse=True)[:limit]:
+            money = self.money(deal, per.get(deal["id"], []))
+            ids = [item["id"] for item in playbook.delivery]
+            lane.append({"id": deal["id"], "name": deal["name"], "company": deal["company"], "value": deal["value"],
+                         "delivery": deal["delivery"] if deal["delivery"] in ids else (ids[0] if ids else ""), "won_at": deal["stage_at"],
+                         "invoiced": money["invoiced"], "paid": money["paid"], "owed": money["owed"], "overdue": money["overdue"],
+                         "uninvoiced": money["uninvoiced"]})
+        order = {"overdue": 0, "partial": 1, "sent": 1, "draft": 2}
+        listed = sorted([i for i in invoices if i["state"] in order], key=lambda i: (order[i["state"]], i["due_on"] or "9999", i["id"]))
+        settled = sorted([i for i in invoices if i["state"] == "paid"], key=lambda i: i["paid_on"] or i["updated_at"], reverse=True)[:5]
+        return {"ok": True, "view": "cash", "currency": playbook.currency, "strip": strip,
+                "forecast": {"basis": odds["basis"], "closed": odds["closed"], "buckets": forecast,
+                             "value": sum(b["value"] for b in forecast), "weighted": round(sum(b["weighted"] for b in forecast), 2),
+                             "odds": [{"stage": s["id"], "label": s["label"], "odds": odds["by_stage"].get(s["id"], 0)} for s in playbook.stages]},
+                "delivery": {"stages": playbook.delivery, "records": lane},
+                "invoices": [self._bill(i, names[i["deal_id"]]["name"]) for i in listed + settled]}
+
+    def cash_text(self) -> str:
+        cash, playbook = self.cash(), self.playbook()
+        money = lambda value: cards.money(value, playbook.currency) or "0"       # noqa: E731
+        strip, lines = cash["strip"], ["Cash · %s" % playbook.title]
+        if self.tour():
+            lines.append("Sample data: nothing here is real.")
+        lines += ["%s this month: %s (%d)" % (playbook.won["label"], money(strip["won_month"]["value"]), strip["won_month"]["count"]),
+                  "Collected this month: %s" % money(strip["collected_month"]["value"]),
+                  "Invoiced and owed: %s (%d)" % (money(strip["owed"]["value"]), strip["owed"]["count"]),
+                  "Overdue: %s (%d)" % (money(strip["overdue"]["value"]), strip["overdue"]["count"]),
+                  "%s but not invoiced: %s (%d)" % (playbook.won["label"], money(strip["uninvoiced"]["value"]), strip["uninvoiced"]["count"])]
+        lines += ["", "Forecast (weighted by %s)" % {"history": "how often each stage has gone on to close here",
+                                                     "playbook": "the playbook's odds for each stage", "even": "an even climb through the stages"}[cash["forecast"]["basis"]]]
+        lines += ["  %s: %s of %s (%d)" % (b["label"], money(b["weighted"]), money(b["value"]), b["count"]) for b in cash["forecast"]["buckets"] if b["count"]]
+        late = [i for i in cash["invoices"] if i["state"] == "overdue"]
+        if late:
+            lines += ["", "Overdue invoices"] + ["  %s — %s%s, %dd late" % (i["name"], money(i["owed"]), " (#%s)" % i["number"] if i["number"] else "",
+                                                                            i["days_overdue"]) for i in late[:10]]
+        return "\n".join(lines)
 
     # -- gtm_contact: the other people on a record, and what is known about a company ---------------
     def people(self, deal: dict) -> list:
@@ -1687,7 +1947,7 @@ class Desk:
                         % playbook.terms["deal"])
             return cards.board_text(playbook, self.store.list(status="open"))
         if word == "help":
-            return ("/gtm — the pipeline board\n/gtm today — what needs you, most pressing first\n/gtm brief — the morning brief\n/gtm stale — records gone quiet\n"
+            return ("/gtm — the pipeline board\n/gtm today — what needs you, most pressing first\n/gtm cash — won, invoiced, collected, overdue, and the forecast\n/gtm brief — the morning brief\n/gtm stale — records gone quiet\n"
                     "/gtm due — next steps due\n/gtm map [market] — a market map\n/gtm <name> — one record's card\n"
                     "/gtm playbooks — available playbooks\nIn Slack, type !gtm: Slack keeps the slash for its own commands.")
         if word == "map" or word.startswith("map "):
@@ -1702,6 +1962,8 @@ class Desk:
             return self.brief_text()
         if word == "today":
             return self.today_text()
+        if word == "cash":
+            return self.cash_text()
         if word in ("stale", "due"):
             data = self.pipeline({"view": word})
             if not data["deals"]:
