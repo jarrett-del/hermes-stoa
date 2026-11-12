@@ -1776,6 +1776,15 @@ class GroupTests(unittest.TestCase):
         self.assertEqual((table["count"], table["only"]), (3, "Staff Backend"))
         self.assertEqual(self.desk.export({"action": "table"})["count"], 8)
         self.assertEqual(self.desk.export({"action": "export"})["rows"], 8)
+        shared = self.desk.export({"action": "export", "group": "Staff Backend", "share": True})       # the copy that goes to the client
+        self.assertEqual(shared["columns"][:6], ["Candidate", "Current company", "Search", "Stage", "Email", "LinkedIn"])
+        self.assertIn("-to-share-", Path(shared["path"]).name)
+        text = Path(shared["path"]).read_text()
+        self.assertEqual(len(text.strip().splitlines()), 4)
+        self.assertIn("Screened", text)                                            # the stage in words
+        for own in ("Fee", "Owner", "Next step", "Send submission note", "stoa-demo", "dana-whitfield"):
+            self.assertNotIn(own, text, own)
+        self.assertIn("share=true", one["note"])
         missing = self.desk.export({"action": "export", "group": "Nobody We Know"})
         self.assertFalse(missing["ok"])
         self.assertIn("Nothing was written", missing["error"])
@@ -2704,6 +2713,9 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("staff-platform-northwind-", part["filename"])
         self.assertNotIn("Wei-Lin Chao", part["csv"])
         self.assertGreater(api.export()["rows"], part["rows"])
+        clean = api.export_part({"group": "Staff Platform · Northwind", "share": True})
+        self.assertEqual((clean["share"], clean["rows"], clean["csv"].splitlines()[0].split(",")[:4]), (True, part["rows"], ["Candidate", "Current company", "Search", "Stage"]))
+        self.assertIn("-to-share-", clean["filename"])
         with self.assertRaises(api.HTTPException):
             api.export_part({"group": "No such search"})
 

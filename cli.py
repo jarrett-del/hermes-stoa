@@ -34,6 +34,7 @@ def setup(subparser) -> None:
     export = subs.add_parser("export", help="Write the pipeline to a CSV file in the plugin's exports folder")
     export.add_argument("path", nargs="?", default="", metavar="name", help="A file name (optional). It is written to the exports folder.")
     export.add_argument("--group", default="", help="Only one group (a search, an account) by name, or everything that is for one client")
+    export.add_argument("--share", action="store_true", help="The copy to hand someone outside: without value, owner, next steps, dates, ids or sources")
     imp = subs.add_parser("import", help="Add records from a CSV file")
     imp.add_argument("path")
     imp.add_argument("--dry-run", action="store_true")
@@ -133,7 +134,7 @@ def run(desk, args) -> None:
         print("Everything in it is made up and kept in a file of its own; your own desk is untouched and comes back with "
               "`hermes stoa demo --leave`. `hermes stoa demo %s` shows the other example." % other)
     elif command == "export":
-        result = desk.export({"action": "export", "path": args.path or None, "group": getattr(args, "group", "")})
+        result = desk.export({"action": "export", "path": args.path or None, "group": getattr(args, "group", ""), "share": getattr(args, "share", False)})
         print("Wrote %d records to %s" % (result["rows"], result["path"]) if result.get("ok") else result.get("error"))
     elif command == "import":
         path, refused = desk.csv_path(args.path, trusted=True)        # typed by a person at a terminal: any folder, CSV only

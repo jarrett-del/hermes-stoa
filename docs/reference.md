@@ -205,7 +205,9 @@ word. The group is a thing of its own, kept under that name however it is typed:
 
 **One client's list by itself.** *"Export the Northwind search"* writes a CSV of that search and
 nothing else (`gtm_export(action="export", group=...)`, or **Export as CSV** on its panel). A
-client's name in place of a search's gives everything that is for them.
+client's name in place of a search's gives everything that is for them. **Copy to share**
+(`share=true`) is the file to send them: your words for the columns and stages, and none of your
+own business (value, owner, next steps, dates, where a lead came from).
 
 **From a market map.** A playbook says where a company added from a map goes (`map_group`): into
 the group named after the map, when a group is something you run and fill (a search, a lead list

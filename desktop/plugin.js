@@ -1727,10 +1727,10 @@ function GroupPanel({ name, state, close, openRecord, onRenamed }) {
   }
   const enter = event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) addPerson() }
   const field = key => event => setV({ ...v, [key]: event.target.value })
-  const exportIt = () => send('/export', { group: group.name }).then(file => {
+  const exportIt = share => send('/export', { group: group.name, share }).then(file => {
     if (!file) return
     download(file.filename, file.csv, 'text/csv')
-    host.notify({ kind: 'success', message: plural(file.rows, pb.terms.deal, pb.terms.deals) + ' exported: only ' + group.name + '.' })
+    host.notify({ kind: 'success', message: plural(file.rows, pb.terms.deal, pb.terms.deals) + ' exported: only ' + group.name + (share ? ', without your own columns.' : '.') })
   })
   const stats = [['Open', data.open ? data.open + (data.open_value ? ' · ' + money(data.open_value, pb.currency) : '') : '0'],
     [pb.won.label, data.won ? data.won + (data.won_value ? ' · ' + money(data.won_value, pb.currency) : '') : '0'],
@@ -1746,8 +1746,11 @@ function GroupPanel({ name, state, close, openRecord, onRenamed }) {
     h('div', { className: 'stoa-log' },
       h('div', { className: 'stoa-sechead', style: { padding: 0, alignItems: 'center' } },
         h('small', { className: 'stoa-eyebrow' }, cap(pb.terms.deals) + ' in it'),
-        data.records.length ? h(Btn, { kind: 'quiet', disabled: busy, title: 'A CSV of the ' + pb.terms.deals + ' in this ' + term + ' and nothing else: the list to hand over',
-          onClick: exportIt }, 'Export as CSV') : null),
+        data.records.length ? h('span', { style: { display: 'flex', gap: 2 } },
+          h(Btn, { kind: 'quiet', disabled: busy, title: 'A CSV of the ' + pb.terms.deals + ' in this ' + term + ' and nothing else, with every column',
+            onClick: () => exportIt(false) }, 'Export'),
+          h(Btn, { kind: 'quiet', disabled: busy, title: 'The copy to hand the client: no value, owner, next steps, dates or sources',
+            onClick: () => exportIt(true) }, 'Copy to share')) : null),
       data.records.length ? data.records.map(record => h('button', { type: 'button', key: record.id, className: 'stoa-row', style: { padding: '5px 6px', margin: '0 -6px', width: 'calc(100% + 12px)', opacity: record.status === 'open' ? 1 : 0.6 },
         onClick: () => openRecord(record.id) },
       h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name stoa-clip', style: { display: 'block' } }, record.name),

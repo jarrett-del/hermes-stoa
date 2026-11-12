@@ -454,24 +454,25 @@ def export() -> dict:
 
 @router.post("/export")
 def export_part(body: dict = Body(...)) -> dict:
-    """The same for one group (a search, an account), or for everything that is for one client."""
-    return _export(str((body or {}).get("group") or ""))
+    """The same for one group (a search, an account), or for everything that is for one client. With ``share``, the
+    copy to hand someone outside: none of the team's own columns."""
+    return _export(str((body or {}).get("group") or ""), bool((body or {}).get("share")))
 
 
-def _export(group: str) -> dict:
+def _export(group: str, share: bool = False) -> dict:
     import csv
     import io
     d = desk()
     scope, label, error = d.export_scope(group)
     if error:
         raise HTTPException(404, error.get("error") or "no such group")
-    header, rows = d.store.export_rows([field["key"] for field in d.playbook().fields], scope)
+    header, rows = d.export_rows(scope, share)
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["group" if name == "grp" else name for name in header])
+    writer.writerow(header)
     writer.writerows(rows)
-    name = _mod("store").slugify(label)[:60] if label else "stoa"
-    return {"filename": "%s-%s.csv" % (name, time.strftime("%Y%m%d")), "csv": out.getvalue(), "rows": len(rows), "only": label}
+    name = (_mod("store").slugify(label)[:60] if label else "stoa") + ("-to-share" if share else "")
+    return {"filename": "%s-%s.csv" % (name, time.strftime("%Y%m%d")), "csv": out.getvalue(), "rows": len(rows), "only": label, "share": share}
 
 
 @router.post("/intake")

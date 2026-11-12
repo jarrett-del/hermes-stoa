@@ -239,7 +239,9 @@ notes, and the facts the playbook names for it (a search's fee terms).
   ("Fintech CFOs · Acme"), then set its client with `gtm_group`.
 - **The list for one client.** `gtm_export(action="export", group="<search>")` writes only that
   search; a client's name in `group` writes everything that is for them. Never hand a client the
-  whole desk: it has other clients' leads on it.
+  whole desk: it has other clients' leads on it. When the file is going to the client, add
+  `share=true`: it leaves out what is yours (value, owner, next steps, dates, where a lead came
+  from).
 - When a record shows a `client`, that is who an invoice for it goes to. Say the client's name,
   not the record's company, when you talk about who owes what.
 

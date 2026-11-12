@@ -257,13 +257,15 @@ GTM_EXPORT = {
         "action='table' returns the pipeline as columns and rows, ready to write into a spreadsheet tab such as a "
         "Google Sheet; read that tab back later with gtm_intake(columns=..., rows=...) to bring edits home. Pass `group` "
         "with export or table for one group only (one search, one account), or a client's name for everything that is "
-        "for that client: the list to hand a client is theirs alone."
+        "for that client: the list to hand a client is theirs alone, and with share=true it leaves out the team's own "
+        "columns (value, owner, next steps, source)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["export", "import", "table"]},
             "group": {"type": "string", "description": "export/table: only this group (a search, an account) by name, or a client's name for every group that is for them. Left out: the whole desk."},
+            "share": {"type": "boolean", "description": "export: the copy to hand someone outside the team (a client): the playbook's words for columns and stages, without value, owner, next steps, dates, ids or sources."},
             "path": {"type": "string", "description": "import: a .csv or .tsv file in the desk's imports folder, the configured import folder or the working directory. export: a file name for the CSV (optional); it is always written to the plugin's exports folder."},
             "dry_run": {"type": "boolean", "description": "import: count what would be added without adding it."},
         },

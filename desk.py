@@ -2271,6 +2271,18 @@ class Desk:
             return {group["key"] for group in mine}, mine[0]["client"], None
         return None, "", error
 
+    def export_rows(self, groups: Optional[set] = None, share: bool = False) -> tuple:
+        """``(header, rows)`` for a CSV of the desk or of some groups. ``share`` is the copy to hand someone outside
+        the team: the playbook's own words for the columns and stages, and nothing that is the team's own business
+        (ids, value, owner, next steps, dates, where a record came from, why one was lost)."""
+        playbook = self.playbook()
+        if not share:
+            header, rows = self.store.export_rows([field["key"] for field in playbook.fields], groups)
+            return ["group" if name == "grp" else name for name in header], rows
+        full = self.table(5000, groups)             # ID, record, company, group, Stage, value, owner, Next step, Due, Email, LinkedIn, facts…, Updated
+        keep = [1, 2, 3, 4, 9, 10] + list(range(11, len(full["columns"]) - 1))
+        return [full["columns"][i] for i in keep], [[row[i] for i in keep] for row in full["rows"]]
+
     def export(self, args: dict) -> dict:
         action = str(args.get("action") or "export").lower()
         playbook = self.playbook()
@@ -2280,12 +2292,12 @@ class Desk:
         if action == "export":
             try:
                 stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+                share = bool(args.get("share"))
                 path = self.export_path(args.get("path") or args.get("name"),
-                                        "%s-%s.csv" % (st.slugify(label)[:60] if label else "pipeline", stamp))
+                                        "%s%s-%s.csv" % (st.slugify(label)[:60] if label else "pipeline", "-to-share" if share else "", stamp))
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
-            header, rows = self.store.export_rows([f["key"] for f in playbook.fields], scope)
-            header = ["group" if h == "grp" else h for h in header]
+            header, rows = self.export_rows(scope, share)
             partial = path.with_name(".%s.%d.part" % (path.name, os.getpid()))     # written beside it, then moved into place
             try:
                 with partial.open("w", newline="", encoding="utf-8") as handle:
@@ -2297,7 +2309,10 @@ class Desk:
                 if partial.exists():
                     partial.unlink()
             out = {"ok": True, "path": str(path), "rows": len(rows), "columns": header,
-                   "note": "A plain CSV in the plugin's exports folder. It opens in Google Sheets or Excel as is."}
+                   "note": "A plain CSV in the plugin's exports folder. It opens in Google Sheets or Excel as is."
+                           + (" This is the copy to share: value, owner, next steps, dates, ids and sources are left out."
+                              if share else " It has the team's own columns (value, owner, next steps, source): for a copy to "
+                                            "hand someone outside, export again with share=true.")}
             if label:
                 out["only"] = label
             return out
