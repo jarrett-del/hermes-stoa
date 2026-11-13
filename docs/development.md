@@ -3,7 +3,7 @@
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 222 tests, no network
+python3 -m unittest discover -s tests     # 233 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```

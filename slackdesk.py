@@ -182,13 +182,35 @@ class SlackDesk:
         except Exception as exc:
             log.debug("stoa: could not tell %s the click was refused: %s", user_id, exc)
 
+    def pipeline_of(self, body: dict) -> str:
+        """The pipeline a pressed message belongs to: the one whose file knows that message. "" (the first) when
+        the desk has one pipeline, shows a tour, or no pipeline knows the message."""
+        if self.desk.tour():
+            return ""
+        listed = self.desk.pipelines()
+        if len(listed) < 2:
+            return ""
+        channel = (body.get("channel") or {}).get("id", "") or (body.get("container") or {}).get("channel_id", "")
+        ts = (body.get("message") or {}).get("ts") or (body.get("container") or {}).get("message_ts", "")
+        for entry in listed:
+            with self.desk.on(entry["id"]):
+                try:
+                    if channel and ts and self.desk.store.card_known(channel, ts):
+                        return entry["id"]
+                except Exception:
+                    continue
+        return ""
+
     # -- button clicks --------------------------------------------------------------------------
     async def on_action(self, ack, body, action) -> None:
         await ack()  # Slack wants this within 3 seconds; the work follows
         try:
             self.loop = asyncio.get_running_loop()
-            await self._handle(body or {}, action or {})
-            self.desk.announce()
+            body = body or {}
+            pipeline = await asyncio.to_thread(self.pipeline_of, body)
+            with self.desk.on(pipeline):        # a button acts on the pipeline its message was posted from
+                await self._handle(body, action or {})
+                self.desk.announce()
         except Exception as exc:  # a click must never take the gateway down
             log.error("stoa: click handling failed: %s", exc, exc_info=True)
 

@@ -2446,6 +2446,192 @@ class FakeCtx:
     def register_cli_command(self, *args, **kwargs): pass
 
 
+class PipelineTests(unittest.TestCase):
+    """Several pipelines on one desk, each with its own records and its own playbook. A call says which with
+    ``pipeline``, or means the first; a desk that never adds a second behaves exactly as it always did."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name) / "data"
+        self.data.mkdir()
+        fakes = {"hermes_constants": types.SimpleNamespace(get_hermes_home=lambda: self.tmp.name),
+                 "plugins": types.ModuleType("plugins"),
+                 "plugins.plugin_storage": types.SimpleNamespace(plugin_data_dir=lambda name: self.data)}
+        patcher = mock.patch.dict(sys.modules, fakes)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.ctx = FakeCtx({"playbook": "client-leads"})
+        stoa.register(self.ctx)
+        self.desk = stoa.LIVE_DESKS[-1]
+        self.session()
+
+    def session(self, **values):
+        patcher = mock.patch.object(stoa, "_session", lambda: dict({"platform": "cli"}, **values))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def call(self, tool, **args):
+        return json.loads(self.ctx.tools[tool](args))
+
+    def second(self):
+        made = self.call("gtm_playbook", action="add_pipeline", pipeline_name="My practice", playbook="agency")
+        self.assertTrue(made["ok"], made)
+        return made
+
+    def test_a_desk_with_one_pipeline_is_as_it_always_was(self):
+        self.assertEqual([(p["id"], p["name"], p["playbook"], p["file"]) for p in self.desk.pipelines()],
+                         [("main", "Client lead desk", "client-leads", "desk.db")])
+        out = self.call("gtm_deal", action="add", name="Rosa Lind", company="Ledgerline")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("pipeline", out)                                         # nothing to say where there is only one
+        self.assertFalse((self.data / "pipelines.json").exists())
+        self.assertNotIn("pipelines", self.desk.prompt_section())
+        self.assertTrue(self.call("gtm_pipeline", view="today", pipeline="Client lead desk")["ok"])       # its own name is fine
+        wrong = self.call("gtm_deal", action="add", name="Nobody", pipeline="My practice")
+        self.assertIn("no pipeline is called", wrong["error"])                    # a name that is no pipeline is never guessed at
+        self.assertEqual(self.desk.store.count(), 1)
+
+    def test_a_second_pipeline_has_its_own_records_and_its_own_playbook(self):
+        made = self.second()
+        self.assertEqual((made["added"]["name"], made["added"]["playbook"], made["pipelines"]), ("My practice", "agency", ["Client lead desk", "My practice"]))
+        self.assertTrue((self.data / "pipe-p2.db").exists())
+        lead = self.call("gtm_deal", action="add", name="Rosa Lind", company="Ledgerline", group="Fintech CFOs · Acme")
+        mine = self.call("gtm_deal", action="add", name="Visa retainer", company="Visa", value=96000, pipeline="my practice")
+        self.assertEqual((lead["pipeline"], lead["deal"]["stage_label"]), ("Client lead desk", "Identified"))
+        self.assertEqual((mine["pipeline"], mine["deal"]["stage_label"]), ("My practice", "Inbound"))
+        self.assertEqual(self.desk.store.count(), 1)
+        with self.desk.on("p2"):
+            self.assertEqual(([d["name"] for d in self.desk.store.list()], self.desk.playbook().name), (["Visa retainer"], "agency"))
+        self.assertEqual(self.desk.playbook().name, "client-leads")               # outside it, the first again
+        moved = self.call("gtm_deal", action="move", deal="Visa retainer", stage="next", pipeline="My practice")
+        self.assertEqual(moved["deal"]["stage_label"], "Intro call")
+        board = self.call("gtm_pipeline", pipeline="practice")                    # a clear part of the name
+        self.assertEqual(board["pipeline"], "My practice")
+        self.desk.pipeline_add("My other practice", "agency")
+        self.assertIn("several", self.call("gtm_pipeline", pipeline="practice")["error"])      # now it could be either: it asks
+        self.assertFalse(self.call("gtm_deal", action="add", name="X", pipeline="Somewhere else")["ok"])
+
+    def test_a_record_looked_for_in_the_wrong_pipeline_says_where_it_is(self):
+        self.second()
+        self.call("gtm_deal", action="add", name="Visa retainer", company="Visa", pipeline="My practice")
+        out = self.call("gtm_deal", action="get", deal="Visa retainer")           # no pipeline said: the first
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["elsewhere"], ["My practice"])
+        self.assertIn("It is in: My practice", out["error"])
+        self.assertTrue(self.call("gtm_deal", action="get", deal="Visa retainer", pipeline="My practice")["ok"])
+        nowhere = self.call("gtm_deal", action="get", deal="Nobody At All")
+        self.assertNotIn("elsewhere", nowhere)
+
+    def test_the_day_is_answered_for_every_pipeline_at_once(self):
+        self.second()
+        self.call("gtm_deal", action="add", name="Rosa Lind", company="Ledgerline", next_step="Write to her", next_due="today")
+        self.call("gtm_deal", action="add", name="Visa retainer", company="Visa", next_step="Send the SOW", next_due="today", pipeline="My practice")
+        day = self.call("gtm_pipeline", view="today")
+        self.assertEqual([part["pipeline"] for part in day["across"]], ["Client lead desk", "My practice"])
+        self.assertIn("Rosa Lind", json.dumps(day["across"][0]))
+        self.assertIn("Visa retainer", json.dumps(day["across"][1]))
+        self.assertNotIn("Visa retainer", json.dumps(day["across"][0]))
+        one = self.call("gtm_pipeline", view="today", pipeline="My practice")
+        self.assertEqual(one["pipeline"], "My practice")
+        self.assertNotIn("across", one)
+        self.assertNotIn("across", self.call("gtm_pipeline"))                     # the board is one pipeline's
+
+    def test_the_agent_is_told_which_pipelines_there_are_within_its_limit(self):
+        self.second()
+        section, limit = self.ctx.sections["stoa.desk"]
+        text = section({"platform": "cli"})
+        self.assertIn("2 pipelines: Client lead desk (leads, grouped by search); My practice (opportunities, grouped by client)", text)
+        self.assertLessEqual(len(text), limit)
+        for n in range(4):
+            self.assertTrue(self.desk.pipeline_add("A pipeline with a rather long name number %d" % n, "partnerships")["ok"])
+        self.assertFalse(self.desk.pipeline_add("One too many", "agency")["ok"])
+        text = section({"platform": "cli"})
+        self.assertLessEqual(len(text), limit)
+        self.assertIn("stays on the desk", text)                                  # the end of it is still there
+        self.assertIn("My practice", text)
+
+    def test_pipelines_are_renamed_given_another_playbook_and_removed_only_when_empty(self):
+        self.second()
+        self.assertTrue(self.call("gtm_playbook", action="rename_pipeline", pipeline="My practice", to="Advisory")["ok"])
+        self.assertTrue(self.call("gtm_playbook", action="rename_pipeline", to="Client work")["ok"])       # no pipeline said: the first
+        self.assertEqual([p["name"] for p in self.desk.pipelines()], ["Client work", "Advisory"])
+        self.assertIn("already", self.desk.pipeline_rename("Advisory", "client work")["error"])
+        used = self.call("gtm_playbook", action="use", name="b2b-sales", pipeline="Advisory")
+        self.assertEqual((used["active"], used["pipeline"]), ("b2b-sales", "Advisory"))
+        self.assertEqual([p["playbook"] for p in self.desk.pipelines()], ["client-leads", "b2b-sales"])
+        self.assertEqual(self.ctx.settings["playbook"], "client-leads")           # the first one's setting was not touched
+        self.call("gtm_deal", action="add", name="Visa retainer", pipeline="Advisory")
+        self.assertIn("still has 1 record", self.desk.pipeline_remove("Advisory")["error"])
+        self.assertIn("first pipeline stays", self.desk.pipeline_remove("Client work")["error"])
+        self.assertTrue(self.desk.pipeline_add("Scratch", "agency")["ok"])
+        self.assertTrue(self.desk.pipeline_remove("Scratch")["ok"])
+        self.assertEqual([p["name"] for p in self.desk.pipelines()], ["Client work", "Advisory"])
+        self.assertTrue(self.desk.pipeline_add("Scratch", "agency")["ok"])        # the name is free again, in a new file
+        self.assertEqual(self.desk.pipelines()[-1]["id"], "p4")
+        self.assertFalse(self.desk.pipeline_add("Bad", "no-such-playbook")["ok"])
+        self.assertFalse(self.desk.pipeline_add("", "agency")["ok"])
+
+    def test_each_pipeline_keeps_its_own_autonomy_copies_and_holds(self):
+        self.second()
+        self.call("gtm_deal", action="add", name="Rosa Lind", company="Ledgerline")
+        self.call("gtm_deal", action="add", name="Visa retainer", company="Visa", pipeline="My practice")
+        with self.desk.on("p2"):
+            self.desk.set_autonomy("full")
+            self.assertEqual(self.desk.autonomy(), "full")
+        self.assertEqual(self.desk.autonomy(), "ask")
+        self.session(platform="cron")
+        held = self.call("gtm_deal", action="move", deal="Rosa Lind", stage="next")
+        self.assertTrue(held.get("held"), held)                                   # the first pipeline asks first
+        done = self.call("gtm_deal", action="move", deal="Visa retainer", stage="next", pipeline="My practice")
+        self.assertEqual((done.get("held"), done["deal"]["stage_label"]), (None, "Intro call"))    # the second was told to run
+        self.assertFalse(self.call("gtm_playbook", action="add_pipeline", pipeline_name="Sneaky", playbook="agency")["ok"])
+        self.assertEqual(len(self.desk.pipelines()), 2)                           # a scheduled job opens no pipelines
+        again = stoa.build_desk(self.ctx.get_config, self.ctx.set_config)         # the next time Hermes starts
+        with again.on("p2"):
+            again.own_store
+        again.own_store
+        self.assertEqual(sorted(p.name[:8] for p in (self.data / "backups").glob("*.db")), ["desk-202", "pipe-p2-"])
+        with again.on("p2"):
+            self.assertEqual(again.backups()["count"], 1)
+
+    def test_the_terminal_lists_adds_and_addresses_pipelines(self):
+        import contextlib
+        import io
+        from stoa import cli
+
+        def run(command, **args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.run(self.desk, types.SimpleNamespace(stoa_command=command, **args))
+            return out.getvalue()
+
+        listed = run("pipelines", verb="add", name="My practice", playbook="agency", to="")
+        self.assertIn("● Client lead desk", listed)
+        self.assertIn("○ My practice", listed)
+        self.call("gtm_deal", action="add", name="Visa retainer", company="Visa", pipeline="My practice")
+        there = run("status", pipeline="practice")
+        self.assertIn("Pipeline      My practice (of 2: Client lead desk, My practice)", there)
+        self.assertIn("1 open", there)
+        self.assertIn("pipe-p2.db", there)
+        self.assertIn("0 open", run("status", pipeline=""))
+        self.assertIn("no pipeline is called", run("status", pipeline="nowhere"))
+        self.assertIn("still has 1 record", run("pipelines", verb="remove", name="My practice", playbook="", to=""))
+        self.assertIn("○ Advisory", run("pipelines", verb="rename", name="My practice", playbook="", to="Advisory"))
+        self.assertEqual(self.desk.store.count(), 0)                              # the terminal's choice does not outlive the command
+
+    def test_a_tour_shows_one_sample_desk_whatever_pipeline_is_asked_for(self):
+        self.second()
+        self.desk.tour_start("recruiting")
+        out = self.call("gtm_pipeline", view="today", pipeline="My practice")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("pipeline", out)
+        self.assertNotIn("across", self.call("gtm_pipeline", view="today"))
+        self.assertIn("Sample data is on show", self.desk.prompt_section())
+        self.desk.tour_end()
+        self.assertIn("across", self.call("gtm_pipeline", view="today"))
+
+
 class RegisterTests(unittest.TestCase):
     """``register`` against a stand-in for Hermes: what gets wired, and where the desk shows itself."""
 
@@ -2602,7 +2788,7 @@ class DashboardApiTests(unittest.TestCase):
         self.api = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.api)
         self.desk = make_desk(self.tmp.name)
-        self.api.desk = lambda: self.desk
+        self.api._profile_desk = lambda: self.desk          # the real desk() then picks the pipeline, as it does for a request
         fixture.load(self.desk)
 
     def test_the_page_can_add_edit_move_and_log_without_a_model(self):
@@ -2721,6 +2907,56 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("-to-share-", clean["filename"])
         with self.assertRaises(api.HTTPException):
             api.export_part({"group": "No such search"})
+
+    def test_the_page_shows_one_pipeline_at_a_time_and_follows_a_record_to_its_own(self):
+        api = self.api
+        asks = lambda pipeline="", **ids: api._REQUEST.set((pipeline, ids))       # what a request says: the page's pipeline, the ids in its path
+        self.addCleanup(asks)
+        state = api.state()
+        self.assertEqual(([p["id"] for p in state["pipelines"]], state["pipeline"]), (["main"], "main"))
+        made = api.pipeline({"verb": "add", "name": "My practice", "playbook": "agency"})
+        second = made["added"]["id"]
+        with self.desk.on(second):
+            visa = self.desk.deal({"action": "add", "name": "Visa retainer", "company": "Visa", "value": 96000})["deal"]["id"]
+        state = api.state()                                                       # the page says nothing: the first pipeline
+        self.assertEqual([(p["name"], p["open"]) for p in state["pipelines"]], [("Recruiting desk", 7), ("My practice", 1)])
+        self.assertNotIn("Visa retainer", [card["name"] for card in state["deals"]])
+        asks(second)
+        state = api.state()
+        self.assertEqual((state["pipeline"], state["playbook"]["name"], [card["name"] for card in state["deals"]]), (second, "agency", ["Visa retainer"]))
+        self.assertFalse(state["fresh"])
+        self.assertEqual(api.add_deal({"name": "Stripe audit", "company": "Stripe"})["deal"]["stage_label"], "Inbound")      # added where the page is
+        asks("zzz")                                                               # an id that is no pipeline: the first, never an error
+        self.assertEqual(api.state()["pipeline"], "main")
+        asks("", deal_id=visa)                                                    # the page shows the first, the card in a chat is from the second
+        card = api.deal(visa)
+        self.assertEqual((card["name"], card["pipeline"]["name"], card["playbook"]["name"], card["stage_label"]), ("Visa retainer", "My practice", "agency", "Inbound"))
+        self.assertTrue(api.act(visa, {"verb": "advance", "extra": "inbound"})["ok"])
+        with self.desk.on(second):
+            self.assertEqual(self.desk.store.get(visa)["stage"], "intro")
+        with self.desk.on(""):                 # (a request has a context of its own; in a test, the last route's choice is still set)
+            dana = self.desk.store.find("Dana Whitfield")["id"]
+        asks(second, deal_id=dana)                                                # and the other way round
+        self.assertEqual(api.deal(dana)["pipeline"]["name"], "Recruiting desk")
+        asks(second)
+        self.desk.can_configure = False                                           # the page's own stand-in desk cannot save a plugin setting
+        self.assertTrue(api.use_playbook({"name": "b2b-sales"})["ok"])            # another pipeline's playbook is kept with the pipeline
+        self.assertEqual(self.desk.pipelines()[1]["playbook"], "b2b-sales")
+        asks()
+        self.assertIn("ask", api.use_playbook({"name": "agency"}))                # the first one's is still handed to Hermes
+        self.desk.can_configure = True
+        with self.assertRaises(api.HTTPException):
+            api.pipeline({"verb": "remove", "id": second})                        # it has records
+        with self.assertRaises(api.HTTPException):
+            api.pipeline({"verb": "add", "name": "My practice", "playbook": "agency"})
+        self.assertTrue(api.pipeline({"verb": "rename", "id": second, "name": "Advisory"})["ok"])
+        self.assertTrue(api.pipeline({"verb": "rename", "id": "main", "name": "Searches"})["ok"])
+        self.assertEqual([p["name"] for p in api.state()["pipelines"]], ["Searches", "Advisory"])
+        api.tour({"action": "start", "example": "saas"})
+        self.assertEqual(api.state()["pipelines"], [])                            # a tour is one sample desk
+        with self.assertRaises(api.HTTPException):
+            api.pipeline({"verb": "add", "name": "During a tour", "playbook": "agency"})
+        api.tour({"action": "leave"})
 
     def test_the_page_keeps_the_people_on_a_record_and_shows_a_company(self):
         dana = self.desk.store.find("Dana Whitfield")["id"]
@@ -3213,6 +3449,27 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Dana Whitfield", self.desk.slash("dana whitfield", {"platform": "slack", "chat_id": "D1"}))
         self.assertIn("Regional freight brokers", self.desk.slash("map", {"platform": "slack", "chat_id": "D1"}))
         self.assertEqual(self.app.client.posts, [])
+
+    async def test_a_button_acts_on_the_pipeline_its_card_was_posted_from(self):
+        made = self.desk.pipeline_add("My practice", "agency")["added"]["id"]
+
+        def post():                                                    # as a tool call for that pipeline does it
+            with self.desk.on(made):
+                visa = self.desk.deal({"action": "add", "name": "Visa retainer", "company": "Visa"})["deal"]["id"]
+                self.desk.card({"deal": visa}, {"platform": "slack", "chat_id": "C1"})
+                return visa, self.desk.store.cards(visa)[0]["ts"]
+        visa, ts = await asyncio.to_thread(post)
+        self.assertEqual(self.slack.pipeline_of(self.body(ts=ts)), made)
+        self.assertEqual(self.slack.pipeline_of(self.body(ts="1600000000.000009")), "")       # a message no pipeline knows: the first
+        await self.slack.on_action(self.ack, self.body(ts=ts), {"action_id": "stoa_advance", "value": visa + "|inbound"})
+        with self.desk.on(made):
+            self.assertEqual(self.desk.store.get(visa)["stage"], "intro")
+        self.assertIsNone(self.desk.store.get(visa))                   # nothing of it in the first pipeline
+        self.assertEqual(self.desk.store.get(self.dana["id"])["stage"], self.dana["stage"])
+        self.assertIn("Intro call · 2 of 5", self.app.client.updates[-1]["blocks"][0]["text"]["text"])      # redrawn in its own playbook's words
+        await self.slack.on_action(self.ack, self.body(ts="1700000000.000777"), {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})
+        self.assertEqual(self.desk.store.get(self.dana["id"])["stage"], "submitted")           # a card of the first pipeline, as ever
+        await asyncio.sleep(0.2)
 
     async def test_advance_click_moves_updates_and_injects(self):
         await self.slack.on_action(self.ack, self.body(), {"action_id": "stoa_advance", "value": self.dana["id"] + "|screened"})

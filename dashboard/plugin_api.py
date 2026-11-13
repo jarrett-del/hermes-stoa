@@ -13,9 +13,20 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, HTTPException
+import contextvars
 
-router = APIRouter()
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
+
+# What this request says about which pipeline it is for: the one the page is showing (``?pipeline=<id>``), and any id in
+# its path (a record, a list, a map company, a map). Noted here, in the request's own context; ``desk()`` reads it.
+_REQUEST: contextvars.ContextVar = contextvars.ContextVar("stoa_request", default=("", {}))
+
+
+async def _note_request(request: Request) -> None:
+    _REQUEST.set((str(request.query_params.get("pipeline") or "")[:8], dict(request.path_params or {})))
+
+
+router = APIRouter(dependencies=[Depends(_note_request)])
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 PACKAGE = "stoa_dashboard_pkg"
 _own_desks: dict = {}
@@ -43,6 +54,49 @@ def _settings(key: str, default: Any = None) -> Any:
 
 
 def desk():
+    """The desk for the profile this request is for, set to the pipeline the request is about. Every route starts
+    here, so each request names its pipeline afresh and none is left over from the one before."""
+    d = _profile_desk()
+    importlib.import_module(type(d).__module__).PIPELINE.set(_which(d))
+    return d
+
+
+def _which(d) -> str:
+    """The pipeline a request is about: the one the page is showing, unless the request names a record, a list, a
+    map company or a map by id that only another pipeline has. Then that one: a card drawn in a chat, or a button on
+    it, works whatever the page happens to be showing."""
+    want, params = _REQUEST.get()
+    listed = [] if d.tour() else d.pipelines()
+    if len(listed) < 2:
+        return ""
+    ids = [entry["id"] for entry in listed]
+    chosen = want if want in ids else "main"
+    checks = []
+    if params.get("deal_id"):
+        checks.append(lambda: d.store.get(str(params["deal_id"])) or d.store.get(str(params["deal_id"]), archived=True))
+    if params.get("intake_id"):
+        checks.append(lambda: d.store.intake_get(str(params["intake_id"])))
+    if params.get("target_id"):
+        checks.append(lambda: d.markets.target(str(params["target_id"])))
+    if params.get("market_id"):
+        checks.append(lambda: d.markets._market(str(params["market_id"])))
+
+    def has(pipeline: str, check) -> bool:
+        with d.on(pipeline):
+            try:
+                return bool(check())
+            except Exception:
+                return False
+
+    for check in checks:
+        if not has(chosen, check):
+            homes = [pipeline for pipeline in ids if pipeline != chosen and has(pipeline, check)]
+            if len(homes) == 1:
+                return homes[0]
+    return chosen
+
+
+def _profile_desk():
     """The desk for the profile this request is for.
 
     Prefer the one the running plugin built for that profile: it is wired to Slack, so a change made
@@ -67,7 +121,7 @@ def desk():
 
 def _mod(name: str):
     """One of the plugin's own modules, from whichever copy of the plugin the desk in use belongs to."""
-    return importlib.import_module(type(desk()).__module__.rsplit(".", 1)[0] + "." + name)
+    return importlib.import_module(type(_profile_desk()).__module__.rsplit(".", 1)[0] + "." + name)
 
 
 def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Optional[dict] = None, groups: Optional[dict] = None) -> dict:
@@ -81,6 +135,14 @@ def _card(d, deal: dict, playbook, touches: Optional[dict] = None, pending: Opti
     view["pending"] = bool(pending.get(deal["id"]) if pending is not None else d.store.meta_get("pending:" + deal["id"]))
     view["created_at"] = deal["created_at"]
     return view
+
+
+def _playbook(playbook) -> dict:
+    """A playbook as the page needs it."""
+    return {"name": playbook.name, "title": playbook.title, "terms": playbook.terms, "currency": playbook.currency,
+            "stages": [{"id": s["id"], "label": s["label"], "stale_days": playbook.stale_days(s["id"])} for s in playbook.stages],
+            "won": playbook.won, "lost": {"id": playbook.lost["id"], "label": playbook.lost["label"], "reasons": playbook.lost["reasons"]},
+            "fields": playbook.fields, "group_fields": playbook.group_fields}
 
 
 def _ask(d, deal_id: str, verb: str) -> str:
@@ -150,17 +212,20 @@ def state() -> dict:
             off["offered"] = True
     open_deals = [x for x in deals if x["status"] == "open"]
     tour = d.tour()
+    here, pipes = d.current(), []
+    for entry in ([] if tour else d.pipelines()):
+        with d.on(entry["id"]):
+            count = len(d.store.list(status="open"))
+        pipes.append({"id": entry["id"], "name": entry["name"], "title": entry["title"], "playbook": entry["playbook"], "first": entry["first"], "open": count})
     return {
         "version": _mod("desk")._version(),
         # sample data on show, and whether this is a desk nobody has set up yet (the page then offers the way in)
         "tour": {"example": tour["example"], "title": _mod("demo").EXAMPLES[tour["example"]]["title"]} if tour else None,
-        "fresh": not tour and not deals and d.setting("playbook", None) is None,
+        "fresh": not tour and not deals and here["first"] and d.setting("playbook", None) is None,
         "today": d.today(full=False),
-        "playbook": {"name": playbook.name, "title": playbook.title, "terms": playbook.terms, "currency": playbook.currency,
-                     "stages": [{"id": s["id"], "label": s["label"], "stale_days": playbook.stale_days(s["id"])} for s in playbook.stages],
-                     "won": playbook.won, "lost": {"id": playbook.lost["id"], "label": playbook.lost["label"],
-                                                  "reasons": playbook.lost["reasons"]},
-                     "fields": playbook.fields, "group_fields": playbook.group_fields},
+        "playbook": _playbook(playbook),
+        # the pipelines on the desk (one, unless more were opened) and which of them this is
+        "pipelines": pipes, "pipeline": here["id"],
         "deals": [_card(d, deal, playbook, touches, pending, groups) for deal in deals],
         "markets": markets,
         "companies": d.companies(),
@@ -202,6 +267,10 @@ def deal(deal_id: str) -> dict:
     out["money"] = d.money(record, bills)
     out["delivery_stages"] = playbook.delivery if record["status"] == "won" else []
     out["undo"] = d.store.undoable(deal_id)          # the last action, if it can be taken back
+    if not d.tour() and len(d.pipelines()) > 1:      # which pipeline it is in, and that pipeline's playbook: the page may be showing another
+        here = d.current()
+        out["pipeline"] = {"id": here["id"], "name": here["name"]}
+        out["playbook"] = _playbook(playbook)
     return out
 
 
@@ -347,6 +416,28 @@ def approvals(body: dict = Body(...)) -> dict:
     return result
 
 
+@router.post("/pipeline")
+def pipeline(body: dict = Body(...)) -> dict:
+    """add (name, playbook) | rename (id, name) | remove (id: only an empty one) a pipeline."""
+    d = desk()
+    body = body or {}
+    verb = str(body.get("verb") or "")
+    if d.tour():
+        raise HTTPException(400, "Leave the tour first: pipelines belong to your own desk.")
+    if verb == "add":
+        result = d.pipeline_add(body.get("name"), body.get("playbook"))
+    elif verb == "rename":
+        result = d.pipeline_rename(str(body.get("id") or ""), body.get("name"))
+    elif verb == "remove":
+        result = d.pipeline_remove(str(body.get("id") or ""))
+    else:
+        raise HTTPException(400, "unknown action")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not do that")
+    d.announce()
+    return result
+
+
 @router.post("/autonomy")
 def autonomy(body: dict = Body(...)) -> dict:
     """What a scheduled job may change by itself. Set here by a person; no tool can change it."""
@@ -437,7 +528,7 @@ def use_playbook(body: dict = Body(...)) -> dict:
     """Switch the active playbook. Where this page cannot save a setting, it says so and the page asks Hermes instead."""
     d = desk()
     name = str((body or {}).get("name") or "")
-    if not d.can_configure:
+    if not d.can_configure and d.current()["first"]:        # the first pipeline's playbook is a plugin setting; another's is kept with it
         return {"ok": False, "ask": "Switch the Stoa desk to the %s playbook." % name}
     result = d.playbook_tool({"action": "use", "name": name})
     if not result.get("ok"):

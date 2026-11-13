@@ -210,6 +210,27 @@ company whole: its records, everyone known there, what is open and won, and the 
 it; pass `note` to save what is worth remembering about the company itself, and `domain` when you
 learn its email domain.
 
+## More than one pipeline
+
+A desk can hold several pipelines side by side, each with its own records and its own playbook:
+the team's own sales beside the work it does for clients, say. When there is more than one, your
+instructions list them by name.
+
+- Every `gtm_*` tool takes `pipeline` (a name, or a clear part of it). Left out, it means the
+  first. Every answer carries `pipeline`: when you report a change, say which pipeline it went to.
+- If the person does not say which and it is not plain from what they are talking about, ask.
+  Never add something to the first pipeline because it is the default.
+- A record you look for in the wrong pipeline comes back with `elsewhere`: call again with that
+  pipeline. Do not add it afresh.
+- "What needs me today?" with no pipeline named comes back as `across`: one answer per pipeline.
+  Report each under its name, most pressing first within it.
+- "Add a pipeline for my own deals" → `gtm_playbook(action="add_pipeline", pipeline_name="My
+  practice", playbook="agency")`. Choose the playbook that fits (`action="list"`), or write one
+  first. `action="rename_pipeline"` with `pipeline` and `to` renames one; `action="pipelines"`
+  lists them.
+- A record does not move between pipelines. When a lead in one becomes a client in another, add
+  it there and close it here, and say so.
+
 ## Searches, accounts and clients: the group a record is in
 
 Every record can name a group: the playbook's word for it is a search, an account, a client, a

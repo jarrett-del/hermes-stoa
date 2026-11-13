@@ -1450,8 +1450,8 @@ class Store:
         today is left alone), and keep the newest ``keep``. Returns the path written, or "" when nothing was."""
         if self._memory is not None:
             return ""
-        folder = Path(folder)
-        target = folder / ("desk-%s.db" % today())
+        folder, stem = Path(folder), Path(self.path).stem      # desk-2026-11-12.db, and pipe-p2-2026-11-12.db for a second pipeline
+        target = folder / ("%s-%s.db" % (stem, today()))
         if target.exists():
             return ""
         with self._conn() as conn:
@@ -1466,7 +1466,7 @@ class Store:
             copy.close()
             source.close()
         os.replace(str(part), str(target))
-        for old in sorted(folder.glob("desk-????-??-??.db"))[:-max(1, int(keep))]:
+        for old in sorted(folder.glob(stem + "-????-??-??.db"))[:-max(1, int(keep))]:
             old.unlink()
         return str(target)
 
@@ -1502,6 +1502,11 @@ class Store:
                 "CASE WHEN excluded.session_key != '' THEN excluded.session_key ELSE cards.session_key END, asked_by = "
                 "CASE WHEN excluded.asked_by != '' THEN excluded.asked_by ELSE cards.asked_by END",
                 (channel, ts, deal_id, session_key, asked_by))
+
+    def card_known(self, channel: str, ts: str) -> bool:
+        """Whether a message in Slack (a card, a review, a map) was posted from this file's pipeline."""
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM cards WHERE channel = ? AND ts = ?", (channel, ts)).fetchone() is not None
 
     def card_asker(self, channel: str, ts: str) -> str:
         """The Slack user a card, a review or a map was posted for; '' when nobody is on record."""

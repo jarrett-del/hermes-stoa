@@ -4,6 +4,10 @@
   recognise a scheduled run as one (Hermes gives it no platform and marks the run another way), so
   the `cron` opt-in in `channels` and the autonomy setting did not apply to it: a job could change
   the desk without asking. Found by running a real scheduled job; fixed in 0.13.2.
+- **Pipelines are separate.** A record does not move from one to another, and no view or report
+  adds them together except "what needs me today". `/gtm` and `!gtm`, and a scheduled job that does
+  not name a pipeline, are about the first one. A market map drawn inside a chat shows only while
+  the page is on that map's pipeline.
 - **The web dashboard tab is frozen.** It shows the pipeline, the market map, activity and setup as
   it did in 0.13. Approvals, cash, and searches or accounts are on the Stoa page in the Desktop app
   and the Webapp, and that is where new work goes.

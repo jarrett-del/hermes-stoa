@@ -105,7 +105,8 @@ What the plugin does that you would want to know before installing it:
   the same as typing it. The dock on the page keeps one conversation of its own, named **Stoa
   desk**: it is created and resumed through the gateway (`host.request`: `session.create`,
   `session.resume`, `prompt.submit`), it is sent only what you type or dictate there (with a short
-  note of context on its first message, which you can read in that conversation), and the page listens
+  note of context on its first message and, on a desk with more than one pipeline, a line saying
+  which pipeline the page is showing; both can be read in that conversation), and the page listens
   to the gateway's events for that conversation alone to show you the reply. A file is read only
   when you pick it or drop it on the page: a CSV's text goes to the plugin's backend to be held as a
   review, and a small text file goes to the agent with your message. It does not touch the app's
@@ -137,7 +138,8 @@ What the plugin does that you would want to know before installing it:
   the other people you add to a record or to a search or account (the client's side), what you
   keep on a search or account itself (its client, its terms, its notes), and the invoices and
   payments you record (amounts, numbers and dates; no bank or card details, which Stoa never asks
-  for) sit unencrypted in `plugin-data/stoa/desk.db`.
+  for) sit unencrypted in `plugin-data/stoa/desk.db`. Each further pipeline you open has a file of
+  its own beside it (`pipe-p2.db` and so on), and `pipelines.json` names them.
 - **Daily copies.** Once a day, the first time the desk is opened, a copy of that file is written
   beside it in `plugin-data/stoa/backups/` and the fourteen newest are kept. They are as
   unencrypted as the file itself, and they are on the same disk: they guard against a mistake, not

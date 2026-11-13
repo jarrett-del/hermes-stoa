@@ -42,6 +42,7 @@ const $tab = atom('today') // the page's tab: today | pipeline | cash | market |
 const $draft = atom('') // words put in the dock for the person to finish and send
 let onPage = false // the Stoa page is what is on screen: a click that calls for writing goes to its dock
 const $view = atom('board') // the pipeline tab: board | companies | groups
+const $pipe = atom('') // which pipeline the page is showing ('' = the first): an id from state.pipelines
 const $last = atom(null) // what was just done, while it can be taken back: { deal, name, text, op }
 let lastTimer = 0
 
@@ -185,6 +186,15 @@ const PRIME = 'This conversation is the talk box on the Stoa desk page. Act on t
   + 'short lines: the page already shows the pipeline. What is said here is for the desk: do not also write it to another system '
   + '(a spreadsheet, another CRM, email) unless asked to.\n\n'
 
+/** The name of the pipeline the page is showing, when the desk has more than one ('' otherwise). */
+function onScreen() {
+  const state = queryClient.getQueryData(STATE)
+  const pipes = (state && state.pipelines) || []
+  if (pipes.length < 2) return ''
+  const found = pipes.find(item => item.id === state.pipeline)
+  return found ? found.name : ''
+}
+
 /** Change the turn being answered, which is always the last one. */
 function setTurn(patch) {
   const talk = $talk.get()
@@ -220,7 +230,9 @@ async function say(text, file) {
   if ((!line && !file) || $talk.get().busy) return
   const turn = ++talkSession.turn
   const shown = line || 'Here is ' + file.name + '.'
-  const sent = file ? shown + '\n\nAttached file "' + file.name + '":\n```\n' + file.text + '\n```' : shown
+  const typed = file ? shown + '\n\nAttached file "' + file.name + '":\n```\n' + file.text + '\n```' : shown
+  const here = onScreen()
+  const sent = here ? '(On the Stoa page I am looking at the pipeline “' + here + '”.)\n\n' + typed : typed
   $talk.set({ busy: true, open: true,
     turns: $talk.get().turns.slice(-7).concat([{ you: shown, file: file ? file.name : '', reply: '', note: 'Sending…', error: '' }]) })
   const submit = async () => {
@@ -543,6 +555,13 @@ const CSS = `
 .stoa-crow:hover { background: var(--ui-row-hover-background); }
 .stoa-crow[data-dim="1"] > * { opacity: .55; }
 .stoa-newgroup { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 0 0 12px; max-width: 760px; }
+.stoa-pipes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.stoa-pipe { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 15px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; }
+.stoa-pipe:hover { border-color: var(--ui-stroke-primary); color: var(--ui-text-primary); }
+.stoa-pipe[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); color: var(--ui-text-primary); font-weight: 550; }
+.stoa-pipe small { font-size: 11px; opacity: .7; font-variant-numeric: tabular-nums; }
+.stoa-piperow { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-sechead + .stoa-piperow { border-top: 0; padding-top: 0; }
 .stoa-newgroup > label { flex: 1 1 200px; }
 .stoa-kinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .stoa-proposal[data-follow="1"] { margin-top: -6px; margin-left: 14px; }      /* another suggestion about the record above it */
@@ -707,8 +726,7 @@ function NewRecord({ state, close, opened }) {
 }
 
 // -- one record: what it is, what is next, and the buttons ---------------------------------------
-function Record({ id, state, sessionId, close, onCompany, onGroup }) {
-  const pb = state.playbook
+function Record({ id, state: shown, sessionId, close, onCompany, onGroup }) {
   const query = useQuery({ queryKey: ['stoa', 'deal', id], queryFn: () => rest('/deal/' + encodeURIComponent(id)), staleTime: 1500 })
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -716,6 +734,9 @@ function Record({ id, state, sessionId, close, onCompany, onGroup }) {
   const deal = query.data
   if (query.error) return h('div', { className: 'stoa-box stoa-sub' }, 'That record is no longer on the desk.')
   if (!deal) return h('div', { className: 'stoa-box stoa-sub' }, 'Loading…')
+  const elsewhere = Boolean(deal.pipeline && shown.pipeline && deal.pipeline.id !== shown.pipeline)     // from a pipeline the page is not showing
+  const state = deal.playbook ? { ...shown, playbook: deal.playbook } : shown
+  const pb = state.playbook
   const open = deal.status === 'open'
   const run = body => { setBusy(true); act(id, body, sessionId).then(() => setBusy(false)) }
   const facts = [[cap(pb.terms.group), deal.group], [pb.terms.value, money(deal.value, pb.currency)], [cap(pb.terms.owner), deal.owner],
@@ -725,6 +746,7 @@ function Record({ id, state, sessionId, close, onCompany, onGroup }) {
   return h('div', { className: 'stoa-box' },
     h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' } },
       h('div', { className: 'stoa-grow' },
+        elsewhere ? h('div', { className: 'stoa-eyebrow', style: { marginBottom: 3 } }, deal.pipeline.name) : null,
         h('div', { className: 'stoa-name', style: { fontSize: 14 } }, deal.name),
         deal.company && onCompany ? h('div', null, h('button', { type: 'button', className: 'stoa-proplink stoa-sub', title: 'Everything at ' + deal.company, onClick: () => onCompany(deal.company) }, deal.company + '  ›'))
           : deal.company && deal.company !== deal.name ? h('div', { className: 'stoa-sub' }, deal.company) : null,
@@ -1366,6 +1388,56 @@ function Lamp({ on }) {
   return h('i', { className: 'stoa-lamp', 'data-on': on === true ? '1' : on === false ? '0' : '', 'aria-label': on === true ? 'on' : on === false ? 'off' : 'not checked' })
 }
 
+/** The pipelines on this desk: each has its own records and its own playbook. Add one, rename one, remove an empty one. */
+function Pipelines({ state, setup }) {
+  const pipes = state.pipelines || []
+  const [adding, setAdding] = useState(false)
+  const [name, setName] = useState('')
+  const [playbook, setPlaybook] = useState('')
+  const [renaming, setRenaming] = useState('')
+  const [title, setTitle] = useState('')
+  const [busy, setBusy] = useState(false)
+  const send = (body, said) => {
+    setBusy(true)
+    return rest('/pipeline', { method: 'POST', body })
+      .then(result => { refresh(); if (said) host.notify({ kind: 'success', message: said }); return result })
+      .catch(error => { host.notifyError(error, 'Stoa could not do that'); return null })
+      .then(result => { setBusy(false); return result })
+  }
+  const add = () => {
+    if (!name.trim() || busy) return
+    send({ verb: 'add', name: name.trim(), playbook: playbook || (setup.playbooks[0] || {}).name }, name.trim() + ' is open. It is in the row of pipelines at the top of the page.')
+      .then(result => { if (result) { setName(''); setAdding(false) } })
+  }
+  const rename = id => {
+    if (!title.trim() || busy) return
+    send({ verb: 'rename', id, name: title.trim() }).then(result => { if (result) setRenaming('') })
+  }
+  return h('div', { className: 'stoa-setbox', 'data-wide': '0' }, h('div', { className: 'stoa-box' },
+    h('div', { className: 'stoa-sechead', style: { padding: '0 0 8px' } }, h('span', { className: 'stoa-eyebrow' }, 'Pipelines'),
+      h('span', { className: 'stoa-sub' }, pipes.length > 1 ? pipes.length + ' side by side' : 'one')),
+    pipes.map(item => h('div', { key: item.id, className: 'stoa-piperow' },
+      renaming === item.id
+        ? h('input', { className: 'stoa-field stoa-grow', autoFocus: true, value: title, 'aria-label': 'Name', onChange: event => setTitle(event.target.value),
+          onKeyDown: event => { if (event.key === 'Enter') rename(item.id); if (event.key === 'Escape') setRenaming('') } })
+        : h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name', style: { display: 'block' } }, item.name),
+          h('span', { className: 'stoa-sub' }, item.title + ' · ' + item.open + ' open' + (item.id === state.pipeline ? ' · on screen' : ''))),
+      renaming === item.id
+        ? h(Btn, { kind: 'primary', disabled: busy || !title.trim(), onClick: () => rename(item.id) }, 'Save')
+        : h(Btn, { kind: 'quiet', disabled: busy, onClick: () => { setRenaming(item.id); setTitle(item.name) } }, 'Rename'),
+      !item.first && !item.open && renaming !== item.id ? h(Btn, { kind: 'quiet', disabled: busy, title: 'Only a pipeline with nothing in it can be removed',
+        onClick: () => send({ verb: 'remove', id: item.id }, item.name + ' was removed.') }, 'Remove') : null)),
+    h('p', { className: 'stoa-sub', style: { margin: '10px 0 0' } }, 'Each pipeline has its own records, its own playbook and its own autonomy setting: your own sales beside the work you do for clients, say. In a chat, name the pipeline; left out, Hermes means the first.'),
+    adding ? h('div', null,
+      h('div', { className: 'stoa-form', style: { marginTop: 10 } },
+        h(Field, { label: 'Name', autoFocus: true, value: name, placeholder: 'My practice', onChange: event => setName(event.target.value), onKeyDown: event => { if (event.key === 'Enter') add() } }),
+        h(Field, { label: 'Runs on' }, h('select', { className: 'stoa-select', style: { width: '100%' }, value: playbook || (setup.playbooks[0] || {}).name, onChange: event => setPlaybook(event.target.value) },
+          setup.playbooks.map(item => h('option', { key: item.name, value: item.name }, item.door || item.title || item.name))))),
+      h('div', { className: 'stoa-btns', style: { marginTop: 8 } }, h(Btn, { kind: 'primary', disabled: busy || !name.trim(), onClick: add }, 'Open it'),
+        h(Btn, { kind: 'quiet', onClick: () => setAdding(false) }, 'Cancel')))
+      : pipes.length < 6 ? h('div', { className: 'stoa-btns', style: { marginTop: 10 } }, h(Btn, { onClick: () => setAdding(true) }, '+  Pipeline')) : null))
+}
+
 function Setup({ state, go }) {
   const query = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000, refetchInterval: 15000 })
   const [busy, setBusy] = useState(false)
@@ -1407,6 +1479,7 @@ function Setup({ state, go }) {
     box('What Hermes may do by itself', setup.autonomy.levels.find(level => level.id === setup.autonomy.level).label, h(Autonomy, { setup })),
     box('Rules in force', 'set in the plugin\'s settings', setup.rules.filter(rule => !rule.own).map(rule => h('div', { key: rule.label, className: 'stoa-setrow', style: { display: 'block' } },
       h('small', { className: 'stoa-eyebrow', style: { display: 'block' } }, rule.label), h('span', { style: { overflowWrap: 'anywhere' } }, rule.value)))),
+    setup.tour ? null : h(Pipelines, { key: 'pipes', state, setup }),
     box('Your playbook', setup.playbook.origin === 'custom' ? 'your own' : 'built in', [
       h('div', { key: 'title', className: 'stoa-name', style: { fontSize: 14 } }, setup.playbook.title),
       h('div', { key: 'sum', className: 'stoa-sub' }, setup.playbook.summary),
@@ -2224,6 +2297,14 @@ function Page() {
   const openCompany = name => { setAdding(false); setOpenId(''); setGroupName(''); setCompanyName(name) }
   const openGroup = name => { setAdding(false); setOpenId(''); setCompanyName(''); setGroupName(name) }
   const groups = state.groups || []
+  const pipes = state.pipelines || []
+  const showPipe = id => {
+    if (id === state.pipeline) return
+    $pipe.set(id === 'main' ? '' : id)
+    if (storage) storage.set('pipe', id === 'main' ? '' : id)
+    setOpenId(''); setAdding(false); setCompanyName(''); setGroupName('')
+    refresh()
+  }
   const waiting = (day.counts && day.counts.approvals) || 0
   const welcome = Boolean(state.fresh) && !welcomed
   const skip = () => { setWelcomed(true); if (storage) storage.set('welcomed', true) }
@@ -2254,6 +2335,9 @@ function Page() {
     state.tour ? h('div', { className: 'stoa-tour', role: 'status' },
       h('span', null, h('b', null, 'Sample data'), ' · ' + state.tour.title + '. Everyone on it is made up, and your own desk is untouched.'),
       h(Btn, { onClick: () => { setOpenId(''); tour('leave') } }, 'Leave the tour')) : null,
+    pipes.length > 1 ? h('div', { className: 'stoa-pipes', role: 'tablist', 'aria-label': 'Pipelines' }, pipes.map(item =>
+      h('button', { type: 'button', key: item.id, role: 'tab', 'aria-selected': item.id === state.pipeline, className: 'stoa-pipe', 'data-on': item.id === state.pipeline ? '1' : '0',
+        title: item.title + ': its own ' + 'records and its own playbook', onClick: () => showPipe(item.id) }, item.name, h('small', null, String(item.open))))) : null,
     h('div', { className: 'stoa-head' },
       h('div', null,
         h('div', { className: 'stoa-eyebrow' }, 'Stoa · ' + pb.title),
@@ -2336,8 +2420,13 @@ export default {
   id: 'stoa',
   name: 'Stoa',
   register(ctx) {
-    rest = ctx.rest
     storage = ctx.storage
+    try { $pipe.set(String((storage && storage.get('pipe', '')) || '')) } catch { /* no storage: the first pipeline */ }
+    // Every request names the pipeline the page is showing (an opaque id such as p2, never its name).
+    rest = (path, options) => {
+      const pipe = $pipe.get()
+      return ctx.rest(pipe && pipe !== 'main' ? path + (path.includes('?') ? '&' : '?') + 'pipeline=' + encodeURIComponent(pipe) : path, options)
+    }
     const kept = ctx.storage.get('filter', {}) || {}      // an older version kept every filter, a picked-out stage included: take only these two
     $filter.set({ ...NO_FILTER, owner: typeof kept.owner === 'string' ? kept.owner : '', group: typeof kept.group === 'string' ? kept.group : '' })
     // While the app is open the desk knows it can draw cards and maps in the conversation here.

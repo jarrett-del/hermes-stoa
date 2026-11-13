@@ -231,13 +231,19 @@ GTM_PLAYBOOK = {
         "what you draft when a stage changes. Actions: list, show (the active one, or by name), use (switch), template "
         "(the default playbook's YAML plus the rules, as a starting point), save (validate and store YAML you wrote; "
         "activate=true switches to it). When a user describes their sales motion, interview them briefly, write a "
-        "playbook from the template, show it to them, and save it once they agree."
+        "playbook from the template, show it to them, and save it once they agree. A desk can hold several pipelines "
+        "side by side, each with its own records and its own playbook (client work beside the team's own sales): "
+        "'pipelines' lists them, 'add_pipeline' opens an empty one (pipeline_name, and the playbook it runs on), "
+        "'rename_pipeline' renames the one named in `pipeline` (to). With `pipeline`, show/use/save act on that one."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "show", "use", "template", "save"]},
+            "action": {"type": "string", "enum": ["list", "show", "use", "template", "save", "pipelines", "add_pipeline", "rename_pipeline"]},
             "name": {"type": "string", "description": "show/use: the playbook name."},
+            "pipeline_name": {"type": "string", "description": "add_pipeline: what to call the new pipeline (My practice, Client work)."},
+            "playbook": {"type": "string", "description": "add_pipeline: the playbook it runs on (see action='list')."},
+            "to": {"type": "string", "description": "rename_pipeline: the new name."},
             "yaml": {"type": "string", "description": "save: the full playbook as YAML."},
             "activate": {"type": "boolean", "description": "save: also switch the desk to this playbook."},
         },
@@ -453,3 +459,10 @@ GTM_INVOICE = {
         "required": ["action"],
     },
 }
+
+# A desk can hold several pipelines; every tool can be pointed at one of them.
+PIPELINE_ARG = {"type": "string", "description": "Which pipeline, by name, when the desk has more than one (the system prompt lists them). "
+                                                 "Left out: the first. The answer names the pipeline it used."}
+ALL = (GTM_PIPELINE, GTM_DEAL, GTM_CARD, GTM_MARKET, GTM_ENRICH, GTM_NOTES, GTM_PLAYBOOK, GTM_EXPORT, GTM_INTAKE, GTM_GROUP, GTM_CONTACT, GTM_INVOICE)
+for _schema in ALL:
+    _schema["parameters"]["properties"]["pipeline"] = PIPELINE_ARG

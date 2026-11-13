@@ -7,6 +7,7 @@ Every part of Stoa, and its settings. For how a day on the desk goes, see [the g
 | | |
 |---|---|
 | **12 tools** | `gtm_market`, `gtm_pipeline`, `gtm_deal`, `gtm_group`, `gtm_contact`, `gtm_invoice`, `gtm_card`, `gtm_intake`, `gtm_enrich`, `gtm_notes`, `gtm_playbook`, `gtm_export` |
+| **Pipelines** | Several side by side on one desk, each with its own records and its own playbook: your own sales beside the work you do for clients |
 | **Searches, accounts, clients** | The group a record is in is a thing of its own: who the client is, where it stands, its terms, and the people on the client's side |
 | **Cash** | Invoices on a record in whole cents, what is owed and overdue, won work that was never billed, a delivery lane after the win, and a forecast weighted by stage |
 | **Approvals** | What Hermes suggests waits for your yes or no, one decision each, with its evidence, or several of a kind in one press; a no is remembered; one you have already carried out closes itself; a scheduled job changes only what you allow |
@@ -185,6 +186,24 @@ belongs to and that company's open records, so a sweep files mail in the right p
 propose adding the sender. A company is not something you set up: it is every record that names
 it, however the name is written ("Kestrel Labs, Inc." and "kestrel labs" are one), plus the notes
 and the email domain you keep on it.
+
+### Several pipelines on one desk
+
+One desk can hold up to six pipelines. Each has its own records, its own playbook, its own
+autonomy setting and its own file, so a consultant can keep their own sales (`agency`) beside the
+lead work they do for clients (`client-leads`) without one set of stages bending to fit the other.
+
+- **Open one** under **Setup → Pipelines** (a name and the playbook it runs on), or say "add a
+  pipeline for my own deals on the agency playbook". The first pipeline is the desk you already
+  have; a desk that never adds another behaves exactly as before.
+- **On the page**, a row of pipelines sits above the figures. Press one to see it; every tab then
+  shows that pipeline.
+- **In a chat**, name the pipeline ("on my practice pipeline, add Visa"). Left out, Hermes means
+  the first, and every answer says which pipeline it used. A record looked for in the wrong one
+  comes back with where it is. "What needs me today?" answers for all of them.
+- **In Slack**, a card and its buttons belong to the pipeline the card was posted from.
+- **From a terminal**, `hermes stoa pipelines` lists them (`add`, `rename`, `remove`), and
+  `--pipeline NAME` points any other command at one.
 
 ### Searches, accounts and clients
 

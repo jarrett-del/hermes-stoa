@@ -8,7 +8,13 @@ from . import store as st
 
 
 def setup(subparser) -> None:
+    subparser.add_argument("--pipeline", default="", help="Which pipeline, by name, on a desk that has more than one (default: the first)")
     subs = subparser.add_subparsers(dest="stoa_command")
+    pipes = subs.add_parser("pipelines", help="List the pipelines on the desk, or add, rename or remove one")
+    pipes.add_argument("verb", nargs="?", default="list", choices=["list", "add", "rename", "remove"])
+    pipes.add_argument("name", nargs="?", default="", help="add: the new pipeline's name. rename/remove: which one")
+    pipes.add_argument("--playbook", default="", help="add: the playbook it runs on (see: hermes stoa playbooks)")
+    pipes.add_argument("--to", default="", help="rename: the new name")
     subs.add_parser("status", help="Playbook, record counts, and which integrations are connected")
     subs.add_parser("board", help="Print the pipeline board")
     subs.add_parser("brief", help="Print what needs attention today")
@@ -42,8 +48,38 @@ def setup(subparser) -> None:
 
 def run(desk, args) -> None:
     command = getattr(args, "stoa_command", None)
+    if command == "pipelines":
+        verb = getattr(args, "verb", "list")
+        if verb == "add":
+            result = desk.pipeline_add(args.name, args.playbook)
+        elif verb == "rename":
+            result = desk.pipeline_rename(args.name, args.to)
+        elif verb == "remove":
+            result = desk.pipeline_remove(args.name)
+        else:
+            result = {"ok": True}
+        if not result.get("ok"):
+            print(result.get("error"))
+            return
+        for entry in desk.pipelines():
+            with desk.on(entry["id"]):
+                print("%s %-28s %s, %d records" % ("●" if entry["first"] else "○", entry["name"], entry["title"], desk.own_store.count()))
+        return
+    wanted = str(getattr(args, "pipeline", "") or "")
+    chosen, error = desk.pipeline_pick(wanted) if wanted else ("", None)
+    if error:
+        print("%s: %s" % (error["error"], ", ".join(error.get("pipelines") or [])))
+        return
+    with desk.on(chosen):
+        _run(desk, args, command)
+
+
+def _run(desk, args, command) -> None:
     if command in (None, "status"):
         playbook = desk.playbook()
+        several = desk.pipelines()
+        if len(several) > 1 and not desk.tour():
+            print("Pipeline      %s (of %d: %s)" % (desk.current()["name"], len(several), ", ".join(entry["name"] for entry in several)))
         deals = desk.store.list(status="all")
         open_deals = [d for d in deals if d["status"] == "open"]
         print("Stoa desk")
@@ -55,7 +91,7 @@ def run(desk, args) -> None:
         value = st.total(open_deals)
         if value:
             print("  open value    %s" % cards.money(value, playbook.currency))
-        print("  data          %s" % (desk.data_dir / (tour["file"] if tour else "desk.db")))
+        print("  data          %s" % (desk.data_dir / (tour["file"] if tour else desk.own_file())))
         print("  enrichment    %s" % ("People Data Labs connected" if desk.can_enrich() else "off (set PDL_API_KEY)"))
         notes_dir = desk.setting("notes_dir", "")
         print("  notes folder  %s" % (notes_dir or "not set (notes_dir)"))
@@ -147,4 +183,4 @@ def run(desk, args) -> None:
         else:
             print(result.get("error"))
     else:
-        print("Usage: hermes stoa <status|board|brief|map|playbooks|use|autonomy|history|demo|export|import>")
+        print("Usage: hermes stoa [--pipeline NAME] <status|board|brief|map|playbooks|use|autonomy|history|demo|export|import|pipelines>")

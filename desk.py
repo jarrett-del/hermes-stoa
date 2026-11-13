@@ -11,9 +11,12 @@ import hashlib
 import io
 import json
 import logging
+import contextvars
 import os
 import re
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -43,6 +46,12 @@ AUTONOMY = {
     "full": {"label": "Run it", "allows": ("log", "update", "done", "person", "add", "move", "close", "reopen", "snooze", "invoice", "group"),
              "summary": "A scheduled job may make any change itself. Every change is on the log and can be taken back."},
 }
+# Which pipeline the call in hand is about ("" = the first one). Set for the length of one tool call, one page request
+# or one button click, so everything beneath reads and writes that pipeline's file with that pipeline's playbook.
+PIPELINE: contextvars.ContextVar = contextvars.ContextVar("stoa_pipeline", default="")
+MAIN = "main"                       # the first pipeline: desk.db, on the playbook in the plugin's settings
+PIPELINES_FILE = "pipelines.json"   # the others, and what the first is called
+MOST_PIPELINES = 6
 TOUR_NOTE = ("The desk is showing sample data (a tour): every person and company on it is made up, and the "
              "team's own records are out of sight until the tour ends.")
 
@@ -90,6 +99,9 @@ class Desk:
         self._actor = actor or (lambda: "")
         self.http = http
         self._stores: dict = {}
+        self._copied: dict = {}                 # per file, the day its daily copy was last seen to
+        self._pipes_seen: tuple = (None, {})    # pipelines.json as last read: ((path, modified), what it said)
+        self._pipes_lock = threading.Lock()
         self._tour_seen: tuple = (None, {})     # the tour marker as last read: ((path, modified), what it said)
         self.can_configure = True          # False where settings cannot be saved (the page's own stand-in desk)
         self.home: Optional[Path] = None   # the Hermes profile this desk belongs to, when Hermes built it
@@ -120,9 +132,10 @@ class Desk:
     def own_store(self) -> st.Store:
         """The team's own ledger, whatever is on show. Once a day a copy of it is put beside it (``backups/``,
         the last fourteen kept): the first time it is opened that day, so the copy is the desk as yesterday left it."""
-        store, day = self._store_at("desk.db"), st.today()
-        if getattr(self, "_copied", "") != day:
-            self._copied = day
+        name, day = self.own_file(), st.today()
+        store = self._store_at(name)
+        if self._copied.get(name) != day:
+            self._copied[name] = day
             try:
                 store.snapshot(self.data_dir / "backups")
             except Exception as exc:
@@ -130,10 +143,151 @@ class Desk:
         return store
 
     def backups(self) -> dict:
-        """The daily copies there are: how many, the newest, and where."""
-        folder = self.data_dir / "backups"
-        found = sorted(path.name for path in folder.glob("desk-????-??-??.db")) if folder.is_dir() else []
-        return {"folder": str(folder), "count": len(found), "newest": found[-1][5:15] if found else ""}
+        """The daily copies there are of the pipeline in hand: how many, the newest, and where."""
+        folder, stem = self.data_dir / "backups", Path(self.own_file()).stem
+        found = sorted(path.name for path in folder.glob(stem + "-????-??-??.db")) if folder.is_dir() else []
+        return {"folder": str(folder), "count": len(found), "newest": found[-1][len(stem) + 1:len(stem) + 11] if found else ""}
+
+    # -- pipelines: several books on one desk, each with its own file and its own playbook --------------
+    # The first is desk.db on the playbook in the plugin's settings, as it always was; a desk that never adds
+    # another has no pipelines.json and behaves exactly as before. The others are listed in that file.
+    def _pipes(self) -> dict:
+        path = self.data_dir / PIPELINES_FILE
+        try:
+            key = (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            self._pipes_seen = (None, {})
+            return {}
+        if self._pipes_seen[0] != key:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            self._pipes_seen = (key, data if isinstance(data, dict) else {})
+        return self._pipes_seen[1]
+
+    def _pipes_write(self, data: dict) -> None:
+        folder = self.data_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        partial = folder / (".%s.%d.part" % (PIPELINES_FILE, os.getpid()))
+        partial.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+        os.replace(partial, folder / PIPELINES_FILE)
+        self._pipes_seen = (None, {})
+
+    def pipelines(self) -> list:
+        """Every pipeline on the desk, the first one first: ``{id, name, playbook, title, file, first}``."""
+        data = self._pipes()
+        first = self.library.load_or_default(str(self.setting("playbook", DEFAULT)))
+        out = [{"id": MAIN, "name": str(data.get("name") or "").strip() or first.title, "playbook": first.name, "title": first.title,
+                "file": "desk.db", "first": True}]
+        for entry in data.get("more") or []:
+            if isinstance(entry, dict) and re.fullmatch(r"p[0-9]{1,3}", str(entry.get("id") or "")) and not entry.get("removed"):
+                playbook = self.library.load_or_default(str(entry.get("playbook") or DEFAULT))
+                out.append({"id": entry["id"], "name": str(entry.get("name") or "").strip() or playbook.title, "playbook": playbook.name,
+                            "title": playbook.title, "file": "pipe-%s.db" % entry["id"], "first": False})
+        return out
+
+    def _pipe(self) -> dict:
+        """The entry in pipelines.json for the pipeline the call in hand is about; ``{}`` for the first (and for an
+        id that is not, or is no longer, a pipeline). This is on the path of every read and write: it stays cheap."""
+        want = PIPELINE.get()
+        if not want or want == MAIN:
+            return {}
+        for entry in self._pipes().get("more") or []:
+            if isinstance(entry, dict) and entry.get("id") == want and not entry.get("removed") and re.fullmatch(r"p[0-9]{1,3}", want):
+                return entry
+        return {}
+
+    def current(self) -> dict:
+        """The pipeline the call in hand is about, as ``pipelines()`` lists it: the one chosen for it, else the first."""
+        listed, want = self.pipelines(), self._pipe().get("id") or MAIN
+        return next((entry for entry in listed if entry["id"] == want), listed[0])
+
+    def own_file(self) -> str:
+        entry = self._pipe()
+        return "pipe-%s.db" % entry["id"] if entry else "desk.db"
+
+    @contextmanager
+    def on(self, pipeline: str):
+        """Do what is inside for one pipeline (its id; "" or "main" is the first)."""
+        token = PIPELINE.set(pipeline or "")
+        try:
+            yield
+        finally:
+            PIPELINE.reset(token)
+
+    def pipeline_pick(self, ref: Any) -> tuple:
+        """``(id, error)`` for a pipeline by its name, a clear part of it, or its id."""
+        listed, want = self.pipelines(), " ".join(str(ref or "").lower().split())
+        if not want or want in (MAIN, "first", "default"):
+            return MAIN, None
+        exact = [entry for entry in listed if want in (entry["id"], entry["name"].lower())]
+        near = exact or [entry for entry in listed if want in entry["name"].lower()]
+        if len(near) == 1:
+            return near[0]["id"], None
+        return "", {"ok": False, "error": ("'%s' matches several pipelines; use one of these names" if near else "no pipeline is called '%s'") % str(ref)[:60],
+                    "pipelines": [entry["name"] for entry in listed]}
+
+    def pipeline_add(self, name: Any, playbook: Any) -> dict:
+        """Open another pipeline: a name, and the playbook it runs on. It starts empty, in a file of its own."""
+        name = " ".join(str(name or "").split())[:60]
+        if not name:
+            return {"ok": False, "error": "a pipeline needs a name (My practice, Client work)"}
+        try:
+            chosen = self.library.load(str(playbook or "").strip() or DEFAULT)
+        except (PlaybookError, OSError, KeyError) as exc:
+            return {"ok": False, "error": "no playbook called '%s': %s" % (str(playbook)[:60], exc), "playbooks": [p["name"] for p in self.library.catalog()]}
+        with self._pipes_lock:
+            listed = self.pipelines()
+            if any(entry["name"].lower() == name.lower() for entry in listed):
+                return {"ok": False, "error": "there is already a pipeline called %s" % name, "pipelines": [entry["name"] for entry in listed]}
+            if len(listed) >= MOST_PIPELINES:
+                return {"ok": False, "error": "a desk holds at most %d pipelines" % MOST_PIPELINES}
+            data = dict(self._pipes())
+            more = [entry for entry in data.get("more") or [] if isinstance(entry, dict)]
+            number = max([1] + [int(str(entry.get("id") or "p1")[1:]) for entry in more if re.fullmatch(r"p[0-9]{1,3}", str(entry.get("id") or ""))]) + 1
+            made = {"id": "p%d" % number, "name": name, "playbook": chosen.name, "added": st.now()}
+            data["more"] = more + [made]
+            self._pipes_write(data)
+        with self.on(made["id"]):
+            self.own_store                              # its file exists from now on
+        return {"ok": True, "added": {"id": made["id"], "name": name, "playbook": chosen.name, "title": chosen.title},
+                "pipelines": [entry["name"] for entry in self.pipelines()]}
+
+    def pipeline_rename(self, ref: Any, name: Any) -> dict:
+        found, error = self.pipeline_pick(ref)
+        if error:
+            return error
+        name = " ".join(str(name or "").split())[:60]
+        if not name:
+            return {"ok": False, "error": "say what to call it"}
+        with self._pipes_lock:
+            if any(entry["name"].lower() == name.lower() and entry["id"] != found for entry in self.pipelines()):
+                return {"ok": False, "error": "there is already a pipeline called %s" % name}
+            data = dict(self._pipes())
+            if found == MAIN:
+                data["name"] = name
+            else:
+                data["more"] = [dict(entry, name=name) if isinstance(entry, dict) and entry.get("id") == found else entry for entry in data.get("more") or []]
+            self._pipes_write(data)
+        return {"ok": True, "renamed": found, "pipelines": [entry["name"] for entry in self.pipelines()]}
+
+    def pipeline_remove(self, ref: Any) -> dict:
+        """Take a pipeline off the desk. Only an empty one, and never the first; its file is left where it is."""
+        found, error = self.pipeline_pick(ref)
+        if error:
+            return error
+        if found == MAIN:
+            return {"ok": False, "error": "the first pipeline stays; rename it or change its playbook instead"}
+        with self.on(found):
+            holds = self.own_store.count()
+        if holds:
+            return {"ok": False, "error": "that pipeline still has %d record%s in it; it is only removed when it is empty" % (holds, "" if holds == 1 else "s")}
+        with self._pipes_lock:
+            data = dict(self._pipes())
+            data["more"] = [dict(entry, removed=st.now()) if isinstance(entry, dict) and entry.get("id") == found else entry for entry in data.get("more") or []]
+            self._pipes_write(data)
+        return {"ok": True, "removed": found, "pipelines": [entry["name"] for entry in self.pipelines()]}
 
     # -- the tour: sample data, in a file of its own ----------------------------------------------
     def tour(self) -> dict:
@@ -223,8 +377,10 @@ class Desk:
             return ""
 
     def own_playbook(self) -> Playbook:
-        """The playbook the team chose (the ``playbook`` setting)."""
-        return self.library.load_or_default(str(self.setting("playbook", DEFAULT)))
+        """The playbook the team chose for the pipeline in hand: the ``playbook`` setting for the first one, what
+        was said when it was opened (or since) for another."""
+        entry = self._pipe()
+        return self.library.load_or_default(str(entry.get("playbook") or DEFAULT) if entry else str(self.setting("playbook", DEFAULT)))
 
     def playbook(self) -> Playbook:
         """The playbook in use: the example's own during a tour, otherwise the team's."""
@@ -622,7 +778,7 @@ class Desk:
         catalog = read("the playbooks", self.library.catalog, [])
         level = read("the autonomy setting", self.autonomy, "ask")
         terms = own.terms
-        size = read("the size of the file", lambda: (self.data_dir / "desk.db").stat().st_size, 0)
+        size = read("the size of the file", lambda: (self.data_dir / self.own_file()).stat().st_size, 0)
         checklist = [
             {"id": "playbook", "done": chosen or real > 0, "title": "Pick the playbook that fits how you sell",
              "detail": "You are on %s: %s." % (own.title, " → ".join(s["label"] for s in own.stages) + " → " + own.won["label"])},
@@ -685,7 +841,7 @@ class Desk:
             "declined": tally["declined"],
             "checklist": checklist, "connections": connections, "rules": rules,
             "automations": [{"name": bp["name"], "title": bp["title"], "description": bp["description"]} for bp in blueprints.BLUEPRINTS],
-            "data": {"path": str(self.data_dir / "desk.db"), "size": size, "records": real, "open": tally["open"], "won": tally["won"],
+            "data": {"path": str(self.data_dir / self.own_file()), "size": size, "records": real, "open": tally["open"], "won": tally["won"],
                      "lost": tally["lost"], "samples": tally["samples"], "activities": tally["activities"], "maps": tally["maps"],
                      "people": tally["people"], "ledger": tally["ledger"], "archived": tally["archived"],
                      "lists_waiting": tally["lists_waiting"], "exports": str(self.data_dir / "exports"),
@@ -881,6 +1037,8 @@ class Desk:
             return refused
         if tool == "gtm_invoice" and action not in ("", "list") and "invoice" not in allows:
             return self.hold("invoice_" + action, args or {}) if action in ("add", "pay") else refused
+        if tool == "gtm_playbook" and action in ("add_pipeline", "rename_pipeline"):
+            return unheld
         if tool == "gtm_intake" and action in ("apply", "discard"):
             return {"ok": False, "error": "A scheduled job cannot approve or discard what is waiting: that is the person's call, "
                                           "on the Today tab. Leave it there."}
@@ -2209,6 +2367,14 @@ class Desk:
         action = str(args.get("action") or "show").lower()
         library = self.library
         try:
+            if action == "pipelines":
+                listed = self.pipelines()
+                return {"ok": True, "count": len(listed), "pipelines": [{"name": entry["name"], "playbook": entry["playbook"], "runs": entry["title"],
+                                                                        "first": entry["first"]} for entry in listed]}
+            if action == "add_pipeline":
+                return self.pipeline_add(args.get("pipeline_name") or args.get("to"), args.get("playbook") or args.get("name"))
+            if action == "rename_pipeline":
+                return self.pipeline_rename(self._pipe().get("id") or MAIN, args.get("to") or args.get("pipeline_name"))
             if action == "list":
                 return {"ok": True, "active": self.playbook().name, "playbooks": library.catalog()}
             if action == "show":
@@ -2240,11 +2406,20 @@ class Desk:
             return {"ok": False, "error": str(exc)}
         except (TypeError, AttributeError, KeyError) as exc:    # a shape the checks did not foresee
             return {"ok": False, "error": "that playbook does not hold together: %s" % exc}
-        return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["list", "show", "use", "save", "template"]}
+        return {"ok": False, "error": "unknown action '%s'" % action,
+                "actions": ["list", "show", "use", "save", "template", "pipelines", "add_pipeline", "rename_pipeline"]}
 
     def _use(self, name: str) -> dict:
         playbook = self.library.load(name)
-        self._set_config("playbook", playbook.name)
+        here = self._pipe().get("id") or MAIN
+        if here == MAIN:
+            self._set_config("playbook", playbook.name)
+        else:                                       # another pipeline's playbook is kept with the pipeline
+            with self._pipes_lock:
+                data = dict(self._pipes())
+                data["more"] = [dict(entry, playbook=playbook.name) if isinstance(entry, dict) and entry.get("id") == here else entry
+                                for entry in data.get("more") or []]
+                self._pipes_write(data)
         known = set(playbook.stage_ids()) | {playbook.won["id"], playbook.lost["id"]}
         strays = [d for d in self.store.list(status="all") if d["stage"] not in known]
         out = {"ok": True, "active": playbook.name, "summary": playbook.describe()}
@@ -2483,8 +2658,27 @@ class Desk:
     def prompt_section(self) -> str:
         try:
             playbook = self.playbook()
+            several = [] if self.tour() else self.pipelines()
         except Exception:
             return ""
+        if len(several) > 1:
+            lines = []
+            for entry in several:
+                book = self.library.load_or_default(entry["playbook"])
+                lines.append("%s (%s, grouped by %s)" % (entry["name"], book.terms["deals"], book.terms["group"]))
+            text = ("## Stoa GTM desk\n"
+                    "You keep this team's pipelines with the gtm_* tools; the desk is the source of truth, so read it before "
+                    "answering and write to it when something changes. It has %d pipelines: %s. Every gtm tool takes "
+                    "`pipeline` (a name); left out, it means the first, and each answer names the pipeline it used: say "
+                    "it. Ask when it is unclear which one is meant. Look a name up with gtm_deal(action=\"get\") before "
+                    "saying it cannot be found. For how to run the desk, load the skill stoa:desk; to map a market, "
+                    "stoa:market-map. A change to the desk stays on the desk: do not also write it to another system "
+                    "unless asked.")
+            full = text % (len(several), "; ".join(lines))
+            if len(full) > 900:                     # many pipelines, or long names: their names alone, cut to fit
+                room = max(8, (900 - len(text % (len(several), ""))) // len(several) - 2)
+                full = text % (len(several), "; ".join(entry["name"][:room] for entry in several))
+            return full
         return ("## Stoa GTM desk\n"
                 "You keep this team's pipeline with the gtm_* tools; the desk is the source of truth, so read it "
                 "before answering pipeline questions and write to it when something changes. When someone names a "

@@ -86,20 +86,61 @@ def _announce() -> None:
         log.debug("stoa: could not announce a change", exc_info=True)
 
 
+ACROSS = ("today", "brief", "due", "stale")      # the questions about a day: asked of no pipeline in particular, they cover them all
+
+
 def _tool(fn, desk=None, quiet=False, name=""):
-    """Tool handlers return JSON strings and never raise into the agent loop."""
+    """Tool handlers return JSON strings and never raise into the agent loop.
+
+    A desk with more than one pipeline: the call says which with ``pipeline`` (a name), or means the first. What
+    comes back names the pipeline it used, so the agent and the person can see where a change went.
+    """
     def handler(args: dict, **kwargs) -> str:
         try:
-            if desk is not None:
-                session = _session()
-                if not desk.allowed(session):
-                    return json.dumps(AWAY_TOUR if session.get("platform") == "cron" and desk.tour() else AWAY)
-                held = desk.guard(name, args or {}, session)       # a scheduled job, and a change kept for a person
+            args = dict(args or {})
+            if desk is None:
+                return json.dumps(fn(args), ensure_ascii=False, default=str)
+            session = _session()
+            if not desk.allowed(session):
+                return json.dumps(AWAY_TOUR if session.get("platform") == "cron" and desk.tour() else AWAY)
+            asked = args.pop("pipeline", None)
+            listed = [] if desk.tour() else desk.pipelines()        # a tour shows one sample desk, whatever is asked for
+            chosen = ""
+            if listed and asked not in (None, ""):
+                chosen, missing = desk.pipeline_pick(asked)             # a name that is no pipeline is an error, never a guess
+                if missing:
+                    return json.dumps(dict(missing, error=missing["error"] + ". Nothing was changed."), ensure_ascii=False)
+            several = listed if len(listed) > 1 else []
+            names = {entry["id"]: entry["name"] for entry in several}
+            with desk.on(chosen):
+                held = desk.guard(name, args, session)             # a scheduled job, and a change kept for a person
                 if held is not None:
-                    desk.announce()
-                    return json.dumps(held, ensure_ascii=False, default=str)
-            result = json.dumps(fn(args or {}), ensure_ascii=False, default=str)
-            if desk is not None and not quiet:
+                    out = held
+                elif several and asked in (None, "") and name == "gtm_pipeline" and str(args.get("view") or "") in ACROSS:
+                    out = {"ok": True, "across": [], "note": "One answer for each pipeline on the desk. Say which is which."}
+                    for entry in several:
+                        with desk.on(entry["id"]):
+                            part = fn(dict(args))
+                        out["across"].append(dict(part, pipeline=entry["name"]) if isinstance(part, dict) else {"pipeline": entry["name"], "answer": part})
+                else:
+                    out = fn(args)
+            if several and isinstance(out, dict) and "across" not in out:
+                out.setdefault("pipeline", names.get(chosen or "main", ""))
+                wanted = str(args.get("deal") or "").strip()
+                if asked in (None, "") and wanted and out.get("ok") is False and "no record matches" in str(out.get("error")):
+                    there = []                                      # not in the first pipeline: say where it is, so nothing is guessed
+                    for entry in several:
+                        if entry["id"] != (chosen or "main"):
+                            with desk.on(entry["id"]):
+                                try:
+                                    there += [entry["name"]] if desk.store.find(wanted) else []
+                                except Exception:
+                                    there.append(entry["name"])     # several matches there: it is there
+                    if there:
+                        out["elsewhere"] = there
+                        out["error"] = "%s in %s. It is in: %s. Call again with `pipeline`." % (out["error"], out["pipeline"], ", ".join(there))
+            result = json.dumps(out, ensure_ascii=False, default=str)
+            if held is not None or not quiet:
                 desk.announce()
             return result
         except Exception as exc:
@@ -158,7 +199,8 @@ def register(ctx) -> None:
     # -- /gtm on every surface, `hermes stoa` in a terminal -------------------------------------
     def slash(raw_args: str) -> str:
         session = _session()
-        return desk.slash(raw_args, session) if desk.allowed(session) else "The Stoa desk is not available in this chat."
+        with desk.on(""):                   # the command is about the first pipeline
+            return desk.slash(raw_args, session) if desk.allowed(session) else "The Stoa desk is not available in this chat."
 
     ctx.register_command("gtm", handler=slash, description="Pipeline board, brief, or one record's card",
                          args_hint="[brief|stale|due|map|playbooks|<name>]")
@@ -172,7 +214,8 @@ def register(ctx) -> None:
         platform = str((info or {}).get("platform") or "").lower()
         if platform:        # the host says where this prompt is for; without that, trust the session itself
             session = dict(session, platform=platform)
-        return desk.prompt_section() if desk.allowed(session) else ""
+        with desk.on(""):
+            return desk.prompt_section() if desk.allowed(session) else ""
 
     ctx.register_system_prompt_section("stoa.desk", section, max_chars=900)
     skills = Path(__file__).parent / "skills"
