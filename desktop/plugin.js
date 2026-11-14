@@ -845,6 +845,8 @@ function DotFigure({ text }) {
 // drawn here dot by dot on the screen's own pixels: sharp at any size, in the heat colours as the theme has
 // them. On a light theme the brightest dots turn to ink, so the outlines read as a drawing on paper.
 const HEAT_AT = [0.33, 0.47, 0.59, 0.675, 0.78, 0.85, 0.925]      // the brightness at which each heat colour sits
+const PAPER_RICH = 1.5, PAPER_DEEP = 0.66                         // on a light theme: how much richer, and how much deeper
+const PAPER_WASH = 0.42                                           // and how strong the wash under a name is
 
 function unpack(piece) {
   const raw = atob(piece.cells), cells = new Uint8Array(piece.w * piece.h)
@@ -871,9 +873,16 @@ function inksOf(el) {
     let colour = t <= HEAT_AT[0] ? mix([0, 0, 0], stops[0], 0.62 + (0.38 * t) / HEAT_AT[0])
       : t >= HEAT_AT[6] ? mix(stops[6], words, (0.7 * (t - HEAT_AT[6])) / (1 - HEAT_AT[6]))
         : mix(stops[at], stops[at + 1], (t - HEAT_AT[at]) / (HEAT_AT[at + 1] - HEAT_AT[at]))
-    if (paper) colour = mix(colour, words, t >= HEAT_AT[5] ? 0.62 : 0.3)
+    if (paper) {
+      // On paper a dot has to be darker than the page to be seen at all, so each colour is made richer and
+      // deeper before the brightest are turned to ink.
+      const grey = (colour[0] + colour[1] + colour[2]) / 3
+      colour = colour.map(part => Math.min(255, Math.max(0, grey + (part - grey) * PAPER_RICH)) * PAPER_DEEP)
+      if (t >= HEAT_AT[5]) colour = mix(colour, words, 0.5)
+    }
     inks.push('rgb(' + colour.map(Math.round).join(',') + ')')
   }
+  inks.paper = paper
   return inks
 }
 
@@ -1017,7 +1026,7 @@ function paintName(el, text, side) {
   const chance = (x, y, salt) => { const v = Math.sin(x * 12.9898 + y * 78.233 + salt * 37.719) * 43758.5453; return v - Math.floor(v) }
   const x0 = Math.floor(start / S), x1 = Math.ceil((start + wide) / S)        // where the name starts and ends, in dots
   const along = x => (x - x0) / Math.max(1, x1 - x0)
-  const dots = Array.from({ length: 16 }, () => [])
+  const dots = Array.from({ length: 16 }, () => []), ground = Array.from({ length: 16 }, () => []), rim = Array.from({ length: 16 }, () => [])
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       if (!inside(x, y)) continue
@@ -1031,8 +1040,29 @@ function paintName(el, text, side) {
       if (edge) {
         t = lit > 0.1 ? 0.9 + 0.1 * warm : 0.36
         odds = lit > 0.1 ? 1 : 0.74
+      } else if (inks.paper) t = Math.min(t, 0.83)           // on paper only an edge is ink: the lit patch stays warm
+      const level = Math.min(15, Math.max(1, Math.round(t * 15)))
+      if (edge && inks.paper) rim[level].push(x, y)          // on paper every edge is a whole line, lit or not
+      else {
+        ground[level].push(x, y)
+        if (dither(x, y) < odds) dots[level].push(x, y)
       }
-      if (dither(x, y) < odds) dots[Math.min(15, Math.max(1, Math.round(t * 15)))].push(x, y)
+    }
+  }
+  // On paper the gaps between dots are the page showing through, which thins a letter out. So each letter is
+  // first laid in as a wash of its own colours, and the dots are printed over it.
+  if (inks.paper) {
+    g.globalAlpha = PAPER_WASH
+    for (let level = 1; level <= 15; level++) {
+      g.fillStyle = inks[level]
+      const list = ground[level]
+      for (let i = 0; i < list.length; i += 2) g.fillRect(list[i] * pitch, list[i + 1] * pitch, pitch, pitch)
+    }
+    g.globalAlpha = 1
+    for (let level = 1; level <= 15; level++) {
+      g.fillStyle = inks[level]
+      const list = rim[level]
+      for (let i = 0; i < list.length; i += 2) g.fillRect(list[i] * pitch, list[i + 1] * pitch, pitch, pitch)
     }
   }
   for (let level = 1; level <= 15; level++) {
