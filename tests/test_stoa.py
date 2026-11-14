@@ -3175,21 +3175,27 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual((shown["phone"], shown["fields"]["location"], shown["source"]), ("+1 415 555 0142", "Austin, TX", "Referral"))
 
     def test_the_page_is_handed_the_artwork_as_grids_of_dots(self):
-        import base64
         art = self.api.art()
-        self.assertEqual(sorted(art), ["band", "hero"])
-        for piece in art.values():
-            packed = base64.b64decode(piece["cells"])
-            self.assertEqual(len(packed), (piece["w"] * piece["h"] + 1) // 2)       # four bits a cell, two cells to a byte
-            self.assertTrue(any(packed))
+        self.assertEqual(sorted(art), ["head", "v", "welcome"])      # not the names 0.20 used: a page not yet reloaded draws nothing, not noise
+        self.assertEqual(art["v"], 2)
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        for name in ("head", "welcome"):
+            piece = art[name]
+            self.assertEqual(len(piece["cells"]), piece["w"] * piece["h"])            # one character a cell
+            values = [alphabet.index(c) for c in set(piece["cells"])]
+            self.assertTrue(any(v & 16 for v in values) and any(v & 32 for v in values))   # dots for a dark theme, and for a light one
+            self.assertFalse(any(v & 48 and not v & 15 for v in values))                 # a dot always says how bright it is
 
     def test_the_desk_carries_its_own_name_for_the_head_of_the_page(self):
-        self.assertEqual(self.api.state()["sign"], {"text": "", "place": "art"})
+        self.assertEqual(self.api.state()["sign"], {"text": "", "place": "art", "ink": "color"})
         saved = self.api.sign({"text": "  Fernway   Search ", "place": "beside"})
         self.assertEqual((saved["text"], saved["place"]), ("Fernway Search", "beside"))
         self.assertEqual(self.api.sign({"place": "art"})["text"], "Fernway Search")           # one can be set without the other
-        self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art"})
-        for wrong in ({"text": "x" * 41}, {"place": "sideways"}):
+        self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art", "ink": "color"})
+        self.assertEqual(self.api.sign({"ink": "mono"})["ink"], "mono")                       # the picture and the name in one ink
+        self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art", "ink": "mono"})
+        self.assertEqual(self.api.sign({"ink": "color"})["ink"], "color")
+        for wrong in ({"text": "x" * 41}, {"place": "sideways"}, {"ink": "sepia"}):
             with self.assertRaises(self.api.HTTPException):
                 self.api.sign(wrong)
         self.assertEqual(self.api.state()["sign"]["text"], "Fernway Search")                  # a refusal changes nothing

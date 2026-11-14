@@ -24,7 +24,7 @@ keeps the pipeline. Stoa is that, in one plugin:
 - **Then Hermes does the writing.** The same click hands the follow-up (the outreach note, the
   proposal email, the decline) to the agent, in the card's thread.
 - **Make it yours.** Type your business name under Setup and it is drawn in dots at the head of
-  the desk, lit the way the stoa is.
+  the desk, lit the way the stoa is. Both can be in color or in one ink.
 - **Three shapes, your stages.** A pipeline is for closing deals, filling roles or generating
   leads; you set its stages in your own words (up to seven), on the page or by telling Hermes.
   Underneath, a playbook names the stages, the button labels and what gets drafted at each step,
@@ -114,7 +114,7 @@ What the plugin does that you would want to know before installing it:
   when you pick it or drop it on the page: a CSV's text goes to the plugin's backend to be held as a
   review, and a small text file goes to the agent with your message. The picture at the head of the page is drawn in the browser from a grid of
   dots that ships with the plugin (`desktop/art.json`), and a name you type under Setup is kept in the
-  plugin's own database and drawn the same way; neither is sent anywhere. It does not touch the app's
+  plugin's own database (with whether the two are in color or in one ink) and drawn the same way; neither is sent anywhere. It does not touch the app's
   DOM or other plugins' storage, and it checks in with the backend every 30 seconds while open so
   the agent knows a card can be drawn in the conversation.
 - **Web dashboard.** The tab's backend adds routes under `/api/plugins/stoa/`, behind the
