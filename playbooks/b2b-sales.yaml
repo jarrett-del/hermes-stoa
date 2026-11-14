@@ -3,6 +3,7 @@ name: b2b-sales
 title: B2B sales desk
 door: Clients and revenue
 summary: Founder-led or small-team B2B sales. One deal per buyer, grouped by account.
+shape: deals           # the motion it is for: deals, roles or leads
 terms:
   deal: deal
   deals: deals

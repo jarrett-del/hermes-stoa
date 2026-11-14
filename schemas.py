@@ -236,12 +236,20 @@ GTM_PLAYBOOK = {
         "playbook from the template, show it to them, and save it once they agree. A desk can hold several pipelines "
         "side by side, each with its own records and its own playbook (client work beside the team's own sales): "
         "'pipelines' lists them, 'add_pipeline' opens an empty one (pipeline_name, and the playbook it runs on), "
-        "'rename_pipeline' renames the one named in `pipeline` (to). With `pipeline`, show/use/save act on that one."
+        "'rename_pipeline' renames the one named in `pipeline` (to). With `pipeline`, show/use/save act on that one. "
+        "Most people need no YAML: a pipeline has one of three shapes (action='shapes': close deals, fill roles, generate "
+        "leads) and its own stages, 2 to 7 before won or lost: action='stages' with stages=[names in order], and won/lost "
+        "for what a win and a loss are called, sets them on the pipeline in hand (shape too, when it changes). "
+        "add_pipeline takes shape and stages as well."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "show", "use", "template", "save", "pipelines", "add_pipeline", "rename_pipeline"]},
+            "action": {"type": "string", "enum": ["list", "show", "use", "template", "save", "pipelines", "add_pipeline", "rename_pipeline", "shapes", "stages"]},
+            "shape": {"type": "string", "enum": ["deals", "roles", "leads"], "description": "stages/add_pipeline: close deals, fill roles or generate leads."},
+            "stages": {"type": "array", "items": {"type": "string"}, "description": "stages/add_pipeline: the open stages in order, 2 to 7 (not the won or lost ones)."},
+            "won": {"type": "string", "description": "stages: what a win is called (Closed won, Placed, Handed over)."},
+            "lost": {"type": "string", "description": "stages: what a loss is called."},
             "name": {"type": "string", "description": "show/use: the playbook name."},
             "pipeline_name": {"type": "string", "description": "add_pipeline: what to call the new pipeline (My practice, Client work)."},
             "playbook": {"type": "string", "description": "add_pipeline: the playbook it runs on (see action='list')."},

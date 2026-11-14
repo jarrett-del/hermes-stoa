@@ -2712,6 +2712,75 @@ class ClientBillingTests(unittest.TestCase):
         self.assertEqual((today["counts"]["to_invoice"], today["counts"]["to_bill"]), (0, 0))
         self.assertEqual(leads.cash()["strip"]["owed"]["value"], 12000.0)
 
+
+class ShapeTests(unittest.TestCase):
+    """Three shapes of pipeline, and the stages a person sets for their own business."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.saved = {}
+        settings = {}
+        self.desk = Desk(data_dir=lambda: Path(self.tmp.name), get_config=lambda k, default=None: settings.get(k, default),
+                         set_config=lambda k, v: settings.__setitem__(k, v), get_secret=lambda name: None)
+        self.settings = settings
+
+    def test_three_shapes_each_with_its_use_cases(self):
+        shapes = self.desk.shapes()
+        self.assertEqual([s["title"] for s in shapes], ["Close deals", "Fill roles", "Generate leads"])
+        self.assertTrue(all(len(s["uses"]) >= 3 and 2 <= len(s["stages"]) <= 7 for s in shapes))
+        self.assertEqual([self.desk.library.load(n).shape for n in ("b2b-sales", "agency", "partnerships", "recruiting", "client-leads")],
+                         ["deals", "deals", "deals", "roles", "leads"])
+
+    def test_first_setup_with_own_stages(self):
+        out = self.desk.setup_pipeline("first", "roles", ["Sourced", "Phone screen", "Submitted", "Interview", "Offer"], "Placed", "Not a fit", "Contract")
+        self.assertTrue(out["ok"], out)
+        pb = self.desk.playbook()
+        self.assertEqual((pb.shape, [s["label"] for s in pb.stages], pb.won["label"], pb.lost["label"]),
+                         ("roles", ["Sourced", "Phone screen", "Submitted", "Interview", "Offer"], "Placed", "Not a fit"))
+        self.assertEqual(pb.name, "recruiting-contract")
+        self.assertEqual(self.desk.current()["name"], "Contract")
+        self.assertEqual(self.settings["playbook"], "recruiting-contract")
+        self.assertEqual([s["id"] for s in pb.stages][:1], ["sourced"])                  # a stage the shape has keeps its id
+        # the stages as they ship need no copy of the playbook
+        self.assertEqual(self.desk.set_stages([s["label"] for s in self.desk.library.load("recruiting").stages], "Placed", "Passed")["ok"], True)
+        self.assertEqual(self.desk.playbook().name, "recruiting")
+
+    def test_two_pipelines_of_one_shape_keep_their_own_stages(self):
+        self.desk.setup_pipeline("first", "roles", ["Sourced", "Submitted", "Interview"], name="Contract")
+        out = self.desk.setup_pipeline("add", "roles", ["Sourced", "Screened", "Submitted", "Offer"], "Placed", None, "Contingency")
+        self.assertTrue(out["ok"], out)
+        with self.desk.on(out["added"]["id"]):
+            self.assertEqual([s["label"] for s in self.desk.playbook().stages], ["Sourced", "Screened", "Submitted", "Offer"])
+        self.assertEqual([s["label"] for s in self.desk.playbook().stages], ["Sourced", "Submitted", "Interview"])
+
+    def test_limits_and_records_left_behind(self):
+        self.desk.setup_pipeline("first", "deals", None, name="Sales")
+        too_many = self.desk.set_stages(["A", "B", "C", "D", "E", "F", "G", "H"])
+        self.assertFalse(too_many["ok"])
+        self.assertIn("2 to 7", too_many["error"])
+        self.assertFalse(self.desk.set_stages(["Only one"])["ok"])
+        self.assertFalse(self.desk.set_stages(["Call", "call"])["ok"])
+        self.desk.deal({"action": "add", "name": "Renata Okafor", "stage": "Qualified"})
+        refused = self.desk.set_stages(["Lead", "Discovery", "Proposal"])
+        self.assertFalse(refused["ok"])
+        self.assertIn("Qualified", refused["error"])
+        # renamed in place: the record stays put
+        stages = [{"id": s["id"], "label": s["label"]} for s in self.desk.playbook().stages]
+        stages[1]["label"] = "Qualified lead"
+        self.assertTrue(self.desk.set_stages(stages)["ok"])
+        self.assertEqual(self.desk.view(self.desk.store.find("Renata Okafor"))["stage_label"], "Qualified lead")
+        moved = self.desk.setup_pipeline("edit", "roles", None)
+        self.assertFalse(moved["ok"])
+        self.assertIn("open a new pipeline", moved["error"])
+
+    def test_the_agent_sets_stages_by_name(self):
+        out = self.desk.playbook_tool({"action": "stages", "shape": "leads", "stages": ["Found", "Researched", "Reached out", "Replied", "Meeting set"],
+                                       "won": "Handed over"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(self.desk.playbook().shape, "leads")
+        self.assertEqual(self.desk.playbook().billing, "none")
+
 class FakeCtx:
     """The part of Hermes's plugin context that ``register`` uses, recording what it is given."""
 

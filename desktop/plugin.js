@@ -589,6 +589,27 @@ const CSS = `
 .stoa-weekline b { font-size: 15px; font-weight: 600; color: var(--ui-text-primary); font-variant-numeric: tabular-nums; }
 /* The way in, and Setup */
 .stoa-welcome { max-width: 1040px; }
+.stoa-modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 28px 20px; background: color-mix(in srgb, var(--background, #0d1015) 62%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: stoa-lift .16s ease both; }
+.stoa-modalpanel { width: min(980px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; padding: 20px 22px 0; border: 1px solid var(--ui-stroke-primary); border-radius: 14px; background: var(--ui-bg-elevated, var(--background, #14161b)); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .55); }
+.stoa-modalhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.stoa-modaltitle { margin-top: 4px; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+.stoa-modalsec { margin-top: 18px; }
+.stoa-modalfoot { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center; margin: 18px -22px 0; padding: 12px 22px; border-top: 1px solid var(--ui-stroke-tertiary); background: var(--ui-bg-elevated, var(--background, #14161b)); }
+.stoa-describe summary { cursor: pointer; color: var(--ui-text-secondary); }
+.stoa-describe[open] summary { margin-bottom: 8px; }
+.stoa-warn { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--ui-orange); border-radius: 8px; color: var(--ui-text-primary); font-size: 12.5px; }
+.stoa-shapes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.stoa-shape { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--ui-stroke-secondary); border-radius: 12px; background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, transform .15s ease, background .15s ease; }
+.stoa-shape:hover { border-color: var(--stoa-accent-line); transform: translateY(-1px); }
+.stoa-shape[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
+.stoa-shapehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.stoa-shapetitle { font-size: 16px; font-weight: 600; letter-spacing: -.005em; }
+.stoa-uses { margin: 8px 0 6px; padding-left: 17px; color: var(--ui-text-secondary); font-size: 12.5px; line-height: 1.6; }
+.stoa-stagelist { list-style: none; margin: 0; padding: 0; max-width: 560px; }
+.stoa-stagelist li { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
+.stoa-stagelist .stoa-field { margin-top: 0; height: 32px; font-size: 13px; }
+.stoa-stagelist .stoa-icon { width: 30px; height: 30px; }
+.stoa-stagenum { flex: none; width: 22px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--ui-text-tertiary); text-align: right; margin-right: 4px; }
 .stoa-doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 14px; }
 .stoa-door { display: flex; flex-direction: column; gap: 3px; transition: border-color .15s ease, transform .15s ease; }
 .stoa-door:hover { border-color: var(--ui-stroke-primary); transform: translateY(-1px); }
@@ -1145,6 +1166,7 @@ const ICON = {
   mic: 'M12 2.5a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0v-6a3 3 0 0 0-3-3zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4',
   up: 'M12 19.5v-15M5.5 11L12 4.5 18.5 11',
   down: 'M6 9.5l6 6 6-6',
+  upchev: 'M6 14.5l6-6 6 6',
   x: 'M6.5 6.5l11 11M17.5 6.5l-11 11',
   back: 'M9 14.5L4 9.5l5-5M4 9.5h10.5a5.5 5.5 0 0 1 0 11H11'
 }
@@ -1441,19 +1463,6 @@ function Ahead({ state, setOpenId }) {
 }
 
 // -- the way in: a desk nobody has set up yet --------------------------------------------------------
-async function switchPlaybook(name, title) {
-  try {
-    const result = await rest('/playbook', { method: 'POST', body: { name } })
-    refresh()
-    if (result && result.ask) toChat(result.ask) // this page cannot save a setting: Hermes can
-    else host.notify({ kind: result && result.warning ? 'warning' : 'success', message: (result && result.warning) || 'The desk now runs on ' + title + '.' })
-    return true
-  } catch (error) {
-    host.notifyError(error, 'Stoa could not switch playbook')
-    return false
-  }
-}
-
 async function tour(action, example) {
   try {
     const result = await rest('/tour', { method: 'POST', body: { action, example: example || '' } })
@@ -1468,38 +1477,166 @@ async function tour(action, example) {
   }
 }
 
-const an = word => (/^[aeiou]/i.test(word) ? 'an ' : 'a ') + word
-const DOOR_ORDER = ['b2b-sales', 'agency', 'client-leads', 'recruiting', 'partnerships'] // the shipped ones, most general first; a team's own come after
+// -- setting a pipeline up: pick its shape, then its stages. One window, always in view ------------------
+const $setupFlow = atom(null) // open: { mode: 'first' | 'add' | 'edit', step: 'shape' | 'stages', shape }
 
-function Doors({ playbooks, active, pick, busy }) {
-  const place = item => { const at = DOOR_ORDER.indexOf(item.name); return at < 0 ? DOOR_ORDER.length : at }
-  const doors = playbooks.filter(item => !item.error).sort((a, b) => place(a) - place(b) || a.name.localeCompare(b.name))
-  return h('div', { className: 'stoa-doors' }, doors.map(item =>
-    h('div', { key: item.name, className: 'stoa-box stoa-door', 'data-on': item.name === active ? '1' : '0' },
-      h('div', { className: 'stoa-name', style: { fontSize: 14 } }, item.door || item.title),
-      h('div', { className: 'stoa-sub', style: { marginTop: 2 } }, item.summary),
-      h('div', { className: 'stoa-chain' }, item.stages.concat([item.won]).join('  →  ')),
-      h('div', { className: 'stoa-sub' }, 'Each record is ' + an(item.words.split(', ')[0]) + ', grouped by ' + item.words.split(', ')[1] + '.'),
-      h('div', { className: 'stoa-btns' }, item.name === active ? h(Chip, { tone: 'good' }, 'in use')
-        : h(Btn, { kind: 'primary', disabled: busy, onClick: () => pick(item) }, 'Use this')))))
+function ShapeCard({ shape, picked, current, onPick }) {
+  return h('button', { type: 'button', className: 'stoa-shape', 'data-on': picked ? '1' : '0', onClick: () => onPick(shape) },
+    h('div', { className: 'stoa-shapehead' }, h('span', { className: 'stoa-shapetitle' }, shape.title), current ? h(Chip, { tone: 'good' }, 'now') : null),
+    h('div', { className: 'stoa-sub', style: { marginTop: 3 } }, shape.motion),
+    h('ul', { className: 'stoa-uses' }, shape.uses.map(use => h('li', { key: use }, use))),
+    h('div', { className: 'stoa-chain', style: { marginBottom: 0 } }, shape.stages.map(stage => stage.label).concat([shape.won]).join('  →  ')))
+}
+
+/** The stages, in order, as a list to rename, reorder, add to and take from. */
+function StageEditor({ stages, setStages, most, record }) {
+  const move = (index, by) => {
+    const next = stages.slice()
+    const [item] = next.splice(index, 1)
+    next.splice(index + by, 0, item)
+    setStages(next)
+  }
+  return h('div', null,
+    h('ol', { className: 'stoa-stagelist' }, stages.map((stage, index) => h('li', { key: stage.key },
+      h('span', { className: 'stoa-stagenum' }, String(index + 1)),
+      h('input', { className: 'stoa-field', value: stage.label, maxLength: 40, 'aria-label': 'Stage ' + (index + 1), placeholder: 'Stage name',
+        onChange: event => setStages(stages.map((item, at) => (at === index ? { ...item, label: event.target.value } : item))) }),
+      h('button', { type: 'button', className: 'stoa-icon', disabled: index === 0, title: 'Earlier', 'aria-label': 'Move earlier', onClick: () => move(index, -1) }, h(Icon, { name: 'upchev', size: 14 })),
+      h('button', { type: 'button', className: 'stoa-icon', disabled: index === stages.length - 1, title: 'Later', 'aria-label': 'Move later', onClick: () => move(index, 1) }, h(Icon, { name: 'down', size: 14 })),
+      h('button', { type: 'button', className: 'stoa-icon', disabled: stages.length <= 2, title: 'Remove this stage', 'aria-label': 'Remove', onClick: () => setStages(stages.filter((item, at) => at !== index)) },
+        h(Icon, { name: 'x', size: 13 }))))),
+    h('div', { className: 'stoa-btns', style: { marginTop: 6 } },
+      h(Btn, { disabled: stages.length >= most, onClick: () => setStages(stages.concat([{ key: 'n' + Date.now(), id: '', label: '' }])) },
+        stages.length >= most ? 'Seven stages is the most' : '+  Add a stage'),
+      h('span', { className: 'stoa-sub', style: { alignSelf: 'center' } }, 'Every ' + record + ' moves through these, in order, until it is won or lost.')))
+}
+
+function SetupFlow() {
+  const flow = useValue($setupFlow)
+  const query = useQuery({ queryKey: ['stoa', 'shapes', $pipe.get()], queryFn: () => rest('/shapes'), staleTime: 2000, enabled: Boolean(flow) })
+  const [step, setStep] = useState('shape')
+  const [shape, setShape] = useState(null)
+  const [name, setName] = useState('')
+  const [stages, setStages] = useState([])
+  const [won, setWon] = useState('')
+  const [lost, setLost] = useState('')
+  const [describe, setDescribe] = useState('')
+  const [busy, setBusy] = useState(false)
+  const panel = useRef(null)
+  const data = query.data
+  const close = () => { if (!busy) $setupFlow.set(null) }
+  const begin = (chosen, current) => {
+    setShape(chosen)
+    const same = current && current.shape === chosen.id
+    const list = same ? current.stages : chosen.stages
+    setStages(list.map((stage, index) => ({ key: 's' + index + stage.id, id: stage.id, label: stage.label })))
+    setWon(same ? current.won : chosen.won)
+    setLost(same ? current.lost : chosen.lost)
+    setStep('stages')
+  }
+  // open where it was asked to: at the shapes, or straight at the stages of a shape
+  useEffect(() => {
+    if (!flow || !data) return
+    setName(flow.mode === 'first' ? '' : flow.mode === 'add' ? '' : data.current.pipeline)
+    setDescribe('')
+    const wanted = data.shapes.find(item => item.id === (flow.shape || (flow.mode === 'edit' && flow.step === 'stages' ? data.current.shape : '')))
+    if (flow.step === 'stages' && wanted) begin(wanted, flow.mode === 'edit' ? data.current : null)
+    else { setShape(null); setStep('shape') }
+  }, [flow, Boolean(data)])
+  useEffect(() => {
+    if (!flow) return undefined
+    const key = event => { if (event.key === 'Escape') close() }
+    document.addEventListener('keydown', key)
+    return () => document.removeEventListener('keydown', key)
+  }, [flow, busy])
+  useEffect(() => { if (panel.current) panel.current.scrollTop = 0 }, [step])
+  if (!flow) return null
+  const most = data ? data.most_stages : 7
+  const words = shape ? shape.record : 'record'
+  const named = stages.map(stage => stage.label.trim()).filter(Boolean)
+  const repeated = new Set(named.map(label => label.toLowerCase())).size !== named.length
+  const ready = shape && named.length === stages.length && named.length >= 2 && named.length <= most && !repeated && (flow.mode !== 'add' || name.trim())
+  const verb = flow.mode
+  const submit = async ask => {
+    if (!ready || busy) return
+    setBusy(true)
+    try {
+      const result = await rest('/pipeline/setup', { method: 'POST', body: { verb, shape: shape.id, name: name.trim(), won: won.trim(), lost: lost.trim(),
+        stages: stages.map(stage => ({ id: stage.id, label: stage.label.trim() })) } })
+      if (result.ask) toChat(result.ask)
+      if (result.added) { $pipe.set(result.added.id); if (storage) storage.set('pipe', result.added.id) }
+      refresh()
+      $setupFlow.set(null)
+      host.notify({ kind: 'success', message: verb === 'add' ? (name.trim() + ' is open: ' + shape.title.toLowerCase() + ', ' + named.length + ' stages.')
+        : verb === 'first' ? 'Your pipeline is set up. Add your first ' + words + ', or drop a list on the page.' : 'Saved: ' + named.join(' → ') + '.' })
+      if (ask) say('Set up the stages of my ' + (name.trim() || (data && data.current.pipeline) || 'Stoa') + ' pipeline (' + shape.title.toLowerCase()
+        + ') to fit how I work, at most ' + most + ' before it is won or lost. Ask me anything you need, then set them with gtm_playbook action stages. About my business: ' + ask)
+    } catch (error) {
+      host.notifyError(error, 'Stoa could not set that up')
+    }
+    setBusy(false)
+  }
+  const title = step === 'shape'
+    ? (verb === 'add' ? 'A new pipeline: what kind of work is it for?' : verb === 'edit' ? 'Change what this pipeline is for' : 'What kind of work is your pipeline for?')
+    : (verb === 'edit' ? 'The stages of ' + ((data && data.current.pipeline) || 'this pipeline') : 'Name it, and set its stages')
+  return h('div', { className: 'stoa stoa-modal', role: 'dialog', 'aria-modal': true, 'aria-label': title, onMouseDown: event => { if (event.target === event.currentTarget) close() } },
+    h('div', { className: 'stoa-modalpanel', ref: panel },
+      h('div', { className: 'stoa-modalhead' },
+        h('div', null,
+          h('div', { className: 'stoa-eyebrow' }, step === 'shape' ? 'Step 1 of 2' : (flow.step === 'stages' && flow.mode === 'edit' ? shape && shape.title : 'Step 2 of 2 · ' + (shape ? shape.title : ''))),
+          h('div', { className: 'stoa-modaltitle' }, title)),
+        h('button', { type: 'button', className: 'stoa-icon', 'aria-label': 'Close', onClick: close }, h(Icon, { name: 'x' }))),
+      !data ? h('p', { className: 'stoa-sub' }, query.error ? 'Stoa is not answering (' + why(query.error) + ').' : 'Loading…')
+        : step === 'shape' ? h('div', { style: { paddingBottom: 22 } },
+          h('p', { className: 'stoa-sub', style: { margin: '0 0 12px' } }, 'Pick the one closest to how the work moves. You set the stages next, in your own words.'),
+          verb === 'edit' && data.current.open ? h('p', { className: 'stoa-warn' }, 'This pipeline has ' + plural(data.current.open, 'open record', 'open records') + '. A different shape only works if they are moved or closed first; for another kind of work, add a new pipeline instead.') : null,
+          h('div', { className: 'stoa-shapes' }, data.shapes.map(item => h(ShapeCard, { key: item.id, shape: item, picked: shape && shape.id === item.id,
+            current: verb === 'edit' && data.current.shape === item.id, onPick: chosen => begin(chosen, verb === 'edit' ? data.current : null) }))))
+          : h('div', null,
+            verb !== 'edit' ? h('div', { className: 'stoa-form', 'data-one': '1', style: { marginTop: 0, maxWidth: 420 } },
+              h(Field, { label: verb === 'add' ? 'Name of the new pipeline' : 'Name your pipeline (you can change it later)', autoFocus: true, value: name,
+                placeholder: shape && shape.id === 'roles' ? 'Contract searches' : shape && shape.id === 'leads' ? 'Client campaigns' : 'Sales',
+                onChange: event => setName(event.target.value) })) : null,
+            h('div', { className: 'stoa-modalsec' }, h('div', { className: 'stoa-name' }, 'Stages'),
+              h('div', { className: 'stoa-sub', style: { marginBottom: 8 } }, 'Rename them to the words you use, put them in your order, add or take away. Two to ' + most + '.'),
+              h(StageEditor, { stages, setStages, most, record: words }),
+              repeated ? h('p', { className: 'stoa-warn' }, 'Two stages have the same name.') : null),
+            h('div', { className: 'stoa-modalsec' },
+              h('div', { className: 'stoa-form', style: { marginTop: 0, maxWidth: 520 } },
+                h(Field, { label: 'When it is won, it is', value: won, placeholder: shape && shape.won, onChange: event => setWon(event.target.value) }),
+                h(Field, { label: 'When it is lost, it is', value: lost, placeholder: shape && shape.lost, onChange: event => setLost(event.target.value) }))),
+            h('details', { className: 'stoa-modalsec stoa-describe' },
+              h('summary', null, 'Not sure? Describe your business and Hermes sets the stages'),
+              h('textarea', { className: 'stoa-field stoa-notes', rows: 3, value: describe, placeholder: 'I am a contract recruiter for a VC fund; I place engineers and product people at its portfolio companies…',
+                onChange: event => setDescribe(event.target.value) }),
+              h('div', { className: 'stoa-btns' }, h(Btn, { disabled: !ready || busy || !describe.trim(), onClick: () => submit(describe.trim()) },
+                verb === 'add' ? 'Open it, then ask Hermes' : 'Save these, then ask Hermes'),
+              h('span', { className: 'stoa-sub', style: { alignSelf: 'center' } }, 'Hermes answers in the box at the foot of the page.')))),
+      data && step === 'stages' ? h('div', { className: 'stoa-modalfoot' },
+        flow.step === 'stages' && flow.mode === 'edit' ? h('span') : h(Btn, { kind: 'quiet', disabled: busy, onClick: () => setStep('shape') }, '‹  Back'),
+        h('span', { className: 'stoa-grow' }),
+        h(Btn, { kind: 'quiet', disabled: busy, onClick: close }, 'Cancel'),
+        h(Btn, { kind: 'primary', disabled: !ready || busy, onClick: () => submit('') }, verb === 'add' ? 'Open the pipeline' : verb === 'first' ? 'Set it up' : 'Save stages')) : null))
 }
 
 function Welcome({ skip }) {
-  const query = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000 })
+  const query = useQuery({ queryKey: ['stoa', 'shapes', 'welcome'], queryFn: () => rest('/shapes'), staleTime: 5000 })
+  const setupQuery = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000 })
   const [busy, setBusy] = useState(false)
-  const setup = query.data
-  if (!setup) return h('p', { className: 'stoa-sub' }, query.error ? 'The desk is not answering yet (' + why(query.error) + '). Reload in a moment.' : 'Opening the desk…')
-  const pick = item => { setBusy(true); switchPlaybook(item.name, item.title).then(ok => { setBusy(false); if (ok) skip() }) }
+  const data = query.data, setup = setupQuery.data
+  if (!data) return h('p', { className: 'stoa-sub' }, query.error ? 'The desk is not answering yet (' + why(query.error) + '). Reload in a moment.' : 'Opening the desk…')
   return h('div', { className: 'stoa-welcome' },
     h('div', { className: 'stoa-eyebrow' }, 'Welcome to Stoa'),
     h('div', { className: 'stoa-name', style: { fontSize: 22, margin: '6px 0 4px', letterSpacing: '-.01em' } }, 'The CRM Hermes runs for you.'),
     h('p', { className: 'stoa-reading', style: { marginTop: 0 } },
-      'You say what happened, in your own words. Hermes keeps the pipeline, logs your email and calls, drafts the follow-ups, and asks before anything changes stage. Start by choosing how you sell.'),
-    h(Doors, { playbooks: setup.playbooks, active: '', pick, busy }),
-    h('div', { className: 'stoa-box', style: { marginTop: 14 } },
+      'You say what happened, in your own words. Hermes keeps the pipeline, logs your email and calls, drafts the follow-ups, and asks before anything changes. First: what kind of work is your pipeline for?'),
+    h('div', { className: 'stoa-shapes', style: { marginTop: 14 } }, data.shapes.map(item => h(ShapeCard, { key: item.id, shape: item,
+      onPick: chosen => $setupFlow.set({ mode: 'first', step: 'stages', shape: chosen.id }) }))),
+    h('div', { className: 'stoa-sub', style: { marginTop: 10 } }, 'Two kinds of work? Set up one now; add the other as a second pipeline under Setup.'),
+    h('div', { className: 'stoa-box', style: { marginTop: 16 } },
       h('div', { className: 'stoa-name' }, 'Or look around first'),
       h('div', { className: 'stoa-sub' }, 'A full pipeline of made-up people and companies, kept in a file of its own. Your desk stays empty, and one press brings you back.'),
-      h('div', { className: 'stoa-btns' }, setup.examples.map(example =>
+      h('div', { className: 'stoa-btns' }, (setup ? setup.examples : []).map(example =>
         h(Btn, { key: example.id, disabled: busy, onClick: () => { setBusy(true); tour('start', example.id).then(() => setBusy(false)) } }, cap(example.title))),
         h(Btn, { kind: 'quiet', disabled: busy, onClick: skip }, 'Skip: I will set it up later'))))
 }
@@ -1551,9 +1688,6 @@ function Lamp({ on }) {
 /** The pipelines on this desk: each has its own records and its own playbook. Add one, rename one, remove an empty one. */
 function Pipelines({ state, setup }) {
   const pipes = state.pipelines || []
-  const [adding, setAdding] = useState(false)
-  const [name, setName] = useState('')
-  const [playbook, setPlaybook] = useState('')
   const [renaming, setRenaming] = useState('')
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1563,11 +1697,6 @@ function Pipelines({ state, setup }) {
       .then(result => { refresh(); if (said) host.notify({ kind: 'success', message: said }); return result })
       .catch(error => { host.notifyError(error, 'Stoa could not do that'); return null })
       .then(result => { setBusy(false); return result })
-  }
-  const add = () => {
-    if (!name.trim() || busy) return
-    send({ verb: 'add', name: name.trim(), playbook: playbook || (setup.playbooks[0] || {}).name }, name.trim() + ' is open. It is in the row of pipelines at the top of the page.')
-      .then(result => { if (result) { setName(''); setAdding(false) } })
   }
   const rename = id => {
     if (!title.trim() || busy) return
@@ -1588,20 +1717,12 @@ function Pipelines({ state, setup }) {
       !item.first && !item.open && renaming !== item.id ? h(Btn, { kind: 'quiet', disabled: busy, title: 'Only a pipeline with nothing in it can be removed',
         onClick: () => send({ verb: 'remove', id: item.id }, item.name + ' was removed.') }, 'Remove') : null)),
     h('p', { className: 'stoa-sub', style: { margin: '10px 0 0' } }, 'Each pipeline has its own records, its own playbook and its own autonomy setting: your own sales beside the work you do for clients, say. In a chat, name the pipeline; left out, Hermes means the first.'),
-    adding ? h('div', null,
-      h('div', { className: 'stoa-form', style: { marginTop: 10 } },
-        h(Field, { label: 'Name', autoFocus: true, value: name, placeholder: 'My practice', onChange: event => setName(event.target.value), onKeyDown: event => { if (event.key === 'Enter') add() } }),
-        h(Field, { label: 'Runs on' }, h('select', { className: 'stoa-select', style: { width: '100%' }, value: playbook || (setup.playbooks[0] || {}).name, onChange: event => setPlaybook(event.target.value) },
-          setup.playbooks.map(item => h('option', { key: item.name, value: item.name }, item.door || item.title || item.name))))),
-      h('div', { className: 'stoa-btns', style: { marginTop: 8 } }, h(Btn, { kind: 'primary', disabled: busy || !name.trim(), onClick: add }, 'Open it'),
-        h(Btn, { kind: 'quiet', onClick: () => setAdding(false) }, 'Cancel')))
-      : pipes.length < 6 ? h('div', { className: 'stoa-btns', style: { marginTop: 10 } }, h(Btn, { onClick: () => setAdding(true) }, '+  Pipeline')) : null))
+    pipes.length < 6 ? h('div', { className: 'stoa-btns', style: { marginTop: 10 } }, h(Btn, { onClick: () => $setupFlow.set({ mode: 'add', step: 'shape' }) }, '+  Pipeline')) : null))
 }
 
 function Setup({ state, go }) {
   const query = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000, refetchInterval: 15000 })
   const [busy, setBusy] = useState(false)
-  const [switching, setSwitching] = useState(false)
   const setup = query.data
   if (!setup) {
     if (!query.error) return h('p', { className: 'stoa-sub' }, 'Loading…')
@@ -1616,7 +1737,7 @@ function Setup({ state, go }) {
   const wait = promise => { setBusy(true); return Promise.resolve(promise).then(() => setBusy(false)) }
   const button = item => {
     if (item.done) return null
-    if (item.id === 'playbook') return h(Btn, { onClick: () => setSwitching(true) }, 'Choose')
+    if (item.id === 'playbook') return setup.tour ? null : h(Btn, { onClick: () => $setupFlow.set({ mode: state.fresh ? 'first' : 'edit', step: 'shape' }) }, 'Set it up')
     if (item.id === 'records') return setup.tour ? null : h(Btn, { onClick: () => go('add') }, '+  New ' + state.playbook.terms.deal)
     if (item.id === 'sweep') return h(Btn, { onClick: () => $draft.set('/blueprint') }, 'Put /blueprint in the box')
     return null
@@ -1640,22 +1761,20 @@ function Setup({ state, go }) {
     box('Rules in force', 'set in the plugin\'s settings', setup.rules.filter(rule => !rule.own).map(rule => h('div', { key: rule.label, className: 'stoa-setrow', style: { display: 'block' } },
       h('small', { className: 'stoa-eyebrow', style: { display: 'block' } }, rule.label), h('span', { style: { overflowWrap: 'anywhere' } }, rule.value)))),
     setup.tour ? null : h(Pipelines, { key: 'pipes', state, setup }),
-    box('Your playbook', setup.playbook.origin === 'custom' ? 'your own' : 'built in', [
-      h('div', { key: 'title', className: 'stoa-name', style: { fontSize: 14 } }, setup.playbook.title),
+    box('This pipeline', setup.playbook.shape_title || setup.playbook.title, [
+      h('div', { key: 'title', className: 'stoa-name', style: { fontSize: 14 } }, setup.playbook.shape_title || setup.playbook.title),
       h('div', { key: 'sum', className: 'stoa-sub' }, setup.playbook.summary),
       h('div', { key: 'chain', className: 'stoa-chain' }, sets.stages.join('  →  ')),
+      h('div', { key: 'edit', className: 'stoa-btns', style: { marginTop: 4 } },
+        h(Btn, { kind: 'primary', disabled: Boolean(setup.tour), onClick: () => $setupFlow.set({ mode: 'edit', step: 'stages' }) }, 'Edit stages'),
+        h(Btn, { disabled: Boolean(setup.tour), onClick: () => $setupFlow.set({ mode: 'edit', step: 'shape' }) }, 'Change what it is for')),
       h('div', { key: 'facts', className: 'stoa-facts', style: { marginTop: 10 } },
         [['The words', sets.words], ['A nudge is due after', sets.quiet.map(item => item.stage + ' ' + item.days + 'd').join(' · ')], ['Reasons for a loss', sets.lost_reasons.join(' · ')],
           ['Extra facts on a record', sets.fields.join(' · ') || 'none'], ['Hermes drafts when a record enters', sets.drafts.join(' · ') || 'nothing'],
           ['A lookup finds', sets.lookup === 'none' ? 'nothing (switched off)' : 'the ' + sets.lookup]].map(pair =>
           h('div', { key: pair[0], style: { gridColumn: '1 / -1' } }, h('small', { className: 'stoa-eyebrow' }, pair[0]), h('span', null, pair[1])))),
       h('div', { key: 'btns', className: 'stoa-btns' },
-        h(Btn, { onClick: () => setSwitching(!switching) }, switching ? 'Close' : 'Switch playbook'),
-        h(Btn, { kind: 'quiet', onClick: () => $draft.set('Write me a playbook for ') }, 'Have Hermes write one for you'))]),
-    switching ? h('div', { className: 'stoa-setbox', 'data-wide': '1' },
-      setup.tour ? h('p', { className: 'stoa-sub' }, 'You are looking at sample data, which brings its own playbook. A switch here applies to your own desk.') : null,
-      h(Doors, { playbooks: setup.playbooks, active: setup.playbook.name, busy,
-        pick: item => wait(switchPlaybook(item.name, item.title).then(ok => { if (ok) setSwitching(false) })) })) : null,
+        h(Btn, { kind: 'quiet', onClick: () => $draft.set('Change my Stoa playbook: ') }, 'Ask Hermes for anything else (fields, drafts, timing)'))]),
     box('Your data', data.records ? plural(data.records, 'record', 'records') : 'empty', [
       h('div', { key: 'counts', className: 'stoa-facts', style: { marginTop: 0, paddingTop: 0, borderTop: 0 } },
         [['Open', data.open], ['Won', data.won], ['Lost', data.lost], ['Log entries', data.activities], ['Market maps', data.maps], ['Lists waiting', data.lists_waiting],
@@ -3063,7 +3182,7 @@ function Page() {
         title: item.title + ': its own ' + 'records and its own playbook', onClick: () => showPipe(item.id) }, item.name, h('small', null, String(item.open))))) : null,
     h('div', { className: 'stoa-head' },
       h('div', null,
-        h('div', { className: 'stoa-eyebrow' }, 'Stoa · ' + pb.title),
+        h('div', { className: 'stoa-eyebrow' }, welcome ? 'Stoa' : 'Stoa · ' + pb.title),
         h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open'))),
       h('div', { className: 'stoa-headstats' }, stats.map(item => h('button', { type: 'button', key: item[0], className: 'stoa-stat', title: item[2], 'data-press': item[3] ? '1' : '0',
         onClick: item[3] ? () => setTab(item[3]) : undefined }, h('span', { className: 'stoa-eyebrow' }, item[0]), h('b', null, String(item[1])))))),
@@ -3115,7 +3234,8 @@ function Page() {
       entry.can_restore ? h(Btn, { kind: 'quiet', title: entry.name + ' was taken off the desk, not destroyed', onClick: () => putBack(entry.deal) }, 'Put back') : null))
       : h('p', { className: 'stoa-sub' }, 'Everything that happens on the desk is logged here: who did it, when, and what changed.')) : null,
     tab === 'setup' ? h(Setup, { state, go: what => { if (what === 'add') add() } }) : null),
-  h(Dock, { state }))
+  h(Dock, { state }),
+  h(SetupFlow))
 }
 
 // -- drawn inside a reply: ::stoa-card{id="…"} and ::stoa-map{market="…"} ------------------------

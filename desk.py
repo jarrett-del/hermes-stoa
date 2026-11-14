@@ -24,7 +24,7 @@ from . import cards, demo, sources
 from . import store as st
 from .intake import Intake
 from .market import Markets
-from .playbook import DEFAULT, Library, Playbook, PlaybookError
+from .playbook import DEFAULT, MOST_STAGES, SHAPES, Library, Playbook, PlaybookError
 
 log = logging.getLogger("hermes.plugins.stoa")
 
@@ -793,7 +793,7 @@ class Desk:
         terms = own.terms
         size = read("the size of the file", lambda: (self.data_dir / self.own_file()).stat().st_size, 0)
         checklist = [
-            {"id": "playbook", "done": chosen or real > 0, "title": "Pick the playbook that fits how you sell",
+            {"id": "playbook", "done": chosen or real > 0, "title": "Set up your pipeline: what it is for, and its stages",
              "detail": "You are on %s: %s." % (own.title, " → ".join(s["label"] for s in own.stages) + " → " + own.won["label"])},
             {"id": "records", "done": real > 0, "title": "Put your first %s on the desk" % terms["deals"],
              "detail": ("%d on the desk." % real) if real else "Add one by hand, tell Hermes about one, or drop a CSV on the page."},
@@ -846,6 +846,7 @@ class Desk:
             "tour": {"example": tour["example"], "title": demo.EXAMPLES[tour["example"]]["title"], "since": tour["since"]} if tour else None,
             "examples": [{"id": key, "title": example["title"], "playbook": example["playbook"]} for key, example in demo.EXAMPLES.items()],
             "playbook": {"name": own.name, "title": own.title, "door": own.door, "summary": own.summary, "origin": own.origin,
+                         "shape": own.shape, "shape_title": next((shape["title"] for shape in SHAPES if shape["id"] == own.shape), ""),
                          "chosen": chosen, "shown": playbook.name},
             "playbooks": [dict(entry, active=entry["name"] == own.name) for entry in catalog],
             "can_switch": bool(self.can_configure),
@@ -2790,6 +2791,156 @@ class Desk:
         return {"ok": False, "error": "no note with id %s (the file may have changed; list the inbox again)" % note_id}
 
     # -- gtm_playbook ---------------------------------------------------------------------------
+    # -- shapes and stages: how a person sets a pipeline up --------------------------------------------
+    # Three shapes (close deals, fill roles, generate leads), each on one shipped playbook. A person picks one and sets
+    # the stages their business uses (two to seven); a pipeline whose stages differ from the shape's gets its own copy of
+    # the playbook, so two pipelines of the same shape can each have their own stages.
+    def shapes(self) -> list:
+        out = []
+        for shape in SHAPES:
+            base = self.library.load(shape["base"])
+            out.append(dict(shape, record=base.terms["deal"], records=base.terms["deals"], group=base.terms["group"],
+                            groups=base.terms["groups"], stages=[{"id": s["id"], "label": s["label"]} for s in base.stages],
+                            won=base.won["label"], lost=base.lost["label"]))
+        return out
+
+    @staticmethod
+    def _shape(ref: Any) -> Optional[dict]:
+        want = str(ref or "").strip().lower()
+        return next((shape for shape in SHAPES if want in (shape["id"], shape["base"], shape["title"].lower())), None)
+
+    def _staged(self, base: Playbook, current: Optional[Playbook], stages: Any, won: Any, lost: Any) -> tuple:
+        """A playbook's data with these stages (labels, or ``{id, label}``): ``(data, error)``. A stage keeps its id, odds
+        and timing when it is one the pipeline already has (by id, or by the same label), so records stay where they are."""
+        rows = []
+        for raw in stages if isinstance(stages, list) else []:
+            if isinstance(raw, dict):
+                rows.append({"id": str(raw.get("id") or "").strip(), "label": " ".join(str(raw.get("label") or "").split())[:40]})
+            else:
+                rows.append({"id": "", "label": " ".join(str(raw or "").split())[:40]})
+        rows = [row for row in rows if row["label"]]
+        if not 2 <= len(rows) <= MOST_STAGES:
+            return None, {"ok": False, "error": "a pipeline has 2 to %d stages before it is won or lost; got %d" % (MOST_STAGES, len(rows))}
+        lowered = [row["label"].lower() for row in rows]
+        if len(set(lowered)) != len(lowered):
+            return None, {"ok": False, "error": "two stages have the same name"}
+        known = {s["id"]: s for s in (current or base).stages}
+        by_label = {s["label"].lower(): s for s in (current or base).stages}
+        for s in base.stages:
+            known.setdefault(s["id"], s)
+            by_label.setdefault(s["label"].lower(), s)
+        won_label = " ".join(str(won or "").split())[:40] or (current or base).won["label"]
+        lost_label = " ".join(str(lost or "").split())[:40] or (current or base).lost["label"]
+        ends = {(current or base).won["id"], (current or base).lost["id"]}
+        used, clean = set(), []
+        for index, row in enumerate(rows):
+            old = known.get(row["id"]) or by_label.get(row["label"].lower())
+            if old and old["id"] not in used:
+                stage_id = old["id"]
+            else:
+                stage_id = re.sub(r"[^a-z0-9]+", "-", row["label"].lower()).strip("-")[:30] or "stage"
+                base_id, n = stage_id, 2
+                while stage_id in used or stage_id in ends or stage_id in known:
+                    stage_id, n = "%s-%d" % (base_id, n), n + 1
+                old = None
+            used.add(stage_id)
+            stage = {"id": stage_id, "label": row["label"]}
+            if old:
+                for key in ("stale_days", "win_probability", "advance"):
+                    if old.get(key) not in (None, ""):
+                        stage[key] = old[key]
+            else:
+                stage["win_probability"] = int(round(10 + 75 * index / max(1, len(rows) - 1)))     # an even climb, until history takes over
+            clean.append(stage)
+        source = current or base
+        order = [s["id"] for s in source.stages] + [source.won["id"]]
+        for index, stage in enumerate(clean):          # a button's own words stay only while the stage after it is the same
+            following = clean[index + 1]["id"] if index + 1 < len(clean) else source.won["id"]
+            if stage.get("advance"):
+                was = order[order.index(stage["id"]) + 1] if stage["id"] in order[:-1] else None
+                if was != following:
+                    stage.pop("advance")
+        data = dict((current or base).data)
+        data["stages"] = clean
+        data["won"] = dict((current or base).won, label=won_label)
+        data["lost"] = dict((current or base).lost, label=lost_label)
+        drafts = dict(data.get("drafts") or {})
+        drafts["on_enter"] = {key: value for key, value in (drafts.get("on_enter") or {}).items() if key in used or key in ends}
+        data["drafts"] = drafts
+        return data, None
+
+    def set_stages(self, stages: Any, won: Any = None, lost: Any = None, shape: Any = None, actor: str = "") -> dict:
+        """Set up the pipeline in hand: its shape (one of three) and its stages. Refused when a record would be left in a
+        stage the pipeline no longer has."""
+        if self.tour():
+            return {"ok": False, "error": "On a tour the stages are the sample's own. Leave the tour to set up your desk."}
+        current = self.playbook()
+        chosen = self._shape(shape) if shape else self._shape(current.shape)
+        if chosen is None:
+            return {"ok": False, "error": "the shape is one of: %s" % ", ".join(s["title"] for s in SHAPES)}
+        base = self.library.load(chosen["base"])
+        same_shape = chosen["id"] == current.shape
+        data, error = self._staged(base, current if same_shape else None, stages, won, lost)
+        if error:
+            return error
+        keep = {stage["id"] for stage in data["stages"]} | {data["won"]["id"], data["lost"]["id"]}
+        left = [deal for deal in self.store.list(status="open") if deal["stage"] not in keep]
+        if left:
+            stages_left = sorted({current.label(deal["stage"]) for deal in left})
+            return {"ok": False, "error": "%d open %s would be left in %s, which the pipeline would no longer have. Move them first%s. Nothing was changed."
+                    % (len(left), current.terms["deals"] if len(left) > 1 else current.terms["deal"], ", ".join(stages_left),
+                       "" if same_shape else ", or open a new pipeline for this other kind of work")}
+        here = self.current()
+        plain = [{"id": s["id"], "label": s["label"]} for s in base.stages]
+        if [{"id": s["id"], "label": s["label"]} for s in data["stages"]] == plain and data["won"]["label"] == base.won["label"] \
+                and data["lost"]["label"] == base.lost["label"]:
+            name = base.name                            # the shape as it ships: no copy needed
+        else:
+            slug = re.sub(r"[^a-z0-9]+", "-", here["name"].lower()).strip("-") or "mine"
+            name = ("%s-%s" % (base.name, slug))[:40].strip("-")
+            if name == base.name:
+                name = (base.name + "-mine")[:40]
+            data.update(name=name, shape=chosen["id"], title="%s · %s" % (chosen["title"], here["name"])[:80],
+                        door=chosen["title"], summary=chosen["motion"])
+            try:
+                self.library.save(json.dumps(data, indent=1, ensure_ascii=False))
+            except PlaybookError as exc:
+                return {"ok": False, "error": "Those stages could not be saved: %s. Nothing was changed." % exc}
+        if here["first"] and not getattr(self, "can_configure", True):
+            return {"ok": False, "ask": "Set the first Stoa pipeline to the %s playbook." % name, "playbook": name}
+        out = self._use(name)
+        playbook = self.library.load(name)
+        out.update(ok=True, pipeline=here["name"], shape=chosen["title"], stages=[s["label"] for s in playbook.stages],
+                   won=playbook.won["label"], lost=playbook.lost["label"])
+        return out
+
+    def setup_pipeline(self, verb: str, shape: Any, stages: Any = None, won: Any = None, lost: Any = None, name: Any = None) -> dict:
+        """The page's way to set a pipeline up. ``first``: the desk's first pipeline, on a desk nobody has set up yet.
+        ``add``: a new pipeline beside the others. ``edit``: the pipeline in hand (its shape, its stages)."""
+        chosen = self._shape(shape)
+        if chosen is None:
+            return {"ok": False, "error": "choose a shape: %s" % ", ".join(s["title"] for s in SHAPES)}
+        if stages is None:
+            stages = [{"id": s["id"], "label": s["label"]} for s in self.library.load(chosen["base"]).stages]
+        title = " ".join(str(name or "").split())[:60]
+        if verb == "add":
+            if not title:
+                return {"ok": False, "error": "a new pipeline needs a name"}
+            made = self.pipeline_add(title, chosen["base"])
+            if not made.get("ok"):
+                return made
+            with self.on(made["added"]["id"]):
+                out = self.set_stages(stages, won, lost, chosen["id"])
+            if not out.get("ok"):
+                self.pipeline_remove(made["added"]["id"])          # nothing in it yet: as if it had not been opened
+                return out
+            return dict(out, added=made["added"])
+        if verb == "first" and title:
+            renamed = self.pipeline_rename(MAIN, title)
+            if not renamed.get("ok"):
+                return renamed
+        return self.set_stages(stages, won, lost, chosen["id"])
+
     def add_fields(self, labels: list) -> tuple:
         """Add fields to the playbook in use (the desk's own copy of it), for columns a list brought that had no place.
         Returns ``({label: key}, None)``, or ``(None, error)``. A label that is already a field maps to it."""
@@ -2836,7 +2987,15 @@ class Desk:
                 listed = self.pipelines()
                 return {"ok": True, "count": len(listed), "pipelines": [{"name": entry["name"], "playbook": entry["playbook"], "runs": entry["title"],
                                                                         "first": entry["first"]} for entry in listed]}
+            if action == "shapes":
+                return {"ok": True, "shapes": self.shapes(),
+                        "note": "Three shapes. Ask which fits, then the stages their business uses (2 to %d), and set them with action='stages'." % MOST_STAGES}
+            if action == "stages":
+                return self.set_stages(args.get("stages"), args.get("won"), args.get("lost"), args.get("shape"))
             if action == "add_pipeline":
+                if self._shape(args.get("shape")) is not None:
+                    return self.setup_pipeline("add", args.get("shape"), args.get("stages"), args.get("won"), args.get("lost"),
+                                               args.get("pipeline_name") or args.get("to"))
                 return self.pipeline_add(args.get("pipeline_name") or args.get("to"), args.get("playbook") or args.get("name"))
             if action == "rename_pipeline":
                 return self.pipeline_rename(self._pipe().get("id") or MAIN, args.get("to") or args.get("pipeline_name"))

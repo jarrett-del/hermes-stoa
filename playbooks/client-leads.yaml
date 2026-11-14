@@ -5,6 +5,7 @@ name: client-leads
 title: Client lead desk
 door: Lead searches for clients
 summary: Prospecting done for clients. One lead per record, grouped by the search you are running for a client.
+shape: leads           # the motion it is for: deals, roles or leads
 terms:
   deal: lead
   deals: leads

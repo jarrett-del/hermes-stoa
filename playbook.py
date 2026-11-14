@@ -14,6 +14,21 @@ from typing import Any, Optional
 BUILTIN_DIR = Path(__file__).parent / "playbooks"
 DEFAULT = "b2b-sales"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+MOST_STAGES = 7         # open stages a person sets up on the page (a playbook written by hand may have up to 9)
+
+# Three shapes of pipeline, named for the motion. Each runs on one shipped playbook; a team's stages are its own copy.
+SHAPES = (
+    {"id": "deals", "base": "b2b-sales", "title": "Close deals",
+     "motion": "You sell to a buyer and close it. Each record is a deal with a person at a company, won or lost.",
+     "uses": ["B2B and SaaS sales", "Agency and consulting new business", "Partnerships and sponsorships", "Fundraising from investors"]},
+    {"id": "roles", "base": "recruiting", "title": "Fill roles",
+     "motion": "You fill a client's open roles. Each record is a candidate in a search, until one is placed.",
+     "uses": ["Contingency recruiting", "Contract recruiting", "Retained and executive search", "Talent placement"]},
+    {"id": "leads", "base": "client-leads", "title": "Generate leads",
+     "motion": "You find and warm up prospects for a client, then hand them over. Each record is a lead in a campaign.",
+     "uses": ["Outbound and SDR agencies", "Fractional sales leaders working for clients", "Appointment setting", "Prospect research for clients"]},
+)
+SHAPE_IDS = tuple(shape["id"] for shape in SHAPES)
 TERM_DEFAULTS = {"deal": "deal", "deals": "deals", "group": "account", "groups": "accounts",
                  "company": "Company", "value": "Value", "owner": "Owner"}
 
@@ -56,6 +71,15 @@ class Playbook:
         # Who is billed on this desk: "record" (a won record is invoiced: a deal, a placement, an engagement) or
         # "none" (records are never billed themselves: leads worked for a client, whose fee is kept elsewhere).
         self.billing: str = self.data.get("billing") or "record"
+        self.shape: str = self.data.get("shape") or self._guess_shape()
+
+    def _guess_shape(self) -> str:
+        """The shape of a playbook that does not say (written before shapes, or by hand)."""
+        if self.billing == "none":
+            return "leads"
+        if self.group_is_company():
+            return "deals"
+        return "roles" if str(self.terms.get("deal") or "").lower() in ("candidate", "applicant", "talent") else "deals"
 
     def group_is_company(self) -> bool:
         """Whether a group here is a company (an account, a client) rather than a piece of work (a search, a campaign).
@@ -296,6 +320,10 @@ def validate(data: Any) -> dict:
         out["delivery"].append({"id": str(raw["id"]), "label": _text(raw.get("label"), "a delivery stage label", 60) or str(raw["id"])})
     if out.get("enrich") not in (None, "person", "company", "none"):
         raise PlaybookError("enrich must be person, company or none")
+    shape = str(data.get("shape") or "").strip().lower()
+    if shape and shape not in SHAPE_IDS:
+        raise PlaybookError("shape is one of: %s" % ", ".join(SHAPE_IDS))
+    out["shape"] = shape
     billing = str(data.get("billing") or "record").strip().lower()
     if billing not in ("record", "none"):
         raise PlaybookError("billing is 'record' (a won record is invoiced) or 'none' (records are never billed themselves)")

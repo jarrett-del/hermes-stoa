@@ -267,7 +267,8 @@ people and its terms. `gtm_group` is the tool; `gtm_contact(group=...)` keeps th
 
 ### Playbooks
 
-A playbook is a short YAML file:
+On the page, a pipeline is set up from one of three shapes and its own stages (see the guide);
+`gtm_playbook(action="stages")` does the same in a chat. Underneath, a playbook is a short YAML file:
 
 ```yaml
 name: recruiting

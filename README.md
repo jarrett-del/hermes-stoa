@@ -23,9 +23,10 @@ keeps the pipeline. Stoa is that, in one plugin:
   or no with the evidence beside it, a no is remembered, and any change can be taken back.
 - **Then Hermes does the writing.** The same click hands the follow-up (the outreach note, the
   proposal email, the decline) to the agent, in the card's thread.
-- **One file fits it to your business.** A playbook names your stages, your button labels and
-  what gets drafted at each step. Recruiting, B2B sales and agency playbooks ship with it, and
-  Hermes can interview you and write a new one.
+- **Three shapes, your stages.** A pipeline is for closing deals, filling roles or generating
+  leads; you set its stages in your own words (up to seven), on the page or by telling Hermes.
+  Underneath, a playbook names the stages, the button labels and what gets drafted at each step,
+  and Hermes can write you a whole new one.
 
 It grew out of a setup a recruiting agency runs its searches on every day. This is that idea,
 rebuilt as a plugin anyone can install.

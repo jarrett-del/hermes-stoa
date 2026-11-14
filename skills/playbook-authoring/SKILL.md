@@ -7,8 +7,18 @@ version: 0.1.0
 # Writing a playbook
 
 A playbook is one short YAML file that fits the desk to a business: what a record is called, the
-stages it moves through, what the buttons say, and what you draft when a stage changes. Three
-ship with the plugin (`b2b-sales`, `recruiting`, `agency`). When none fits, write one.
+stages it moves through, what the buttons say, and what you draft when a stage changes.
+
+**Most people need no YAML.** A pipeline has one of three shapes: close deals (`deals`), fill roles
+(`roles`) or generate leads (`leads`); `gtm_playbook(action="shapes")` lists them with their use
+cases. When someone wants their own stages, ask which shape fits and how the work moves for them,
+then set them: `gtm_playbook(action="stages", shape=..., stages=[2 to 7 names, in order], won=...,
+lost=...)`. A stage they keep (the same name) keeps its records. If records sit in a stage they
+want gone, the tool says so: ask them to move those first. For a second kind of work, a new
+pipeline: `gtm_playbook(action="add_pipeline", pipeline_name=..., shape=..., stages=[...])`.
+
+Write YAML only when they want more than stages (their own words for a record, fields, what gets
+drafted). Then:
 
 ## Steps
 

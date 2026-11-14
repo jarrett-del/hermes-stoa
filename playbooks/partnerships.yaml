@@ -4,6 +4,7 @@ name: partnerships
 title: Partnerships desk
 door: Partnerships and fundraising
 summary: Resellers, integration partners and investors. One relationship per record, grouped by program or round.
+shape: deals           # the motion it is for: deals, roles or leads
 terms:
   deal: partner
   deals: partners

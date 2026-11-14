@@ -583,6 +583,35 @@ def use_playbook(body: dict = Body(...)) -> dict:
     return {"ok": True, "active": result["active"], "warning": result.get("warning") or ""}
 
 
+@router.get("/shapes")
+def shapes() -> dict:
+    """The three shapes a pipeline can have, each with its own stages as they ship."""
+    d = desk()
+    return {"ok": True, "shapes": d.shapes(), "most_stages": _mod("playbook").MOST_STAGES,
+            "current": {"shape": d.playbook().shape, "stages": [{"id": s["id"], "label": s["label"]} for s in d.playbook().stages],
+                        "won": d.playbook().won["label"], "lost": d.playbook().lost["label"], "pipeline": d.current()["name"],
+                        "open": len(d.store.list(status="open"))}}
+
+
+@router.post("/pipeline/setup")
+def pipeline_setup(body: dict = Body(...)) -> dict:
+    """first | add | edit: a pipeline's shape and stages, the way the page sets one up."""
+    d = desk()
+    body = body or {}
+    verb = str(body.get("verb") or "")
+    if verb not in ("first", "add", "edit"):
+        raise HTTPException(400, "unknown action")
+    if d.tour():
+        raise HTTPException(400, "Leave the tour first: this sets up your own desk.")
+    result = d.setup_pipeline(verb, body.get("shape"), body.get("stages"), body.get("won"), body.get("lost"), body.get("name"))
+    if result.get("ask"):
+        return {"ok": False, "ask": result["ask"]}
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not set that up")
+    d.announce()
+    return result
+
+
 @router.get("/export")
 def export() -> dict:
     """The whole pipeline as CSV text, for the page to hand to the browser as a download."""

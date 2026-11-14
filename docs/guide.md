@@ -4,13 +4,26 @@ How the desk works day to day. For everything in the plugin, tool by tool, see [
 
 ## Any pipeline, and two worked examples
 
-A playbook describes a pipeline: what a record is called, the stages it moves through, what the
-buttons say, and what Hermes drafts at each step. It can be any pipeline. Five playbooks ship:
-clients and revenue (`b2b-sales`, the default), recruiting and search (`recruiting`), agency and
-consulting (`agency`), lead searches run for clients (`client-leads`), and partnerships and fundraising (`partnerships`). Hermes will write one
-for your business from a short conversation.
+A pipeline has one of three shapes, named for how the work moves:
 
-The first time you open the page it asks how you sell, and offers a look around first:
+| | Close deals | Fill roles | Generate leads |
+|---|---|---|---|
+| **For** | B2B and SaaS sales, agency and consulting new business, partnerships, fundraising | Contingency and contract recruiting, retained and executive search | Outbound and SDR agencies, fractional sales leaders working for clients, appointment setting |
+| **A record is** | a deal with a person at a company | a candidate in a search, for a client | a lead in a campaign, for a client |
+| **Billed** | when a deal is won, or monthly on the account | on placement, or monthly on the client | monthly on the client; a lead is never invoiced |
+
+The first time you open the page you pick one, then set its stages in your own words: rename them,
+put them in your order, add or take away (two to seven), and say what a win and a loss are called.
+Not sure? Describe your business and Hermes sets the stages for you. **Setup → Edit stages** changes
+them later, and **+ Pipeline** opens another pipeline the same way: contract work beside contingency,
+your own sales beside the leads you find for clients. Two pipelines of the same shape can each have
+their own stages.
+
+Underneath, each shape runs on a playbook (`b2b-sales`, `recruiting`, `client-leads`; `agency` and
+`partnerships` still ship for desks that use them), and a pipeline whose stages you changed gets its
+own copy. Hermes can write a whole playbook from a short conversation when you want more than stages.
+
+The first time you open the page, it asks what the pipeline is for, and offers a look around first:
 
 ![The first time you open the desk](desktop-welcome.jpg)
 

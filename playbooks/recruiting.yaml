@@ -4,6 +4,7 @@ name: recruiting
 title: Recruiting desk
 door: Recruiting and search
 summary: Agency or in-house recruiting. One candidate per record, grouped by the search they are in.
+shape: roles           # the motion it is for: deals, roles or leads
 terms:
   deal: candidate
   deals: candidates

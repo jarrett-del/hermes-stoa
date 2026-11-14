@@ -3,6 +3,7 @@ name: agency
 title: Agency new-business desk
 door: Agency and consulting
 summary: Studios, consultancies and freelancers. One opportunity per record, grouped by client.
+shape: deals           # the motion it is for: deals, roles or leads
 terms:
   deal: opportunity
   deals: opportunities
