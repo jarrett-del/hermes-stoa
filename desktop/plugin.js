@@ -874,16 +874,21 @@ function DotFigure({ text }) {
 // on the screen's own pixels, so it is sharp at any size. A cell says how bright the stone is there, and whether
 // it holds a dot on a dark theme and on a light one (see GET /art). On a dark theme the picture glows: a dot where
 // the stone is bright. On a light theme the same stone is inked instead and the shade is left as paper, over a
-// wash of its own colours. Either can be drawn in the heat colours or in one ink, the colour of the words: that is
-// the desk's own choice (Setup), and its name follows it.
+// wash of its own colours. Either can be drawn in the heat colours or in one ink, the colour of the words. Left
+// alone (`auto`) it is in colour on a dark theme and in one ink on a light one; the desk can fix it either way
+// (Setup), and its name follows it.
 const HEAT_AT = [0.33, 0.47, 0.59, 0.675, 0.78, 0.85, 0.925]      // the brightness at which each heat colour sits
 const PAPER_RICH = 1.5, PAPER_DEEP = 0.66                         // on a light theme: how much richer, and how much deeper
 const PAPER_WASH = 0.42, STONE_WASH = 0.3                         // and how strong the wash is under a name, and under the stoa
-const CELL_OF = (() => {                                          // the base64 alphabet: one character is one cell
+// One character is one cell, a number from 0 to 51: brightness * 4 + (a dot on a dark theme ? 2 : 0) + (a dot on a
+// light theme ? 1 : 0). Brightness runs 1 to 11; 12 is an outline; 0 is nothing. The characters are the digits and
+// the consonants and nothing else, so that no run of them can look like a word or a key to a scanner.
+const CELL_OF = (() => {
   const of = new Uint8Array(128)
-  ;[...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'].forEach((letter, value) => { of[letter.charCodeAt(0)] = value })
+  ;[...'0123456789bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ'].forEach((letter, value) => { of[letter.charCodeAt(0)] = value })
   return of
 })()
+const CELL_KINDS = 52, CELL_BRIGHTEST = 11, CELL_LINE = 12, CELL_WASH_FROM = 3
 
 function unpack(piece) {
   const cells = new Uint8Array(piece.w * piece.h), text = piece.cells
@@ -921,18 +926,21 @@ function themeOf(el) {
   return { paper, words, heat }
 }
 
+/** Whether to draw in one ink: the desk's choice, or by the theme when it has made none. */
+const oneInk = (ink, paper) => ink === 'mono' || (ink !== 'color' && paper)
+
 /** How strongly one ink shows for a brightness on a dark theme: the words' own colour, dimmer in shade. */
 const glow = t => 0.34 + 0.66 * t
 
 /** The fifteen brightnesses a name is drawn in, as colours. `inks[0]` is unused: 0 is no dot. */
-function inksOf(el, mono) {
-  const theme = themeOf(el), inks = ['']
+function inksOf(el, ink) {
+  const theme = themeOf(el), inks = [''], mono = oneInk(ink, theme.paper)
   for (let level = 1; level <= 15; level++) {
     inks.push(!mono ? 'rgb(' + theme.heat(level / 15, true).join(',') + ')'
       : 'rgba(' + theme.words.join(',') + ',' + (theme.paper ? 1 : glow(level / 15).toFixed(3)) + ')')
   }
   inks.paper = theme.paper
-  inks.mono = !!mono
+  inks.mono = mono
   return inks
 }
 
@@ -947,19 +955,19 @@ function fitted(el) {
   return { g, W, H, ratio }
 }
 
-function paint(el, piece, cells, mono) {
+function paint(el, piece, cells, ink) {
   const fit = fitted(el)
   if (!fit) return
   const { g, W, H, ratio } = fit
-  const theme = themeOf(el)
-  // What each of the 64 kinds of cell looks like here: red, green, blue and how solid. Nothing where it stays 0.
-  const look = new Uint8ClampedArray(64 * 4)
-  for (let cell = 1; cell < 64; cell++) {
-    const level = cell & 15, dot = cell & (theme.paper ? 32 : 16), line = level === 15
+  const theme = themeOf(el), mono = oneInk(ink, theme.paper)
+  // What each kind of cell looks like here: red, green, blue and how solid. Nothing where it stays 0.
+  const look = new Uint8ClampedArray(CELL_KINDS * 4)
+  for (let cell = 1; cell < CELL_KINDS; cell++) {
+    const level = cell >> 2, dot = cell & (theme.paper ? 1 : 2), line = level === CELL_LINE, bright = level / CELL_BRIGHTEST
     let colour = null, solid = 1
-    if (dot && mono) { colour = theme.words; solid = theme.paper || line ? 1 : glow(level / 14) }
-    else if (dot) colour = line ? (theme.paper ? theme.words : theme.heat(0.93)) : theme.heat(level / 14)
-    else if (theme.paper && !mono && level >= 4 && !line) { colour = theme.heat(level / 14); solid = STONE_WASH }
+    if (dot && mono) { colour = theme.words; solid = theme.paper || line ? 1 : glow(bright) }
+    else if (dot) colour = line ? (theme.paper ? theme.words : theme.heat(0.93)) : theme.heat(bright)
+    else if (theme.paper && !mono && level >= CELL_WASH_FROM && !line) { colour = theme.heat(bright); solid = STONE_WASH }
     if (colour) look.set([colour[0], colour[1], colour[2], 255 * solid], cell * 4)
   }
   const pitch = Math.max(1, Math.round(ratio))                      // a cell is one CSS pixel
@@ -1001,16 +1009,16 @@ function useDrawn(canvas, draw, deps) {
   }, deps)
 }
 
-function Art({ name, mono }) {
+function Art({ name, ink }) {
   const query = useQuery({ queryKey: ['stoa', 'art'], queryFn: () => rest('/art'), staleTime: Infinity, retry: false })
   const canvas = useRef(null)
-  const piece = query.data && query.data.v === 2 && query.data[name]
+  const piece = query.data && query.data.v === 3 && query.data[name]
   const cells = useRef(null)
   useDrawn(canvas, el => {
     if (!piece || !piece.cells) return
     if (!cells.current || cells.current.of !== piece) cells.current = { of: piece, grid: unpack(piece) }
-    paint(el, piece, cells.current.grid, mono)
-  }, [piece, mono])
+    paint(el, piece, cells.current.grid, ink)
+  }, [piece, ink])
   return h('canvas', { ref: canvas, className: 'stoa-art', 'aria-hidden': true })
 }
 
@@ -1022,11 +1030,11 @@ function Art({ name, mono }) {
 // The name and where it sits are kept with the desk (POST /sign), so everyone who opens it sees the same thing.
 const $typing = atom(null) // a name being typed on Setup, shown at the head of the page before it is saved
 
-function paintName(el, text, side, mono) {
+function paintName(el, text, side, ink) {
   const fit = fitted(el)
   if (!fit) return
   const { g, W, H, ratio } = fit
-  const inks = inksOf(el, mono)
+  const inks = inksOf(el, ink)
   const pitch = Math.max(2, Math.round(1.5 * ratio))
   const cols = Math.floor(W / pitch), rows = Math.floor(H / pitch)
   if (cols < 24 || rows < 10) return
@@ -1136,9 +1144,9 @@ function paintName(el, text, side, mono) {
   }
 }
 
-function NameArt({ text, side, mono }) {
+function NameArt({ text, side, ink }) {
   const canvas = useRef(null)
-  useDrawn(canvas, el => paintName(el, text, side, mono), [text, side, mono])
+  useDrawn(canvas, el => paintName(el, text, side, ink), [text, side, ink])
   return h('canvas', { ref: canvas, className: 'stoa-art stoa-nameart', role: 'img', 'aria-label': text })
 }
 
@@ -2109,7 +2117,7 @@ function SetupFlow() {
         h(Btn, { kind: 'primary', disabled: !ready || busy, onClick: () => submit('') }, verb === 'add' ? 'Open the pipeline' : verb === 'first' ? 'Set it up' : 'Save stages')) : null))
 }
 
-function Welcome({ skip, mono }) {
+function Welcome({ skip, ink }) {
   const query = useQuery({ queryKey: ['stoa', 'shapes', 'welcome'], queryFn: () => rest('/shapes'), staleTime: 5000 })
   const setupQuery = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000 })
   const [busy, setBusy] = useState(false)
@@ -2117,7 +2125,7 @@ function Welcome({ skip, mono }) {
   if (!data) return h('p', { className: 'stoa-sub' }, query.error ? 'The desk is not answering yet (' + why(query.error) + '). Reload in a moment.' : 'Opening the desk…')
   return h('div', { className: 'stoa-welcome' },
     h('div', { className: 'stoa-hero' },
-      h('div', { className: 'stoa-heroart' }, h(Art, { name: 'welcome', mono })),
+      h('div', { className: 'stoa-heroart' }, h(Art, { name: 'welcome', ink })),
       h('div', { className: 'stoa-eyebrow' }, 'Welcome to Stoa'),
       h('div', { className: 'stoa-herotitle' }, 'The CRM Hermes runs for you.'),
       h('p', { className: 'stoa-reading', style: { marginTop: 0 } },
@@ -2214,7 +2222,7 @@ function Pipelines({ state, setup }) {
 
 /** The desk's own name: typed here, drawn at the head of the page as it is typed, and saved a moment after. */
 function NameBox({ state }) {
-  const sign = state.sign || { text: '', place: 'art', ink: 'color' }
+  const sign = state.sign || { text: '', place: 'art', ink: 'auto' }, ink = ['color', 'mono'].includes(sign.ink) ? sign.ink : 'auto'
   const [text, setText] = useState(sign.text || '')
   const save = body => rest('/sign', { method: 'POST', body }).then(refresh).catch(error => host.notifyError(error, 'Stoa could not save the name'))
   useEffect(() => {
@@ -2225,7 +2233,7 @@ function NameBox({ state }) {
   }, [text, sign.text])
   useEffect(() => () => $typing.set(null), [])
   return h('div', null,
-    h('p', { className: 'stoa-sub', style: { margin: '0 0 10px' } }, 'Type your business name and it is drawn in dots at the head of the page, lit the way the stoa is. Leave it empty and the stoa stays. Both can be in color or in one ink. Everyone who opens this desk sees it.'),
+    h('p', { className: 'stoa-sub', style: { margin: '0 0 10px' } }, 'Type your business name and it is drawn in dots at the head of the page, lit the way the stoa is. Leave it empty and the stoa stays. On Auto both are in color on a dark theme and in one ink on a light one; or keep them one way. Everyone who opens this desk sees it.'),
     h('div', { className: 'stoa-newgroup', style: { margin: 0, maxWidth: 'none', alignItems: 'flex-end' } },
       h('label', null, h('span', { className: 'stoa-eyebrow' }, 'Name'),
         h('input', { className: 'stoa-field', maxLength: 26, value: text, placeholder: 'Your business name', onChange: event => setText(event.target.value) })),
@@ -2234,8 +2242,8 @@ function NameBox({ state }) {
           'data-on': (sign.place === 'beside' ? 'beside' : 'art') === item[0] ? '1' : '0', 'aria-pressed': (sign.place === 'beside' ? 'beside' : 'art') === item[0],
           onClick: () => save({ place: item[0] }) }, item[1]))),
       h('div', { className: 'stoa-tabs', style: { margin: 0 }, role: 'group', 'aria-label': 'What the stoa and the name are drawn in' },
-        [['color', 'Color'], ['mono', 'One ink']].map(item => h('button', { type: 'button', key: item[0], className: 'stoa-tab', style: { height: 28 },
-          'data-on': (sign.ink === 'mono' ? 'mono' : 'color') === item[0] ? '1' : '0', 'aria-pressed': (sign.ink === 'mono' ? 'mono' : 'color') === item[0],
+        [['auto', 'Auto'], ['color', 'Color'], ['mono', 'One ink']].map(item => h('button', { type: 'button', key: item[0], className: 'stoa-tab', style: { height: 28 },
+          title: item[0] === 'auto' ? 'Color on a dark theme, one ink on a light one' : undefined, 'data-on': ink === item[0] ? '1' : '0', 'aria-pressed': ink === item[0],
           onClick: () => save({ ink: item[0] }) }, item[1])))))
 }
 
@@ -3645,7 +3653,7 @@ function Page() {
   useEffect(() => { if (tab === 'cash' && query.data && !cashShown) $tab.set('today') }, [tab, cashShown, Boolean(query.data)])
   if (!query.data) return h('div', { className: 'stoa stoa-page' }, h(Unavailable, { error: query.error, loading: query.isLoading }))
   const state = query.data, pb = state.playbook, totals = state.totals
-  const sign = state.sign || { text: '', place: 'art' }, signed = String(typing ?? sign.text ?? '').trim(), mono = sign.ink === 'mono'
+  const sign = state.sign || { text: '', place: 'art' }, signed = String(typing ?? sign.text ?? '').trim(), ink = sign.ink || 'auto'
   const day = state.today || { counts: {}, needs: 0 }
   const market = state.markets.find(item => item.id === marketId) || state.markets[0]
   const setTab = name => { $tab.set(name); setStack([]); setAdding(false) }
@@ -3713,10 +3721,10 @@ function Page() {
         title: item.title + ': its own ' + 'records and its own playbook', onClick: () => showPipe(item.id) }, item.name, h('small', null, String(item.open))))) : null,
     h('div', { className: 'stoa-head', 'data-sign': welcome || !signed ? '' : sign.place === 'beside' ? 'beside' : 'art' },
       welcome ? null : h('div', { className: 'stoa-headart' },
-        signed && sign.place !== 'beside' ? h(NameArt, { text: signed, side: 'right', mono }) : h(Art, { name: 'head', mono })),
+        signed && sign.place !== 'beside' ? h(NameArt, { text: signed, side: 'right', ink }) : h(Art, { name: 'head', ink })),
       h('div', { className: 'stoa-headmain' },
         // Beside the stoa the name is always here. In place of the stoa it is here only when the page is too narrow for it there.
-        signed && !welcome ? h('div', { className: 'stoa-headname', 'data-narrow': sign.place === 'beside' ? '0' : '1' }, h(NameArt, { text: signed, side: 'left', mono })) : null,
+        signed && !welcome ? h('div', { className: 'stoa-headname', 'data-narrow': sign.place === 'beside' ? '0' : '1' }, h(NameArt, { text: signed, side: 'left', ink })) : null,
         h('div', { className: 'stoa-eyebrow' }, welcome ? 'Stoa' : 'Stoa · ' + pb.title),
         h('div', { className: 'stoa-figure' }, h(DotFigure, { text: money(totals.open_value, pb.currency) || String(totals.open) }), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open'))),
       h('div', { className: 'stoa-headstats' }, stats.map(item => h('button', { type: 'button', key: item[0], className: 'stoa-stat', title: item[2], 'data-press': item[3] ? '1' : '0',
@@ -3731,7 +3739,7 @@ function Page() {
       (tab === 'today' || tab === 'pipeline') && !welcome ? h(Btn, { onClick: add }, '+  New ' + pb.terms.deal) : null),
     waiting && tab !== 'today' && tab !== 'setup' ? h('button', { type: 'button', className: 'stoa-waiting', onClick: () => setTab('today') },
       h('b', null, String(waiting)), ' waiting for your approval', h('span', { className: 'stoa-sub' }, '  ·  see Today  ›')) : null,
-    (tab === 'today' || tab === 'pipeline') && welcome && !waiting ? h(Welcome, { skip, mono }) : null,
+    (tab === 'today' || tab === 'pipeline') && welcome && !waiting ? h(Welcome, { skip, ink }) : null,
     paged ? h('div', { ref: split }, sheet) : null,
     !paged && tab === 'today' && (!welcome || waiting) ? h('div', { className: 'stoa-split', ref: split, 'data-side': side || state.deals.length ? '1' : '0' },
       state.deals.length || waiting || (day.to_bill || []).length ? h(Today, { state, openId: '', setOpenId: openRecord, openClient }) : nothing,

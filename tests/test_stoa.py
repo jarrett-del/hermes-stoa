@@ -3177,24 +3177,30 @@ class DashboardApiTests(unittest.TestCase):
     def test_the_page_is_handed_the_artwork_as_grids_of_dots(self):
         art = self.api.art()
         self.assertEqual(sorted(art), ["head", "v", "welcome"])      # not the names 0.20 used: a page not yet reloaded draws nothing, not noise
-        self.assertEqual(art["v"], 2)
-        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        self.assertEqual(art["v"], 3)
+        # Digits and consonants only. Written in the base64 alphabet, a picture once spelled "AKIA" and sixteen capitals
+        # by chance, which the Hermes plugin scan takes for a leaked AWS key and refuses the install over. With no vowels
+        # and no punctuation there is no key prefix and no word to spell.
+        alphabet = "0123456789bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ"
         for name in ("head", "welcome"):
             piece = art[name]
             self.assertEqual(len(piece["cells"]), piece["w"] * piece["h"])            # one character a cell
+            self.assertLessEqual(set(piece["cells"]), set(alphabet))
             values = [alphabet.index(c) for c in set(piece["cells"])]
-            self.assertTrue(any(v & 16 for v in values) and any(v & 32 for v in values))   # dots for a dark theme, and for a light one
-            self.assertFalse(any(v & 48 and not v & 15 for v in values))                 # a dot always says how bright it is
+            self.assertTrue(any(v & 2 for v in values) and any(v & 1 for v in values))    # dots for a dark theme, and for a light one
+            self.assertFalse(any(v & 3 and not v >> 2 for v in values))                  # a dot always says how bright it is
+        self.assertIn("'0123456789bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ'", (ROOT / "desktop" / "plugin.js").read_text())   # the page reads the same one
 
     def test_the_desk_carries_its_own_name_for_the_head_of_the_page(self):
-        self.assertEqual(self.api.state()["sign"], {"text": "", "place": "art", "ink": "color"})
+        self.assertEqual(self.api.state()["sign"], {"text": "", "place": "art", "ink": "auto"})     # by the theme until someone says
         saved = self.api.sign({"text": "  Fernway   Search ", "place": "beside"})
         self.assertEqual((saved["text"], saved["place"]), ("Fernway Search", "beside"))
         self.assertEqual(self.api.sign({"place": "art"})["text"], "Fernway Search")           # one can be set without the other
-        self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art", "ink": "color"})
+        self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art", "ink": "auto"})
         self.assertEqual(self.api.sign({"ink": "mono"})["ink"], "mono")                       # the picture and the name in one ink
         self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art", "ink": "mono"})
         self.assertEqual(self.api.sign({"ink": "color"})["ink"], "color")
+        self.assertEqual(self.api.sign({"ink": "auto"})["ink"], "auto")                       # and back to following the theme
         for wrong in ({"text": "x" * 41}, {"place": "sideways"}, {"ink": "sepia"}):
             with self.assertRaises(self.api.HTTPException):
                 self.api.sign(wrong)

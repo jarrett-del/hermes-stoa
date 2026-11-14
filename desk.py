@@ -39,7 +39,8 @@ TOUR_FILE = re.compile(r"^tour-[0-9a-f]{8}\.db$")
 # the prompt: anything a level does not allow is held as a proposal for a person to approve.
 # The desk's own name at the head of the page: in place of the stoa, or beside it with the stoa kept.
 SIGN_PLACES = ("art", "beside")
-SIGN_INKS = ("color", "mono")       # the picture and the name at the head of the page: in the heat colours, or in one ink
+SIGN_INKS = ("auto", "color", "mono")   # the picture and the name at the head of the page: by the theme (color on a
+                                        # dark one, one ink on a light one), or always in the heat colours, or always in one ink
 SIGN_MOST = 40
 
 AUTONOMY = {
@@ -1024,7 +1025,7 @@ class Desk:
 
     def sign(self) -> dict:
         """The desk's own name, drawn in dots at the head of the page, where it sits there, and whether the picture and
-        the name are in colour or in one ink. No name: the stoa is drawn."""
+        the name are in colour, in one ink, or whichever suits the theme (the default). No name: the stoa is drawn."""
         kept = self.own_store.meta_prefix("sign:")          # both keys in one read: this is on every /state
         place, ink = kept.get("place", SIGN_PLACES[0]), kept.get("ink", SIGN_INKS[0])
         return {"text": kept.get("text", ""), "place": place if place in SIGN_PLACES else SIGN_PLACES[0],

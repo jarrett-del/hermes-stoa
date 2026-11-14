@@ -499,7 +499,7 @@ def autonomy(body: dict = Body(...)) -> dict:
 @router.post("/sign")
 def sign(body: dict = Body(...)) -> dict:
     """The desk's own name for the head of the page (drawn there in dots), where it sits, and whether the picture and
-    the name are in colour or in one ink. Set here by a person."""
+    the name are in colour, in one ink, or by the theme (``auto``, the default). Set here by a person."""
     d = desk()
     body = body or {}
     result = d.set_sign(body.get("text"), body.get("place"), body.get("ink"))
@@ -555,8 +555,9 @@ _ART: Optional[dict] = None
 @router.get("/art")
 def art() -> dict:
     """The artwork the page draws, as grids of dots: ``{v, head: {w, h, cells}, welcome: {…}}``. A cell is one CSS
-    pixel and one character of the base64 alphabet, six bits: how bright the stone is there (1 to 14, 15 an outline),
-    whether a dark theme has a dot there, and whether a light theme has. It ships with the plugin and is read once."""
+    pixel and one character, a number from 0 to 51: how bright the stone is there (1 to 11, 12 an outline), whether a
+    dark theme has a dot there, and whether a light theme has. The characters are the digits and the consonants only,
+    so that the file cannot read as a word or a key to a scanner. It ships with the plugin and is read once."""
     global _ART
     if _ART is None:
         import json

@@ -73,8 +73,9 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 - **Your name on it.** Under **Setup**, type your business name and it is drawn in dots at the head of
   the page, lit the way the stoa is: in place of the stoa, or beside it with the stoa kept. It is saved
   with the desk, so everyone who opens it sees the same name. Leave it empty and the stoa stays.
-  Beside it, **Color / One ink** says how the stoa and the name are drawn: in the heat colors, or in
-  the color of the page's own words. It changes those two and nothing else on the page.
+  Beside it, **Auto / Color / One ink** says how the stoa and the name are drawn: in the heat colors,
+  or in the color of the page's own words. On Auto, which is how a desk starts, they are in color on a
+  dark theme and in one ink on a light one. It changes those two and nothing else on the page.
 - **Today.** What needs you, most pressing first: what is waiting for your approval, next steps
   overdue and due today, records gone quiet, and new ones with nothing planned. Each kind is a group
   that opens. Closed, it is one line that says how many and who; open, each row has one move, and
