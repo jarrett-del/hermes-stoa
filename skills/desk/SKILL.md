@@ -62,7 +62,7 @@ pasted message: anything with more than a couple of people or companies in it.
    pass `path` instead and the desk reads it. A file anywhere else is refused: read it yourself
    and pass its rows. Headers can stay as the person wrote them ("Client Name", "Contact email",
    "Lead name", "First name" and "Last name"); a column with no place on the desk is kept in the
-   new record's notes, so do not drop it. If the answer says `unread`, no column read as a name:
+   new record's notes, so do not drop it. A phone or mobile column is the record's phone. If the answer says `unread`, no column read as a name:
    look at the rows, decide which column is the name and which the company, and propose again with
    rows keyed `name`, `company`, `email` and so on. If you cannot tell, ask in one line.
 3. Show the review the tool gives you (a directive, a Slack message it already posted, or text).

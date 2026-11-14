@@ -48,6 +48,10 @@ ship with the plugin (`b2b-sales`, `recruiting`, `agency`). When none fits, writ
      the win (Kickoff, Delivering, Month to month).
    - `win_probability` on each stage (0 to 100): how likely a record there is to be won. It
      feeds the forecast until their own history takes over.
+   - `billing`: `record` (the default) when a won record is what gets invoiced (a deal, a
+     placement, an engagement), `none` when records are never billed themselves (leads worked for
+     a client, whose fee is kept on another pipeline). With `none` there is no Cash tab and no
+     invoices on a record.
    - In drafts, `{client}` is the client of the record's group.
 5. **Show it before saving.** Give the user the stage list and button labels in plain words,
    not the YAML, and ask if it matches how they work.

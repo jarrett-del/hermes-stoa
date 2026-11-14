@@ -64,6 +64,7 @@ GTM_DEAL = {
             "next_step": {"type": "string", "description": "The single next action. Pass an empty string to clear it."},
             "next_due": {"type": "string", "description": "Due date for the next step: YYYY-MM-DD (tomorrow, friday and +3d also work; '' clears it)."},
             "close_on": {"type": "string", "description": "add/update: when the record is expected to close, as a date (the forecast is bucketed by it; '' clears it)."},
+            "phone": {"type": "string", "description": "add/update: the phone number of the record's own person."},
             "notes": {"type": "string", "description": "add/update: the record's notes, a few lines of what to know about it, shown on the record and edited in place. Replaces what is there: read the record first and pass the whole text. '' clears it. What happened goes in the log (action='log'), not here."},
             "delivery": {"type": "string", "description": "update, once won: where the work stands, as a delivery stage id or label from the playbook, or 'next'."},
             "fields": {"type": "object", "description": "Extra facts keyed by the playbook's field keys; an empty value removes a key."},

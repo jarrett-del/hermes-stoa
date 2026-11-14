@@ -73,16 +73,26 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 
 ![An approved proposal, with the offer to take it back](desktop-undo.jpg)
 
-- **Notes and activity on the record.** Open a record for its **Notes**, a few lines of what to know
-  about it that you edit in place, and its **Activity**: everything that happened, newest first,
-  with a line to log a call or a thought. Saving notes is a change like any other, so it can be
-  taken back.
-- **People and companies.** A record has its own person and can carry the others around it: the
-  buyer's boss, finance, a hiring manager. Their email and calls are then filed on that record
-  too. Press the company on a record, or **Companies** on the pipeline, for everything at one
-  company: its records, everyone known there, what is open and won, and the notes you keep on it.
+- **A page for each record.** Press a record anywhere (Today, the board, Cash, Activity) and it
+  opens on a page of its own, laid out the way a CRM is read. Across the top: its name, where it
+  sits (at its company, in its search or account), its value and owner, the stages as one bar
+  (press a stage to move it there), and the next step with the moves for it. Below, three
+  columns: **Details** on the left (every fact, the empty ones shown so you can see what is not
+  known yet; **Edit** changes any of them, the playbook's own included), **Notes** and
+  **Activity** in the middle (a line at the top logs a call, an email, a meeting or a note), and
+  what it is connected to on the right: the search or account it is in and the others there,
+  others at the same company, the other people on it, and its money once there is any. **Back**
+  returns to where you came from.
+- **A page for each search, account or client.** Its details and notes, its records a stage at a
+  time, the people on its side, and what happened lately. **+ New ... here** adds a record to it.
+  Where an account or a client *is* the company (the B2B and agency playbooks), the company's
+  email domain and everyone at it are on the same page, and there is no separate list of
+  companies: one place to look. Where a group is a piece of work (a search, a campaign), a
+  record's company has a page of its own as well.
+- **People.** A record has its own person (name, email, phone, LinkedIn) and can carry the others
+  around it: the buyer's boss, finance, a hiring manager. Their email and calls are then filed on
+  that record too.
 
-![A company: its records, its people, and the notes kept on it](desktop-company.jpg)
 
 - **Cash.** The other half of lead to cash, on its own tab. Five figures across the top: won this
   month, collected this month, invoiced and not yet paid, overdue, and won but never invoiced.

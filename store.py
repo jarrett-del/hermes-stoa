@@ -218,17 +218,17 @@ ADDED_COLUMNS = {
               # when it is expected to close (for the forecast), and where the work stands once it is won
               "close_on": "TEXT NOT NULL DEFAULT ''", "delivery": "TEXT NOT NULL DEFAULT ''",
               # a few lines kept on the record itself, edited in place (the log is what happened; this is what to know)
-              "notes": "TEXT NOT NULL DEFAULT ''"},
+              "notes": "TEXT NOT NULL DEFAULT ''", "phone": "TEXT NOT NULL DEFAULT ''"},
     "intakes": {"origin": "TEXT NOT NULL DEFAULT 'list'"},    # list: rows someone sent. proposal: changes Hermes suggests
 }
 
 EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source", "close_on", "delivery",
-            "notes")
+            "notes", "phone")
 PERSON = ("name", "email", "title", "role", "linkedin", "phone", "note")
 CONTACT = ("name", "email", "title", "linkedin", "phone", "note")       # what a person is, on every record they are on
 # A deal's values as the ledger keeps them: its columns, with money in cents and each custom field as fields.<key>.
 TRACKED = ("name", "company", "grp", "email", "linkedin", "value_cents", "owner", "next_step", "next_due", "source",
-           "stage", "status", "lost_reason", "snoozed_until", "stage_at", "close_on", "delivery", "notes")
+           "stage", "status", "lost_reason", "snoozed_until", "stage_at", "close_on", "delivery", "notes", "phone")
 # Put back by an undo only if nothing has touched them since; a difference there never stops the undo.
 SOFT = ("stage_at", "snoozed_until", "lost_reason", "fields._prev_stage", "delivery")
 INVOICE = ("number", "amount_cents", "paid_cents", "status", "issued_on", "due_on", "paid_on", "note")
@@ -241,7 +241,7 @@ FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.
              "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.net",
              "fastmail.com", "hey.com", "zoho.com", "mail.com", "yandex.com", "qq.com", "163.com"}
 CSV_COLUMNS = ("id", "name", "company", "grp", "email", "linkedin", "stage", "status", "value", "owner",
-               "next_step", "next_due", "source", "lost_reason", "created_at", "updated_at", "stage_at", "close_on", "delivery")
+               "next_step", "next_due", "source", "lost_reason", "created_at", "updated_at", "stage_at", "close_on", "delivery", "phone")
 ID_MAX = 48  # Slack caps an overflow option's value at 75 characters; ids travel in those values
 
 
@@ -592,10 +592,10 @@ class Store:
             cents = to_cents(values.get("value"))
             conn.execute(
                 "INSERT INTO deals (id, name, company, grp, email, linkedin, stage, value, value_cents, owner, next_step, next_due, "
-                "source, fields, created_at, updated_at, stage_at, close_on, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "source, fields, created_at, updated_at, stage_at, close_on, notes, phone) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (deal_id, name, row["company"] or "", row["grp"] or "", row["email"] or "", row["linkedin"] or "", stage,
                  cents / 100, cents, row["owner"] or "", row["next_step"] or "", row["next_due"] or "",
-                 row["source"] or "", json.dumps(fields), stamp, stamp, stamp, row["close_on"] or "", str(row["notes"] or "")[:4000]))
+                 row["source"] or "", json.dumps(fields), stamp, stamp, stamp, row["close_on"] or "", str(row["notes"] or "")[:4000], str(row["phone"] or "").strip()[:60]))
             made = self._deal(conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone())
             self._entry(conn, batch, "deal", deal_id, deal_id, "insert", after=flat(made), actor=actor,
                         summary="Added at %s" % stage, at=stamp)

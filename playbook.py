@@ -53,6 +53,15 @@ class Playbook:
         self.default_stale: int = int(self.data.get("stale_days") or 7)
         self.delivery: list = self.data.get("delivery") or []      # what happens after a win, in order: [{id, label}]
         self.enrich: str = self.data.get("enrich") or "person"
+        # Who is billed on this desk: "record" (a won record is invoiced: a deal, a placement, an engagement) or
+        # "none" (records are never billed themselves: leads worked for a client, whose fee is kept elsewhere).
+        self.billing: str = self.data.get("billing") or "record"
+
+    def group_is_company(self) -> bool:
+        """Whether a group here is a company (an account, a client) rather than a piece of work (a search, a campaign).
+        Then a record's company and its group are the same organisation, seen from two sides."""
+        rule = str(self.map_group or "").lower()
+        return rule == "company" or (not rule and str(self.terms.get("group") or "").lower() in ("account", "client", "company", "customer"))
 
     # -- stages ---------------------------------------------------------------------------------
     def stage_ids(self) -> list:
@@ -287,6 +296,10 @@ def validate(data: Any) -> dict:
         out["delivery"].append({"id": str(raw["id"]), "label": _text(raw.get("label"), "a delivery stage label", 60) or str(raw["id"])})
     if out.get("enrich") not in (None, "person", "company", "none"):
         raise PlaybookError("enrich must be person, company or none")
+    billing = str(data.get("billing") or "record").strip().lower()
+    if billing not in ("record", "none"):
+        raise PlaybookError("billing is 'record' (a won record is invoiced) or 'none' (records are never billed themselves)")
+    out["billing"] = billing
     return out
 
 

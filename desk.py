@@ -530,7 +530,7 @@ class Desk:
         out = {"id": deal["id"], "name": deal["name"], "company": deal["company"], "group": deal["grp"],
                "stage": deal["stage"], "stage_label": playbook.label(deal["stage"]), "status": deal["status"],
                "value": deal["value"], "owner": deal["owner"], "next_step": deal["next_step"], "next_due": deal["next_due"],
-               "email": deal["email"], "linkedin": deal["linkedin"], "source": deal["source"],
+               "email": deal["email"], "phone": deal.get("phone") or "", "linkedin": deal["linkedin"], "source": deal["source"],
                "lost_reason": deal["lost_reason"], "snoozed_until": deal["snoozed_until"], "close_on": deal.get("close_on") or "",
                "delivery": deal.get("delivery") or "" if deal["status"] == "won" else "",
                "delivery_label": playbook.delivery_label(deal.get("delivery") or "") if deal["status"] == "won" else "",
@@ -1148,7 +1148,7 @@ class Desk:
             values = {k: args.get(a) for k, a in (("name", "name"), ("company", "company"), ("grp", "group"), ("email", "email"),
                                                   ("linkedin", "linkedin"), ("value", "value"), ("owner", "owner"),
                                                   ("next_step", "next_step"), ("next_due", "next_due"), ("source", "source"),
-                                                  ("close_on", "close_on"), ("delivery", "delivery"), ("notes", "notes"))}
+                                                  ("close_on", "close_on"), ("delivery", "delivery"), ("notes", "notes"), ("phone", "phone"))}
             if values.get("notes") is not None:
                 values["notes"] = str(values["notes"]).strip()[:NOTES_MAX]
             fields = args.get("fields") if isinstance(args.get("fields"), dict) else None
@@ -1237,7 +1237,7 @@ class Desk:
             email=str(args.get("email") or ""), linkedin=str(args.get("linkedin") or ""), value=value,
             owner=str(args.get("owner") or ""), next_step=str(args.get("next_step") or ""),
             next_due=str(args.get("next_due") or ""), source=str(args.get("source") or ""), close_on=str(args.get("close_on") or ""),
-            notes=str(args.get("notes") or "").strip()[:NOTES_MAX], fields=args.get("fields") if isinstance(args.get("fields"), dict) else None)
+            notes=str(args.get("notes") or "").strip()[:NOTES_MAX], phone=str(args.get("phone") or "").strip()[:60], fields=args.get("fields") if isinstance(args.get("fields"), dict) else None)
         if args.get("note"):
             self.store.log(deal["id"], "note", str(args["note"])[:4000], actor=actor)
         return {"ok": True, "action": "add", "deal": self.view(self.store.get(deal["id"]), playbook)}
@@ -1409,7 +1409,7 @@ class Desk:
         billed, paid = sum(i["amount_cents"] for i in bills), sum(i["paid_cents"] for i in bills)
         return {"invoiced": billed / 100, "paid": paid / 100, "owed": sum(i["owed_cents"] for i in bills) / 100,
                 "overdue": sum(i["owed_cents"] for i in bills if i["state"] == "overdue") / 100,
-                "uninvoiced": max(0, deal["value_cents"] - billed) / 100 if deal["status"] == "won" else 0.0}
+                "uninvoiced": max(0, deal["value_cents"] - billed) / 100 if deal["status"] == "won" and self.playbook().billing != "none" else 0.0}
 
     def _due_on(self, value: Any) -> tuple:
         """``(YYYY-MM-DD, error)`` for an invoice's due date: a date, "net 30", or nothing (thirty days from today)."""
@@ -1651,7 +1651,7 @@ class Desk:
     # -- gtm_contact: the other people on a record, and what is known about a company ---------------
     def people(self, deal: dict) -> list:
         """Everyone on a record: the record's own person first, then the others."""
-        first = {"primary": True, "name": deal["name"], "email": deal["email"], "linkedin": deal["linkedin"],
+        first = {"primary": True, "name": deal["name"], "email": deal["email"], "linkedin": deal["linkedin"], "phone": deal.get("phone") or "",
                  "title": str((deal.get("fields") or {}).get("title") or ""), "role": ""}
         return [first] + [dict({key: person[key] for key in ("id", "name", "email", "title", "role", "linkedin", "phone", "note")},
                                primary=False, also_on=len(self.store.person_records(person["id"])) - 1)
@@ -2046,10 +2046,25 @@ class Desk:
                 if person["id"] not in seen:
                     seen.add(person["id"])
                     people.append(self._side(person, on="record", record=deal["id"], record_name=deal["name"]))
+        company = None
+        if playbook.group_is_company():
+            # An account or a client is a company: what is kept on the company (its email domain, its notes) and every
+            # person on its records belong on the same page, so there is one place to look.
+            names = [deal["company"] for deal in deals if deal["company"]]
+            display = max(names, key=names.count) if names else name
+            org = self.store.org_get(display) or {}
+            seen_domains = [st.email_domain(deal["email"]) for deal in deals if st.email_domain(deal["email"])]
+            company = {"name": display, "domain": org.get("domain") or (max(seen_domains, key=seen_domains.count) if seen_domains else ""),
+                       "domain_known": bool(org.get("domain")), "note": org.get("note") or ""}
+            for deal in deals:
+                if deal["status"] == "lost":
+                    continue
+                own = self.people(deal)[0]
+                people.append(dict(self._side(own, on="record", record=deal["id"], record_name=deal["name"]), primary=True, id="record:" + deal["id"]))
         status = row.get("status") or "open"
         open_here, won = [d for d in deals if d["status"] == "open"], [d for d in deals if d["status"] == "won"]
         ids = {deal["id"]: deal["name"] for deal in deals}
-        recent = [a for a in self.store.activities(limit=300) if a["deal_id"] in ids][:8]
+        recent = [a for a in self.store.activities(limit=400) if a["deal_id"] in ids][:20]
         return {"ok": True,
                 "group": {"name": name, "key": key, "client": row.get("client") or "", "status": status, "status_label": self.GROUP_LABELS[status],
                           "value": row.get("value") or 0, "note": row.get("note") or "", "fields": row.get("fields") or {},
@@ -2060,7 +2075,7 @@ class Desk:
                 "last_touch": max([touches.get(d["id"], "") for d in deals] or [""]),
                 "records": [self._brief(deal, playbook) for deal in
                             sorted(deals, key=lambda d: (d["status"] != "open", -playbook.position(d["stage"]), d["name"].lower()))],
-                "people": people[:60],
+                "people": people[:60], "company": company,
                 "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"],
                               "by": a["actor"]} for a in recent]}
 
@@ -2528,38 +2543,24 @@ class Desk:
         return out
 
     def import_csv(self, path: Path, dry_run: bool = False) -> dict:
+        """``hermes stoa import``: a CSV typed in at a terminal, added straight away (no review). Headers are read the
+        way a dropped list's are ("Client Name", "Contact email", "First name"), and what has no place is kept in notes."""
         if not path.is_file():
             return {"ok": False, "error": "no file at %s" % path}
         playbook = self.playbook()
-        field_keys = {f["key"] for f in playbook.fields}
-        aliases = {"group": "grp", "account": "grp", playbook.terms["group"].lower(): "grp", "deal": "name", "contact": "name",
-                   playbook.terms["deal"].lower(): "name", "amount": "value", "linkedin_url": "linkedin", "next step": "next_step",
-                   "due": "next_due", "organization": "company", "organisation": "company"}
-        added, skipped, problems = 0, 0, []
-        data = path.read_bytes()
-        try:
-            text = data.decode("utf-8-sig")
-        except UnicodeDecodeError:      # a CSV saved by Excel on Windows
-            text = data.decode("cp1252", errors="replace")
-        for number, raw in enumerate(csv.DictReader(io.StringIO(text, newline="")), start=2):
+        rows, problems = self.intake._read_csv(path)
+        added, skipped = 0, 0
+        for number, raw in enumerate(rows, start=2):
             try:
-                row = {}
-                for column, value in raw.items():
-                    if column is None:      # more cells than the header has columns (a stray comma)
-                        problems.append("row %d: more cells than columns; the extra ones were ignored" % number)
-                        continue
-                    key = column.strip().lower()
-                    row[aliases.get(key, key.replace(" ", "_"))] = (value or "").strip()
+                row, warnings, _ = self.intake._clean(raw, playbook)
+                problems.extend("row %d: %s" % (number, warning) for warning in warnings)
                 name = row.get("name", "")
                 if not name:
                     problems.append("row %d: no name" % number)
                     continue
-                due = st.parse_due(row.get("next_due", ""))
-                if due is None:
-                    problems.append("row %d: due date '%s' was not understood and was left blank" % (number, row["next_due"][:30]))
-                    due = ""
-                stage = playbook.resolve_stage(row.get("stage", "")) or playbook.first_stage()
-                group = row.get("grp", "")
+                group, company = row.get("grp", "") or "", row.get("company", "") or ""
+                if playbook.group_is_company():      # an account or a client is a company: either fills the other
+                    group, company = group or company, company or group
                 if any(d["name"].lower() == name.lower() and d["grp"].lower() == group.lower()
                        for d in self.store.list(status="all", query=name)):
                     skipped += 1
@@ -2567,15 +2568,19 @@ class Desk:
                 if dry_run:
                     added += 1
                     continue
+                stage = row.get("stage") or playbook.first_stage()
                 status = playbook.status_of(stage)
-                deal = self.store.add(name, stage if status == "open" else playbook.first_stage(), actor="import",
-                                      company=row.get("company", ""), grp=group, email=row.get("email", ""),
-                                      linkedin=row.get("linkedin", ""), value=row.get("value"), owner=row.get("owner", ""),
-                                      next_step=row.get("next_step", ""), next_due=due,
-                                      source=row.get("source", "") or "import",
-                                      fields={k: row[k] for k in field_keys if row.get(k)})
-                if status != "open":
-                    self._move(deal, stage, playbook, "import", row.get("lost_reason", ""))
+                with self.store.operation():
+                    deal = self.store.add(name, stage if status == "open" else playbook.first_stage(), actor="import",
+                                          company=company, grp=group, email=row.get("email", ""), phone=row.get("phone", ""),
+                                          linkedin=row.get("linkedin", ""), value=row.get("value"), owner=row.get("owner", ""),
+                                          next_step=row.get("next_step", ""), next_due=row.get("next_due", ""), close_on=row.get("close_on", ""),
+                                          source=row.get("source", "") or "import", notes=self.intake._kept_notes(row),
+                                          fields=row.get("fields") or None)
+                    if status != "open":
+                        self._move(deal, stage, playbook, "import", row.get("lost_reason", ""))
+                    if row.get("note"):
+                        self.store.log(deal["id"], "note", str(row["note"])[:4000], actor="import")
                 added += 1
             except Exception as exc:        # one bad row is reported, the rest still come in
                 problems.append("row %d: %s" % (number, exc))

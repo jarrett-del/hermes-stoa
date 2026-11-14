@@ -337,7 +337,7 @@ class DeskTests(unittest.TestCase):
 
     def test_import_messy_headers(self):
         path = Path(self.tmp.name) / "leads.csv"
-        path.write_text("Candidate,Company,Search,Stage,Amount\nAda Park,Orbit,Staff Backend,Client interview,$30k\n,x,,,\n")
+        path.write_text("Candidate,Company,Search,Stage,Amount\nAda Park,Orbit,Staff Backend,Client interview,$30k\n,,,Sourced,\n")
         result = self.desk.import_csv(path)
         self.assertEqual((result["added"], result["problems"]), (1, ["row 3: no name"]))
         ada = self.desk.store.find("Ada Park")
@@ -2182,7 +2182,8 @@ class HardeningTests(unittest.TestCase):
         path.write_bytes(("name,company,due\n"
                           "Zoë Marsh,Acme, Inc,2026-12-01\n"          # an unquoted comma: one cell too many
                           "Ben Okoro,Fathom,sometime\n"
-                          ",Nameless,\n"
+                          ",,\n"
+                          ",,2026-12-09\n"
                           "Cy Tran,Kestrel,12/05/2026\n").encode("cp1252"))
         dry = self.desk.import_csv(path, dry_run=True)
         self.assertEqual((dry["ok"], dry["added"]), (True, 3))
@@ -2443,7 +2444,8 @@ class HeaderTests(unittest.TestCase):
         record = desk.store.get(desk.intake.apply({"id": out["id"]}, "test")["records"][0])
         self.assertEqual((record["name"], record["email"], record["source"]), ("Rosa Diaz", "rosa@ninepine.example", "Referral"))
         self.assertEqual(record["fields"], {"title": "VP Finance", "location": "Austin"})
-        self.assertEqual(record["notes"], "Phone: (555) 010-2000\nwebsite: ninepine.example")
+        self.assertEqual(record["phone"], "(555) 010-2000")
+        self.assertEqual(record["notes"], "website: ninepine.example")
 
     def test_first_and_last_names_make_one_name_and_spelling_does_not_matter(self):
         desk = self.desk_on("b2b-sales")
@@ -2455,6 +2457,16 @@ class HeaderTests(unittest.TestCase):
         record = desk.store.get(desk.intake.apply({"id": out["id"]}, "test")["records"][0])
         self.assertEqual((record["email"], record["owner"], record["company"]), ("lena@corvid.example", "Sam", "Corvid Health"))
         self.assertEqual(out["kept_as_note"], ["Owner email"])
+
+    def test_the_terminal_import_reads_headers_the_same_way(self):
+        desk = self.desk_on("b2b-sales")
+        path = Path(tempfile.mkdtemp()) / "accounts.csv"
+        self.addCleanup(lambda: path.unlink() if path.exists() else None)
+        path.write_text("Client Name ,Contact name ,Contact email ,Mobile,Website\nCorvid Health,Lena Ortiz,lena@corvid.example,+1 555 010 3000,corvid.example\n")
+        self.assertEqual(desk.import_csv(path)["added"], 1)
+        lena = desk.store.find("Lena Ortiz")
+        self.assertEqual((lena["company"], lena["grp"], lena["email"], lena["phone"], lena["notes"]),
+                         ("Corvid Health", "Corvid Health", "lena@corvid.example", "+1 555 010 3000", "Website: corvid.example"))
 
     def test_a_list_with_no_name_column_is_handed_back_to_be_read(self):
         desk = self.desk_on("agency")
@@ -2512,6 +2524,62 @@ class RecordNotesTests(unittest.TestCase):
         store = st.Store(path)
         made = store.add("Old Timer", "sourced")
         self.assertEqual(made["notes"], "")
+
+
+class LayoutRuleTests(unittest.TestCase):
+    """What the record and group pages rest on: who is billed, an account that is a company, a phone on a record."""
+
+    def desk_on(self, playbook):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return make_desk(tmp.name, playbook=playbook)
+
+    def test_a_lead_worked_for_a_client_is_never_billed(self):
+        desk = self.desk_on("client-leads")
+        self.assertEqual(desk.playbook().billing, "none")
+        desk.deal({"action": "add", "name": "Rosa Diaz", "group": "Fintech CFOs", "value": 50000})
+        rosa = desk.store.find("Rosa Diaz")
+        desk.deal({"action": "close", "deal": rosa["id"], "outcome": "won"})
+        self.assertEqual(desk.money(desk.store.get(rosa["id"]))["uninvoiced"], 0)
+        self.assertEqual(desk.cash()["strip"]["uninvoiced"]["count"], 0)
+        for name in ("agency", "b2b-sales", "recruiting", "partnerships"):
+            self.assertEqual(desk.library.load(name).billing, "record")
+
+    def test_billing_is_checked_when_a_playbook_is_saved(self):
+        from stoa.playbook import validate, PlaybookError
+        base = {"name": "x", "stages": ["One", "Two"], "won": {"id": "won", "label": "Won"}, "lost": {"id": "lost", "label": "Lost"}}
+        self.assertEqual(validate(dict(base))["billing"], "record")
+        self.assertEqual(validate(dict(base, billing="none"))["billing"], "none")
+        with self.assertRaises(PlaybookError):
+            validate(dict(base, billing="monthly"))
+
+    def test_an_account_page_carries_its_company_and_everyone_on_it(self):
+        desk = self.desk_on("b2b-sales")
+        self.assertTrue(desk.playbook().group_is_company())
+        self.assertFalse(desk.library.load("recruiting").group_is_company())
+        desk.deal({"action": "add", "name": "Renata Okafor", "company": "Harborline Pay", "group": "Harborline Pay", "email": "renata@harborline.example"})
+        desk.deal({"action": "add", "name": "Ivo Marsh", "company": "Harborline Pay", "group": "Harborline Pay", "email": "ivo@harborline.example"})
+        view = desk.group_view("Harborline Pay")
+        self.assertEqual(view["company"]["name"], "Harborline Pay")
+        self.assertEqual(view["company"]["domain"], "harborline.example")          # guessed from the people on it until it is set
+        self.assertEqual(sorted(p["name"] for p in view["people"] if p.get("primary")), ["Ivo Marsh", "Renata Okafor"])
+        desk.company("Harborline Pay", domain="harborline.com")
+        self.assertEqual(desk.group_view("Harborline Pay")["company"]["domain"], "harborline.com")
+        recruiting = self.desk_on("recruiting")
+        recruiting.deal({"action": "add", "name": "Dana Whitfield", "company": "Kestrel Labs", "group": "Staff Backend · Northwind"})
+        self.assertIsNone(recruiting.group_view("Staff Backend · Northwind")["company"])
+
+    def test_a_record_keeps_a_phone(self):
+        desk = self.desk_on("recruiting")
+        desk.deal({"action": "add", "name": "Mei Sato", "group": "ML Lead · Saffron", "phone": "+1 555 010 4000"})
+        mei = desk.store.find("Mei Sato")
+        self.assertEqual(mei["phone"], "+1 555 010 4000")
+        desk.deal({"action": "update", "deal": mei["id"], "phone": "+1 555 010 5000"})
+        self.assertEqual(desk.view(desk.store.get(mei["id"]))["phone"], "+1 555 010 5000")
+        desk.store.undo(mei["id"])
+        self.assertEqual(desk.store.get(mei["id"])["phone"], "+1 555 010 4000")
+        out = desk.intake.propose_file("c.csv", "Name,Mobile\nMei Sato,+1 555 010 6000\n")
+        self.assertEqual([c["field"] for c in out["rows"][0]["changes"]], ["Phone"])
 
 class FakeCtx:
     """The part of Hermes's plugin context that ``register`` uses, recording what it is given."""
@@ -2893,6 +2961,17 @@ class DashboardApiTests(unittest.TestCase):
         self.desk = make_desk(self.tmp.name)
         self.api._profile_desk = lambda: self.desk          # the real desk() then picks the pipeline, as it does for a request
         fixture.load(self.desk)
+
+    def test_the_page_is_told_how_to_lay_a_desk_out(self):
+        library = Library()
+        leads, sales, search = (self.api._playbook(library.load(name)) for name in ("client-leads", "b2b-sales", "recruiting"))
+        self.assertEqual((leads["billing"], leads["group_is_company"]), ("none", False))
+        self.assertEqual((sales["billing"], sales["group_is_company"]), ("record", True))
+        self.assertEqual((search["billing"], search["group_is_company"]), ("record", False))
+        dana = self.desk.store.find("Dana Whitfield")
+        self.api.act(dana["id"], {"verb": "update", "phone": "+1 415 555 0142", "fields": {"location": "Austin, TX"}, "source": "Referral"})
+        shown = self.api.deal(dana["id"])
+        self.assertEqual((shown["phone"], shown["fields"]["location"], shown["source"]), ("+1 415 555 0142", "Austin, TX", "Referral"))
 
     def test_the_page_can_add_edit_move_and_log_without_a_model(self):
         added = self.api.add_deal({"name": "Nadia Rahim", "company": "Larkspur", "group": "Staff Backend · Northwind", "value": 41000,

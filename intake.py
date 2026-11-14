@@ -28,7 +28,7 @@ ALIASES = {"group": "grp", "account": "grp", "deal": "name", "contact": "name", 
            "e-mail": "email", "email_address": "email", "record_id": "record", "id": "record",
            "close": "close_on", "close_date": "close_on", "expected_close": "close_on", "closing": "close_on"}
 # "record" is the id of the record a row is about, to settle a match; "deal" in a spreadsheet header means the name.
-CORE = ("name", "company", "grp", "email", "linkedin", "stage", "value", "owner", "next_step", "next_due", "source", "note", "record",
+CORE = ("name", "company", "grp", "email", "phone", "linkedin", "stage", "value", "owner", "next_step", "next_due", "source", "note", "record",
         "close_on")
 READ_ONLY = ("updated", "status", "last_touch", "added", "created")     # columns the desk writes out and never reads back
 # Reading a header the way a person wrote it ("Client Name ", "Contact email", "Lead name"): the words around a
@@ -38,7 +38,7 @@ PERSON_WORDS = {"contact", "lead", "candidate", "person", "prospect", "full", "b
 ORG_WORDS = {"company", "account", "organization", "organisation", "org", "business", "employer", "firm", "brand",
              "agency", "vendor", "customer", "school", "fund"}
 FIRST_WORDS, LAST_WORDS = ({"first", "given", "fore"}, {"last", "family", "sur"})
-PATTERNS = (({"email", "e-mail", "mail"}, "email"), ({"linkedin"}, "linkedin"), ({"stage"}, "stage"),
+PATTERNS = (({"email", "e-mail", "mail"}, "email"), ({"phone", "mobile", "cell", "telephone", "tel"}, "phone"), ({"linkedin"}, "linkedin"), ({"stage"}, "stage"),
             ({"owner", "rep", "assignee"}, "owner"), ({"notes", "note", "comment", "comments", "description"}, "note"),
             ({"source"}, "source"))
 FIELD_WORDS = (({"title", "position", "role", "job"}, "title"), ({"location", "city", "region", "country", "based"}, "location"))
@@ -340,8 +340,7 @@ class Intake:
 
     @staticmethod
     def _group_is_company(playbook) -> bool:
-        rule = str(playbook.map_group or "").lower()
-        return rule == "company" or (not rule and str(playbook.terms.get("group") or "").lower() in ("account", "client", "company", "customer"))
+        return playbook.group_is_company()
 
     @staticmethod
     def _column(label: str, playbook, aliases: dict, field_keys: set) -> str:
@@ -360,7 +359,7 @@ class Intake:
             return "last_name"
         terms = {term: str(playbook.terms.get(term) or "").lower() for term in ("deal", "group", "company")}
         orgs = set(ORG_WORDS) | {terms["company"]}
-        if "client" in (terms["company"], terms["group"]):
+        if "client" in (terms["company"], terms["group"]) or playbook.group_is_company():      # not where a client is whose search it is
             orgs.add("client")
         people = set(PERSON_WORDS) | {terms["deal"]}
         if words[-1] == "name" or (len(words) > 1 and words[-2] == "name"):
@@ -436,7 +435,7 @@ class Intake:
         """What applying this row would change on the record: ``[{key, field, from, to}]``."""
         terms = playbook.terms
         named = (("name", terms["deal"].capitalize()),) if row.get("record") else ()      # found by id: the name may be the edit
-        labels = named + (("company", terms["company"]), ("grp", terms["group"].capitalize()), ("email", "Email"), ("linkedin", "LinkedIn"),
+        labels = named + (("company", terms["company"]), ("grp", terms["group"].capitalize()), ("email", "Email"), ("phone", "Phone"), ("linkedin", "LinkedIn"),
                   ("owner", terms["owner"].capitalize()), ("next_step", "Next step"), ("next_due", "Due"), ("close_on", "Expected close"))
         changes = []
         for key, label in labels:
@@ -840,7 +839,7 @@ class Intake:
         stage = row["stage"] or playbook.first_stage()
         closing = playbook.status_of(stage) != "open"
         deal = self.store.add(row["name"], playbook.first_stage() if closing else stage, actor=actor,
-                              company=values.get("company") or "", grp=group, email=values.get("email") or "",
+                              company=values.get("company") or "", grp=group, email=values.get("email") or "", phone=values.get("phone") or "",
                               linkedin=values.get("linkedin") or "", value=values.get("value"), owner=values.get("owner") or "",
                               next_step=values.get("next_step") or "", next_due=values.get("next_due") or "",
                               close_on=values.get("close_on") or "", notes=self._kept_notes(values),

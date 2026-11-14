@@ -142,7 +142,9 @@ def _playbook(playbook) -> dict:
     return {"name": playbook.name, "title": playbook.title, "terms": playbook.terms, "currency": playbook.currency,
             "stages": [{"id": s["id"], "label": s["label"], "stale_days": playbook.stale_days(s["id"])} for s in playbook.stages],
             "won": playbook.won, "lost": {"id": playbook.lost["id"], "label": playbook.lost["label"], "reasons": playbook.lost["reasons"]},
-            "fields": playbook.fields, "group_fields": playbook.group_fields}
+            "fields": playbook.fields, "group_fields": playbook.group_fields, "delivery": playbook.delivery,
+            # how the page lays it out: whether a won record is billed, and whether a group is a company (one place to look)
+            "billing": playbook.billing, "group_is_company": playbook.group_is_company()}
 
 
 def _ask(d, deal_id: str, verb: str) -> str:
@@ -259,7 +261,7 @@ def deal(deal_id: str) -> dict:
     playbook = d.playbook()
     out = _card(d, record, playbook)
     out["activity"] = [{"at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"], "undone": bool(a.get("undone"))}
-                       for a in d.store.activities(deal_id, limit=30)]
+                       for a in d.store.activities(deal_id, limit=200)]
     out["pending_task"] = d.store.meta_get("pending:" + deal_id)
     out["people"] = d.people(record)[1:]             # the others on the record; its own person is the record itself
     bills = d.store.invoices(deal_id)
@@ -377,6 +379,10 @@ def group(body: dict = Body(...)) -> dict:
     if not name:
         raise HTTPException(400, "say which one")
     changes = {key: body[key] for key in ("client", "status", "value", "note", "fields") if key in body}
+    if body.get("domain") is not None and body.get("company"):      # an account that is a company: its email domain is kept on the company
+        d.company(str(body["company"]), domain=str(body["domain"]))
+        if not changes and not body.get("to"):
+            d.announce()
     if body.get("to"):
         result = d.group({"action": "rename", "group": name, "to": body["to"]}, actor="dashboard")
     elif changes or body.get("new"):
@@ -479,7 +485,7 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
                 "last": _last(d, deal_id) if verb not in ("draft", "enrich") else None}
     if verb in ("log", "update", "move", "done", "snooze"):
         allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage",
-                   "days", "until", "close_on", "delivery", "notes")
+                   "days", "until", "close_on", "delivery", "notes", "source", "fields", "phone")
         args = {k: body[k] for k in allowed if k in body}
         result = d.deal(dict(args, action=verb, deal=deal_id), actor="dashboard")
         if not result.get("ok"):

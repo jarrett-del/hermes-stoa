@@ -16,6 +16,7 @@ currency: USD
 stale_days: 6
 enrich: person
 map_group: map      # a company added from a market map: joins the group named after the map
+billing: none       # a lead is never invoiced: the client pays for the work, and that is kept on your own pipeline
 
 stages:
   - id: identified

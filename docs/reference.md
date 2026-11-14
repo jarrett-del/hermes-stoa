@@ -228,6 +228,11 @@ word. The group is a thing of its own, kept under that name however it is typed:
   deal with at Northwind?" finds them.
 - **Notes**, and every change on the ledger.
 
+Where a group is a company (an account, a client: a playbook with `map_group: company`), the
+group's page also holds the company's email domain and everyone on its records, so there is one
+place to look. A playbook with `billing: none` (the shipped `client-leads`) never bills a record:
+there is no Cash tab, and no invoices on a lead.
+
 **One client's list by itself.** *"Export the Northwind search"* writes a CSV of that search and
 nothing else (`gtm_export(action="export", group=...)`, or **Export as CSV** on its panel). A
 client's name in place of a search's gives everything that is for them. **Copy to share**
