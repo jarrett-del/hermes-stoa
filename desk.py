@@ -52,6 +52,7 @@ PIPELINE: contextvars.ContextVar = contextvars.ContextVar("stoa_pipeline", defau
 MAIN = "main"                       # the first pipeline: desk.db, on the playbook in the plugin's settings
 PIPELINES_FILE = "pipelines.json"   # the others, and what the first is called
 MOST_PIPELINES = 6
+NOTES_MAX = 4000                    # a record's notes: a few lines to know, not a document
 TOUR_NOTE = ("The desk is showing sample data (a tour): every person and company on it is made up, and the "
              "team's own records are out of sight until the tour ends.")
 
@@ -533,7 +534,7 @@ class Desk:
                "lost_reason": deal["lost_reason"], "snoozed_until": deal["snoozed_until"], "close_on": deal.get("close_on") or "",
                "delivery": deal.get("delivery") or "" if deal["status"] == "won" else "",
                "delivery_label": playbook.delivery_label(deal.get("delivery") or "") if deal["status"] == "won" else "",
-               "fields": {k: v for k, v in deal["fields"].items() if not k.startswith("_")},
+               "fields": {k: v for k, v in deal["fields"].items() if not k.startswith("_")}, "notes": deal.get("notes") or "",
                "last_touch": touch, "stale": cards.is_stale(playbook, deal, touch), "due": cards.is_due(deal)}
         if deal["grp"]:
             group = (groups.get(st.group_key(deal["grp"])) if groups is not None else self.store.grp_get(deal["grp"])) or {}
@@ -1147,7 +1148,9 @@ class Desk:
             values = {k: args.get(a) for k, a in (("name", "name"), ("company", "company"), ("grp", "group"), ("email", "email"),
                                                   ("linkedin", "linkedin"), ("value", "value"), ("owner", "owner"),
                                                   ("next_step", "next_step"), ("next_due", "next_due"), ("source", "source"),
-                                                  ("close_on", "close_on"), ("delivery", "delivery"))}
+                                                  ("close_on", "close_on"), ("delivery", "delivery"), ("notes", "notes"))}
+            if values.get("notes") is not None:
+                values["notes"] = str(values["notes"]).strip()[:NOTES_MAX]
             fields = args.get("fields") if isinstance(args.get("fields"), dict) else None
             if values.get("grp"):
                 values["grp"] = self._group_spelling(str(values["grp"]).strip())
@@ -1234,7 +1237,7 @@ class Desk:
             email=str(args.get("email") or ""), linkedin=str(args.get("linkedin") or ""), value=value,
             owner=str(args.get("owner") or ""), next_step=str(args.get("next_step") or ""),
             next_due=str(args.get("next_due") or ""), source=str(args.get("source") or ""), close_on=str(args.get("close_on") or ""),
-            fields=args.get("fields") if isinstance(args.get("fields"), dict) else None)
+            notes=str(args.get("notes") or "").strip()[:NOTES_MAX], fields=args.get("fields") if isinstance(args.get("fields"), dict) else None)
         if args.get("note"):
             self.store.log(deal["id"], "note", str(args["note"])[:4000], actor=actor)
         return {"ok": True, "action": "add", "deal": self.view(self.store.get(deal["id"]), playbook)}

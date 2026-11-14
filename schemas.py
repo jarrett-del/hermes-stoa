@@ -64,6 +64,7 @@ GTM_DEAL = {
             "next_step": {"type": "string", "description": "The single next action. Pass an empty string to clear it."},
             "next_due": {"type": "string", "description": "Due date for the next step: YYYY-MM-DD (tomorrow, friday and +3d also work; '' clears it)."},
             "close_on": {"type": "string", "description": "add/update: when the record is expected to close, as a date (the forecast is bucketed by it; '' clears it)."},
+            "notes": {"type": "string", "description": "add/update: the record's notes, a few lines of what to know about it, shown on the record and edited in place. Replaces what is there: read the record first and pass the whole text. '' clears it. What happened goes in the log (action='log'), not here."},
             "delivery": {"type": "string", "description": "update, once won: where the work stands, as a delivery stage id or label from the playbook, or 'next'."},
             "fields": {"type": "object", "description": "Extra facts keyed by the playbook's field keys; an empty value removes a key."},
             "note": {"type": "string", "description": "add: an opening note for the activity log."},
@@ -287,7 +288,10 @@ GTM_INTAKE = {
         "another tool, a photo of a sign-up sheet, a long message. Read the material yourself, then call "
         "action='propose' with what you found as rows (or with the path of a CSV, which the desk reads itself). The desk "
         "works out which rows are new, which would change a record already there, which are already there and which it "
-        "cannot place, and shows the person a review to approve. Nothing is written until they press Apply or tell you "
+        "cannot place, and shows the person a review to approve. Columns may be named the way people name them ('Contact "
+        "email', 'Lead name', 'First name'); a column with no place on the desk is kept in each new record's notes. "
+        "If it answers unread=true, no column read as a name: work out which is which and propose again with rows keyed "
+        "name, company, email and so on, or ask the person. Nothing is written until they press Apply or tell you "
 "to: then action='apply' (rows=[...] or skip=[...] by row number for part of it). action='show' reads a list "
         "back, 'list' shows the ones waiting, 'discard' drops one. Never add a long list record by record instead. "
         "Also how you suggest a change nobody asked for (a stage move an email implies, a person to add to a record): "

@@ -276,8 +276,14 @@ async function takeFile(file) {
   try {
     if (LIST_FILE.test(file.name)) {
       if (file.size > 2e6) return host.notify({ kind: 'warning', message: 'That list is over 2 MB. Send it in parts.' })
-      const result = await rest('/intake', { method: 'POST', body: { name: file.name, text: await file.text() } })
+      const text = await file.text()
+      const result = await rest('/intake', { method: 'POST', body: { name: file.name, text } })
       refresh()
+      if (result.unread) { // the desk could not tell which column is the name: Hermes reads it, and asks if it cannot tell either
+        if (text.length > 60000) return host.notify({ kind: 'info', message: 'Stoa could not tell which column of ' + file.name + ' holds the name. It is too long for the box here: press "Open the conversation" and drop it there.' })
+        host.notify({ kind: 'info', message: result.headline })
+        return say('Stoa could not tell which column of this list holds the name. Read it, work out which column is which, and put it on the desk as a list for my review. If you cannot tell, ask me.', { name: file.name, text })
+      }
       host.notify({ kind: result.waiting ? 'success' : 'info', message: result.headline })
       const page = document.querySelector('.stoa-page')
       if (result.waiting) $tab.set('today') // where everything waiting for a yes or a no is
@@ -787,12 +793,64 @@ function Record({ id, state: shown, sessionId, close, onCompany, onGroup }) {
     close ? h(People, { deal, term: pb.terms.deal }) : (deal.people || []).length ? h('div', { className: 'stoa-log' },
       h('small', { className: 'stoa-eyebrow' }, 'Also on this ' + pb.terms.deal),
       deal.people.map(person => h('p', { key: person.id }, person.name, h('span', { className: 'stoa-sub' }, '  ' + [person.role, person.title].filter(Boolean).join(' · '))))) : null,
-    (deal.activity || []).length ? h('div', { className: 'stoa-log' }, deal.activity.slice(0, 4).map((entry, index) =>
-      h('p', { key: index, style: entry.undone ? { textDecoration: 'line-through', opacity: 0.55 } : undefined }, entry.text,
-        h('span', { className: 'stoa-sub' }, '  ' + ago(entry.at) + (entry.by ? ' · ' + entry.by : '')))),
+    h(RecordNotes, { key: 'notes-' + deal.id, deal }),
+    h(RecordActivity, { key: 'log-' + deal.id, deal, sessionId, full: Boolean(close) }),
     deal.undo ? h(Btn, { kind: 'quiet', disabled: busy, title: 'Put the record back as it was before: ' + deal.undo.text,
       onClick: () => { setBusy(true); undo(deal.id, deal.undo.op).then(() => setBusy(false)) } },
-    h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } }, h(Icon, { name: 'back', size: 13 }), 'Take back the last change')) : null) : null)
+    h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } }, h(Icon, { name: 'back', size: 13 }), 'Take back the last change')) : null)
+}
+
+/** A few lines kept on the record itself: what to know about it. Edited in place; saved like any other change, so it can be taken back. */
+function RecordNotes({ deal }) {
+  const [text, setText] = useState(null) // null: showing what is saved
+  const [busy, setBusy] = useState(false)
+  const saved = deal.notes || ''
+  const changed = text !== null && text.trim() !== saved.trim()
+  const save = () => {
+    setBusy(true)
+    act(deal.id, { verb: 'update', notes: text }).then(result => { setBusy(false); if (result) setText(null) })
+  }
+  return h('div', { className: 'stoa-log' },
+    h('small', { className: 'stoa-eyebrow' }, 'Notes'),
+    h('textarea', { className: 'stoa-field stoa-notes', rows: saved ? Math.min(8, saved.split('\n').length + 1) : 2, maxLength: 4000,
+      value: text === null ? saved : text, placeholder: 'What to know about them: how they found you, what they care about, what to avoid…',
+      onChange: event => setText(event.target.value),
+      onKeyDown: event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && changed) { event.preventDefault(); save() } } }),
+    changed ? h('div', { className: 'stoa-btns', style: { marginTop: 8 } }, h(Btn, { kind: 'primary', disabled: busy, onClick: save }, 'Save notes'),
+      h(Btn, { kind: 'quiet', disabled: busy, onClick: () => setText(null) }, 'Cancel')) : null)
+}
+
+const LOG_KINDS = { call: 'Call', email: 'Email', meeting: 'Meeting', note: 'Note', slack: 'Slack', linkedin: 'LinkedIn', stage: 'Stage',
+  created: 'Added', updated: 'Edited', task: 'Task', enriched: 'Lookup', invoice: 'Invoice', payment: 'Payment' }
+
+/** What happened on the record, newest first, with a line to add to it. */
+function RecordActivity({ deal, sessionId, full }) {
+  const [all, setAll] = useState(false)
+  const [line, setLine] = useState('')
+  const [busy, setBusy] = useState(false)
+  const entries = deal.activity || []
+  const shown = all ? entries : entries.slice(0, full ? 6 : 4)
+  const add = () => {
+    const text = line.trim()
+    if (!text) return
+    setBusy(true)
+    act(deal.id, { verb: 'log', kind: 'note', text }, sessionId).then(result => { setBusy(false); if (result) setLine('') })
+  }
+  return h('div', { className: 'stoa-log' },
+    h('div', { className: 'stoa-sechead', style: { padding: 0, alignItems: 'center' } },
+      h('small', { className: 'stoa-eyebrow' }, 'Activity'),
+      entries.length > shown.length || all ? h('button', { type: 'button', className: 'stoa-proplink stoa-sub', onClick: () => setAll(!all) },
+        all ? 'Fewer' : 'All ' + entries.length) : null),
+    full ? h('div', { style: { display: 'flex', gap: 6, margin: '6px 0 8px' } },
+      h('input', { className: 'stoa-field stoa-grow', value: line, disabled: busy, placeholder: 'Log a call, an email, a thought…', 'aria-label': 'Add to the log',
+        onChange: event => setLine(event.target.value), onKeyDown: event => { if (event.key === 'Enter') { event.preventDefault(); add() } } }),
+      line.trim() ? h(Btn, { disabled: busy, onClick: add }, 'Add') : null) : null,
+    shown.length ? shown.map((entry, index) =>
+      h('p', { key: index, style: entry.undone ? { textDecoration: 'line-through', opacity: 0.55 } : undefined },
+        LOG_KINDS[entry.kind] && !['created', 'updated', 'stage'].includes(entry.kind) ? h('b', { style: { fontWeight: 550 } }, LOG_KINDS[entry.kind] + '  ') : null,
+        entry.text,
+        h('span', { className: 'stoa-sub' }, '  ' + ago(entry.at) + (entry.by ? ' · ' + entry.by : ''))))
+      : h('p', { className: 'stoa-sub' }, 'Nothing logged yet.'))
 }
 
 // -- a list sent in: tick what to keep, then Apply ------------------------------------------------

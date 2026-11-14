@@ -73,6 +73,10 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 
 ![An approved proposal, with the offer to take it back](desktop-undo.jpg)
 
+- **Notes and activity on the record.** Open a record for its **Notes**, a few lines of what to know
+  about it that you edit in place, and its **Activity**: everything that happened, newest first,
+  with a line to log a call or a thought. Saving notes is a change like any other, so it can be
+  taken back.
 - **People and companies.** A record has its own person and can carry the others around it: the
   buyer's boss, finance, a hiring manager. Their email and calls are then filed on that record
   too. Press the company on a record, or **Companies** on the pipeline, for everything at one
@@ -108,7 +112,8 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   away when you want the full chat.
 - **Say it or hand it over.** The microphone dictates into the dock where the browser has speech
   recognition. Drop a CSV anywhere on the page, or attach one, and the desk reads it itself and
-  shows the review, with no model in between. A small text file goes along with your message.
+  shows the review, with no model in between, whatever the headers are called. If it cannot tell
+  which column is the name, Hermes reads the file instead. A small text file goes along with your message.
 - **Or do it by hand.** Drag a card to another column to move it. **+ New** adds a record from a
   short form. **Edit** on any record changes its next step, stage, value, owner and the rest, and
   adds a line to its log. Press a stage in the funnel to pick out its column on the board. No model involved.

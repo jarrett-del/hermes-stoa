@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -30,6 +31,17 @@ ALIASES = {"group": "grp", "account": "grp", "deal": "name", "contact": "name", 
 CORE = ("name", "company", "grp", "email", "linkedin", "stage", "value", "owner", "next_step", "next_due", "source", "note", "record",
         "close_on")
 READ_ONLY = ("updated", "status", "last_touch", "added", "created")     # columns the desk writes out and never reads back
+# Reading a header the way a person wrote it ("Client Name ", "Contact email", "Lead name"): the words around a
+# name say whose name it is. "client" is a company only where the playbook calls the company or the group that.
+PERSON_WORDS = {"contact", "lead", "candidate", "person", "prospect", "full", "buyer", "applicant", "attendee", "member",
+                "user", "primary", "main", "decision", "maker", "point", "poc", "talent", "investor", "partner", "your"}
+ORG_WORDS = {"company", "account", "organization", "organisation", "org", "business", "employer", "firm", "brand",
+             "agency", "vendor", "customer", "school", "fund"}
+FIRST_WORDS, LAST_WORDS = ({"first", "given", "fore"}, {"last", "family", "sur"})
+PATTERNS = (({"email", "e-mail", "mail"}, "email"), ({"linkedin"}, "linkedin"), ({"stage"}, "stage"),
+            ({"owner", "rep", "assignee"}, "owner"), ({"notes", "note", "comment", "comments", "description"}, "note"),
+            ({"source"}, "source"))
+FIELD_WORDS = (({"title", "position", "role", "job"}, "title"), ({"location", "city", "region", "country", "based"}, "location"))
 
 
 def _text(value: Any, limit: int = 500) -> str:
@@ -158,9 +170,22 @@ class Intake:
         if declined:
             out["declined_before"] = len(declined)
         if ignored:
-            out["ignored_columns"] = sorted(ignored)[:20]
+            out["kept_as_note"] = sorted(ignored)[:20]
+            out["kept_note"] = "These columns have no place on the desk; each new record keeps them in its notes, in the list's words."
         if problems:
             out["problems"] = problems[:20]
+        nameless = [row for row in plan if row["kind"] == "problem" and not row["name"]]
+        if plan and len(nameless) == len(plan):
+            headers = [str(key).strip() for key in (rows[0].keys() if isinstance(rows[0], dict) else []) if key is not None][:30]
+            terms = playbook.terms
+            self.store.intake_finish(intake_id, "discarded", {"reason": "no column reads as a name"})
+            out.update(unread=True, columns=headers, note=(
+                "No column here reads as the name of a %s or a company, so nothing could be proposed. The columns were: %s. "
+                "Look at the rows, work out which column is which, and call gtm_intake again with rows keyed name (the %s), "
+                "company, email, %s and the rest (any column can stay as it is: what has no place is kept in the notes of each "
+                "new record). If you cannot tell which is the name, ask the person in one line."
+                % (terms["deal"], ", ".join(headers) or "none", terms["deal"], terms["group"])))
+            return out
         if not any(row["kind"] in APPLICABLE for row in plan):
             out["note"] = ("Nothing here is new: the person declined %s before, and the desk does not ask twice. Do not propose "
                            "it again unless something has changed." % ("this" if len(declined) == 1 else "these")) if declined \
@@ -250,23 +275,42 @@ class Intake:
         row["payment"] = {"invoice": _text(came.get("invoice") or came.get("number"), 40),
                           "amount": st.to_cents(came.get("amount")) / 100 if came.get("amount") not in (None, "") else None,
                           "on": _text(came.get("on") or came.get("date"), 40)} if isinstance(came, dict) else {}
+        first = last = ""
+        kept: list = []         # columns the desk has no place for: kept as a note on a new record, not dropped
         for column, value in raw.items():
             if column is None or column in ("fields", "evidence", "why", "because", "person", "lost_reason", "invoice", "payment"):
                 continue
-            label = str(column).strip().lower()
-            key = label.replace(" ", "_")
-            key = aliases.get(key, key)
+            label = " ".join(str(column).split()).lower()
+            key = aliases.get(label.replace(" ", "_"), label.replace(" ", "_"))
             text = value if key == "value" and isinstance(value, (int, float)) and not isinstance(value, bool) else _text(value)
             if key in READ_ONLY:
                 continue
-            if key in CORE:
-                row[key] = text
+            if key not in CORE and key not in field_keys and label not in by_label:
+                key = self._column(label, playbook, aliases, field_keys)
+            if key == "first_name":
+                first = first or text
+            elif key == "last_name":
+                last = last or text
+            elif key in CORE:
+                if text != "" and not _text(row.get(key)):       # the first column that says it wins ("Email", then "Work email")
+                    row[key] = text
+                elif text and key == "note":
+                    row["note"] = row["note"] + " · " + text
+                elif text and _text(row.get(key)) != _text(text):
+                    kept.append((str(column).strip(), _text(text)))
             elif key in field_keys:
-                row["fields"][key] = text
+                if text and not row["fields"].get(key):
+                    row["fields"][key] = text
+                elif text:
+                    kept.append((str(column).strip(), _text(text)))
             elif label in by_label:
                 row["fields"][by_label[label]] = text
             elif text:
                 ignored.append(str(column).strip())
+                kept.append((str(column).strip(), _text(text)))
+        if (first or last) and not _text(row.get("name")):
+            row["name"] = " ".join(bit for bit in (first, last) if bit)
+        row["kept"] = kept[:12]
         if isinstance(raw.get("fields"), dict):
             for key, value in raw["fields"].items():
                 if key in field_keys:
@@ -293,6 +337,62 @@ class Intake:
             warnings.append("the reason is kept as written; this playbook's own are: %s" % ", ".join(playbook.lost["reasons"]))
         row["value"] = st._number(row.get("value"))
         return row, warnings, ignored
+
+    @staticmethod
+    def _group_is_company(playbook) -> bool:
+        rule = str(playbook.map_group or "").lower()
+        return rule == "company" or (not rule and str(playbook.terms.get("group") or "").lower() in ("account", "client", "company", "customer"))
+
+    @staticmethod
+    def _column(label: str, playbook, aliases: dict, field_keys: set) -> str:
+        """The desk's key for a header written in a person's words ("Client Name", "Contact email", "Lead name",
+        "First name"), or "" when it is none of them. Reads the words, not the spelling: case, spaces, underscores
+        and punctuation do not matter."""
+        words = [word for word in re.split(r"[^a-z0-9@]+", label.lower().replace("e-mail", "email")) if word]
+        if not words:
+            return ""
+        joined = "_".join(words)
+        if joined in aliases:
+            return aliases[joined]
+        if joined in ("firstname", "forename", "givenname"):
+            return "first_name"
+        if joined in ("lastname", "surname", "familyname"):
+            return "last_name"
+        terms = {term: str(playbook.terms.get(term) or "").lower() for term in ("deal", "group", "company")}
+        orgs = set(ORG_WORDS) | {terms["company"]}
+        if "client" in (terms["company"], terms["group"]):
+            orgs.add("client")
+        people = set(PERSON_WORDS) | {terms["deal"]}
+        if words[-1] == "name" or (len(words) > 1 and words[-2] == "name"):
+            before = words[:words.index("name")]
+            if not before:
+                return "name"
+            if before[-1] in FIRST_WORDS:
+                return "first_name"
+            if before[-1] in LAST_WORDS:
+                return "last_name"
+            if (before[-1] == terms["group"] or " ".join(before) == terms["group"]) and terms["group"] != terms["company"]:
+                return "grp"
+            if before[-1] in orgs:
+                return "company"
+            if before[-1] in people or before[0] in people:
+                return "name"
+            return ""
+        if {"owner", "rep", "assignee", "manager", "assistant", "referrer"} & set(words):
+            if words[-1] in ("owner", "rep", "assignee") or words[-2:] in (["owner", "name"], ["rep", "name"]):
+                return "owner"                          # "Deal Owner", "Account rep"
+            return ""                                   # "Owner email", "Hiring manager": someone else's details, kept in the note
+        if "linkedin" in words:
+            return "linkedin"
+        for found, key in PATTERNS:
+            if found & set(words) or (key == "email" and "e" in words and "mail" in words):
+                return key
+        if set(words) & orgs and len(words) <= 2 and not {"website", "site", "url", "domain", "size", "type", "phone"} & set(words):
+            return "company"
+        for found, key in FIELD_WORDS:
+            if found & set(words) and key in field_keys:
+                return key
+        return ""
 
     def _match(self, row: dict, deals: list) -> tuple:
         """``(record, why, candidates)``: the record this row is about, or why there is none or several."""
@@ -393,6 +493,8 @@ class Intake:
             if not row["name"]:
                 entry.update(kind="problem", why="no name or company on this row")
                 continue
+            if not entry["group"] and self._group_is_company(playbook):
+                entry["group"] = entry["company"]
             identity = (row.get("record") or (row.get("email") or "").lower() or _link(row.get("linkedin", ""))
                         or row["name"].lower())
             key = (identity, entry["group"].lower())
@@ -729,6 +831,9 @@ class Intake:
     def _add(self, row: dict, playbook, actor: str, label: str) -> Optional[dict]:
         values = row["row"]
         group = values.get("grp") or ""
+        if self._group_is_company(playbook):      # an account or a client is a company: on a new record either fills the other
+            group = group or values.get("company") or ""
+            values = dict(values, company=values.get("company") or group)
         for existing in self.store.list(status="open", query=row["name"]):     # added by someone else since the review
             if existing["name"].lower() == row["name"].lower() and existing["grp"].lower() == group.lower():
                 return None
@@ -738,7 +843,7 @@ class Intake:
                               company=values.get("company") or "", grp=group, email=values.get("email") or "",
                               linkedin=values.get("linkedin") or "", value=values.get("value"), owner=values.get("owner") or "",
                               next_step=values.get("next_step") or "", next_due=values.get("next_due") or "",
-                              close_on=values.get("close_on") or "",
+                              close_on=values.get("close_on") or "", notes=self._kept_notes(values),
                               source=values.get("source") or label, fields=values.get("fields") or None)
         if closing:
             deal = self.desk._move(deal, stage, playbook, actor, values.get("lost_reason") or "") or deal
@@ -747,6 +852,12 @@ class Intake:
         if _text(values.get("note")):
             self.store.log(deal["id"], "note", _text(values["note"], 4000), actor=actor)
         return self.store.get(deal["id"])
+
+    @staticmethod
+    def _kept_notes(values: dict) -> str:
+        """What the list said that the desk has no column for, as the new record's notes, in the list's own words."""
+        kept = [pair for pair in values.get("kept") or [] if isinstance(pair, (list, tuple)) and len(pair) == 2 and _text(pair[1])]
+        return "\n".join("%s: %s" % (_text(name, 60), _text(value, 300)) for name, value in kept)[:4000]
 
     def _update(self, row: dict, playbook, actor: str, label: str) -> Optional[dict]:
         record = self.store.get(row["deal"])

@@ -479,7 +479,7 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
                 "last": _last(d, deal_id) if verb not in ("draft", "enrich") else None}
     if verb in ("log", "update", "move", "done", "snooze"):
         allowed = ("kind", "text", "next_step", "next_due", "value", "owner", "company", "group", "email", "linkedin", "name", "stage",
-                   "days", "until", "close_on", "delivery")
+                   "days", "until", "close_on", "delivery", "notes")
         args = {k: body[k] for k in allowed if k in body}
         result = d.deal(dict(args, action=verb, deal=deal_id), actor="dashboard")
         if not result.get("ok"):
@@ -578,9 +578,24 @@ def intake_file(body: dict = Body(...)) -> dict:
         raise HTTPException(400, result.get("error") or "could not read that list")
     counts = result.get("counts") or {}
     waiting = bool(counts.get("new") or counts.get("update"))
+    named = str((body or {}).get("name") or "that list")
+    if result.get("unread"):        # no column reads as a name: the page hands the file to Hermes to read instead
+        return {"ok": True, "id": result.get("id"), "counts": counts, "waiting": False, "unread": True,
+                "columns": result.get("columns") or [], "problems": result.get("problems") or [],
+                "headline": "Stoa could not tell which column of %s holds the name, so Hermes is reading it." % named}
     return {"ok": True, "id": result.get("id"), "counts": counts, "waiting": waiting, "problems": result.get("problems") or [],
+            "kept": result.get("kept_as_note") or [],
             "headline": (d.intake.headline(d.store.intake_get(result["id"])) + ". It is waiting for your approval on Today.") if waiting
-            else "Nothing in %s would change the desk." % (str((body or {}).get("name") or "that list"))}
+            else _nothing_new(named, counts)}
+
+
+def _nothing_new(named: str, counts: dict) -> str:
+    """Why a dropped list changed nothing, in a line."""
+    bits = [text % counts[key] for key, text in (("same", "%d already there"), ("unclear", "%d unclear"), ("problem", "%d with no name"),
+                                                  ("declined", "%d declined before")) if counts.get(key)]
+    if bits == ["%d already there" % counts.get("same", 0)]:
+        return "Everything in %s is already on the desk." % named
+    return "Nothing in %s would change the desk%s." % (named, (": " + ", ".join(bits)) if bits else "")
 
 
 @router.get("/intake/{intake_id}")

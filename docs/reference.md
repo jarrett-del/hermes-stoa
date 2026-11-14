@@ -90,6 +90,12 @@ each row would do:
 | **Already there** | On the desk with nothing new. Left alone. |
 | **Unclear** | Could be more than one record. Stoa asks which. |
 
+Headers can stay as they were written: "Client Name", "Contact email", "Lead name", "First name"
+and "Last name", "Deal Owner" are read for what they mean, whatever the case, spacing or
+punctuation. A column the desk has no place for (a phone number, a website) is not dropped: each
+new record keeps it in its notes, in the list's words. If no column reads as a name at all, the
+page hands the file to Hermes to read, and Hermes asks you if it cannot tell either.
+
 A person is matched by email first, then LinkedIn, then name and company. The same person in a
 different account or search is a new record, not an update. Nothing is written until you press
 **Apply** in the app or in Slack, or say "apply all but 3". Two people pressing Apply write the

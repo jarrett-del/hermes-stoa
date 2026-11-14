@@ -2272,7 +2272,7 @@ class IntakeTests(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual([row["kind"] for row in out["rows"]], ["new", "update", "same", "same", "new", "problem", "new"])
         self.assertEqual(out["counts"], {"new": 3, "update": 1, "same": 2, "unclear": 0, "problem": 1, "declined": 0, "done": 0, "rows": 7})
-        self.assertEqual(out["ignored_columns"], ["favourite colour"])
+        self.assertEqual(out["kept_as_note"], ["favourite colour"])
         changes = {c["field"]: (c["from"], c["to"]) for c in out["rows"][1]["changes"]}
         self.assertEqual(changes["Stage"], ("Screened", "Submitted"))
         self.assertEqual(changes["LinkedIn"], ("", "https://www.linkedin.com/in/danaw/"))
@@ -2409,6 +2409,109 @@ class IntakeTests(unittest.TestCase):
         self.assertNotIn("rows", out)
         self.assertNotIn("review", out)
 
+
+class HeaderTests(unittest.TestCase):
+    """A spreadsheet's own headers, as people write them, are read without renaming anything first."""
+
+    def desk_on(self, playbook):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return make_desk(tmp.name, playbook=playbook)
+
+    def test_a_client_list_with_its_own_headers_comes_in(self):
+        desk = self.desk_on("agency")
+        text = ("Client Name ,Website ,Contact name ,Contact email ,Contact website ,Location\n"
+                "Harbor Tide Studio,harbortide.example,Mina Park,mina@harbortide.example,harbortide.example,\"Portland, OR\"\n"
+                "Quarry Lane Foods,quarrylane.example,Tom Ellis,tom@quarrylane.example,quarrylane.example,\"Denver, CO\"\n")
+        out = desk.intake.propose_file("Clients.csv", text)
+        self.assertEqual(out["counts"]["new"], 2)
+        first = out["rows"][0]
+        self.assertEqual((first["name"], first["company"], first["group"]), ("Mina Park", "Harbor Tide Studio", "Harbor Tide Studio"))
+        self.assertEqual(out["kept_as_note"], ["Contact website", "Location", "Website"])
+        applied = desk.intake.apply({"id": out["id"]}, "test")
+        record = desk.store.get(applied["records"][0])
+        self.assertEqual((record["email"], record["company"], record["grp"]), ("mina@harbortide.example", "Harbor Tide Studio", "Harbor Tide Studio"))
+        self.assertEqual(record["notes"], "Website: harbortide.example\nContact website: harbortide.example\nLocation: Portland, OR")
+        self.assertEqual(desk.view(record)["notes"], record["notes"])
+
+    def test_a_lead_list_with_its_own_headers_comes_in(self):
+        desk = self.desk_on("client-leads")
+        text = ("Lead name ,Source ,Phone ,Email ,Linkedin ,website ,Job title,City\n"
+                "Rosa Diaz,Referral,(555) 010-2000,rosa@ninepine.example,,ninepine.example,VP Finance,Austin\n")
+        out = desk.intake.propose_file("Leads.csv", text)
+        self.assertEqual(out["counts"]["new"], 1)
+        record = desk.store.get(desk.intake.apply({"id": out["id"]}, "test")["records"][0])
+        self.assertEqual((record["name"], record["email"], record["source"]), ("Rosa Diaz", "rosa@ninepine.example", "Referral"))
+        self.assertEqual(record["fields"], {"title": "VP Finance", "location": "Austin"})
+        self.assertEqual(record["notes"], "Phone: (555) 010-2000\nwebsite: ninepine.example")
+
+    def test_first_and_last_names_make_one_name_and_spelling_does_not_matter(self):
+        desk = self.desk_on("b2b-sales")
+        text = ("Owner email,FIRST_NAME,last-name,E-mail Address,Account Name,Deal Owner\n"
+                "sam@ourco.example,Lena,Ortiz,lena@corvid.example,Corvid Health,Sam\n")
+        out = desk.intake.propose_file("export.csv", text)
+        row = out["rows"][0]
+        self.assertEqual((row["kind"], row["name"], row["group"]), ("new", "Lena Ortiz", "Corvid Health"))
+        record = desk.store.get(desk.intake.apply({"id": out["id"]}, "test")["records"][0])
+        self.assertEqual((record["email"], record["owner"], record["company"]), ("lena@corvid.example", "Sam", "Corvid Health"))
+        self.assertEqual(out["kept_as_note"], ["Owner email"])
+
+    def test_a_list_with_no_name_column_is_handed_back_to_be_read(self):
+        desk = self.desk_on("agency")
+        before = desk.store.count()
+        out = desk.intake.propose_file("mystery.csv", "Col A,Col B\nApex,apex.example\n")
+        self.assertTrue(out["unread"])
+        self.assertEqual(out["columns"], ["Col A", "Col B"])
+        self.assertIn("ask the person", out["note"])
+        self.assertEqual(desk.store.count(), before)
+        self.assertEqual(desk.intake.waiting(), [])                    # nothing left waiting for a yes
+
+    def test_a_list_already_on_the_desk_still_says_nothing_new(self):
+        desk = self.desk_on("agency")
+        text = "Contact name,Client name\nMina Park,Harbor Tide Studio\n"
+        desk.intake.apply({"id": desk.intake.propose_file("a.csv", text)["id"]}, "test")
+        again = desk.intake.propose_file("a.csv", text)
+        self.assertNotIn("unread", again)
+        self.assertEqual((again["counts"]["new"], again["counts"]["same"]), (0, 1))
+
+
+
+class RecordNotesTests(unittest.TestCase):
+    """A few lines kept on the record itself, edited in place, and taken back like any other change."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name)
+        fixture.load(self.desk)
+        self.dana = self.desk.store.find("Dana Whitfield")
+
+    def test_notes_are_set_shown_replaced_and_taken_back(self):
+        out = self.desk.deal({"action": "update", "deal": self.dana["id"], "notes": "Prefers mornings.\nWife is a recruiter."})
+        self.assertTrue(out["ok"])
+        got = self.desk.deal({"action": "get", "deal": self.dana["id"]})
+        self.assertEqual(got["deal"]["notes"] if "deal" in got else got["notes"], "Prefers mornings.\nWife is a recruiter.")
+        self.desk.deal({"action": "update", "deal": self.dana["id"], "notes": "Prefers mornings."})
+        self.assertEqual(self.desk.store.get(self.dana["id"])["notes"], "Prefers mornings.")
+        self.desk.store.undo(self.dana["id"])
+        self.assertEqual(self.desk.store.get(self.dana["id"])["notes"], "Prefers mornings.\nWife is a recruiter.")
+        self.desk.deal({"action": "update", "deal": self.dana["id"], "notes": ""})
+        self.assertEqual(self.desk.store.get(self.dana["id"])["notes"], "")
+
+    def test_a_new_record_can_carry_notes_and_long_notes_are_cut(self):
+        out = self.desk.deal({"action": "add", "name": "Iris Bell", "group": "Staff Backend · Northwind", "notes": "x" * 5000})
+        self.assertTrue(out["ok"])
+        self.assertEqual(len(self.desk.store.find("Iris Bell")["notes"]), 4000)
+
+    def test_an_older_desk_gains_the_notes_column_when_opened(self):
+        import sqlite3
+        path = Path(self.tmp.name) / "old.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(st.SCHEMA.replace("  notes TEXT NOT NULL DEFAULT '',\n", "") if "notes TEXT" in st.SCHEMA else st.SCHEMA)
+        conn.close()
+        store = st.Store(path)
+        made = store.add("Old Timer", "sourced")
+        self.assertEqual(made["notes"], "")
 
 class FakeCtx:
     """The part of Hermes's plugin context that ``register`` uses, recording what it is given."""
@@ -3034,6 +3137,14 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(self.api.use_playbook({"name": "recruiting"}), {"ok": False, "ask": "Switch the Stoa desk to the recruiting playbook."})
         self.assertEqual(self.desk.own_playbook().name, "agency")
 
+    def test_the_record_panel_saves_notes_and_logs_a_line(self):
+        dana = self.desk.store.find("Dana Whitfield")
+        self.api.act(dana["id"], {"verb": "update", "notes": "Prefers mornings."})
+        self.api.act(dana["id"], {"verb": "log", "kind": "note", "text": "Called, left a message"})
+        shown = self.api.deal(dana["id"])
+        self.assertEqual(shown["notes"], "Prefers mornings.")
+        self.assertEqual((shown["activity"][0]["kind"], shown["activity"][0]["text"]), ("note", "Called, left a message"))
+
     def test_a_csv_dropped_on_the_page_becomes_a_review_without_a_model(self):
         before = self.desk.store.count()
         text = ("Name,Company,Search,Email,Stage\n"
@@ -3048,10 +3159,13 @@ class DashboardApiTests(unittest.TestCase):
         applied = self.api.intake_act(held["id"], "apply", {})
         self.assertEqual((applied["added"], applied["updated"]), (1, 1))
         self.assertEqual(self.desk.store.find("Dana Whitfield")["stage"], "submitted")
+        unread = self.api.intake_file({"name": "mystery.csv", "text": "Col A,Col B\nApex,apex.example\n"})
+        self.assertEqual((unread["unread"], unread["waiting"]), (True, False))
+        self.assertIn("Hermes is reading it", unread["headline"])
         tabbed = self.api.intake_file({"name": "people.tsv", "text": "Name\tCompany\nBen Okoro\tHarbor Systems\n"})
         self.assertEqual(tabbed["counts"]["new"], 1)
         again = self.api.intake_file({"name": "again.csv", "text": "Name,Company\nAda Quill,Fathom Data\n"})
-        self.assertEqual((again["waiting"], again["headline"]), (False, "Nothing in again.csv would change the desk."))
+        self.assertEqual((again["waiting"], again["headline"]), (False, "Everything in again.csv is already on the desk."))
         with self.assertRaises(self.api.HTTPException):
             self.api.intake_file({"name": "empty.csv", "text": "Name,Company\n"})
 
