@@ -2468,6 +2468,41 @@ class HeaderTests(unittest.TestCase):
         self.assertEqual((lena["company"], lena["grp"], lena["email"], lena["phone"], lena["notes"]),
                          ("Corvid Health", "Corvid Health", "lena@corvid.example", "+1 555 010 3000", "Website: corvid.example"))
 
+    def test_each_unplaced_column_goes_where_the_person_says(self):
+        desk = self.desk_on("recruiting")
+        text = ("Name,Email,Website,Visa status,Favourite colour\n"
+                "Mina Park,mina@harbortide.example,harbortide.example,H-1B,green\n")
+        out = desk.intake.propose_file("list.csv", text)
+        self.assertIn("Visa status", out["note"]) if "note" in out else None
+        view = desk.intake.view(out["id"])
+        self.assertEqual([c["name"] for c in view["columns"]], ["Favourite colour", "Visa status", "Website"])
+        applied = desk.intake.apply({"id": out["id"], "columns": {"Visa status": "field", "Favourite colour": "skip"}}, "test")
+        self.assertTrue(applied["ok"], applied)
+        mina = desk.store.find("Mina Park")
+        key = next(f["key"] for f in desk.playbook().fields if f["label"] == "Visa status")
+        self.assertEqual(mina["fields"][key], "H-1B")
+        self.assertEqual(mina["notes"], "Website: harbortide.example")              # notes by default, the skipped one gone
+        self.assertEqual(desk.playbook().name, "recruiting")                          # the desk's own copy, under the same name
+        self.assertEqual(len(desk.playbook().stages), len(desk.library.load("recruiting").stages))
+        # the same list again, now that Visa status is a field: an existing record without it is filled in
+        desk.deal({"action": "update", "deal": mina["id"], "fields": {key: ""}})
+        again = desk.intake.propose_file("list.csv", text)
+        result = desk.intake.apply({"id": again["id"], "columns": {"Visa status": "field"}}, "test")
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(desk.store.get(mina["id"])["fields"][key], "H-1B")
+
+    def test_too_many_fields_changes_nothing(self):
+        desk = self.desk_on("recruiting")
+        names = ["Extra %d" % n for n in range(12)]
+        text = "Name," + ",".join(names) + "\nMina Park," + ",".join("v" for _ in names) + "\n"
+        out = desk.intake.propose_file("wide.csv", text)
+        refused = desk.intake.apply({"id": out["id"], "columns": {name: "field" for name in names}}, "test")
+        self.assertFalse(refused["ok"])
+        self.assertIn("at most 12", refused["error"])
+        self.assertEqual(desk.store.count(), 0)
+        self.assertEqual(desk.intake.view(out["id"])["status"], "open")               # still waiting, to be applied another way
+        self.assertTrue(desk.intake.apply({"id": out["id"]}, "test")["ok"])
+
     def test_a_list_with_no_name_column_is_handed_back_to_be_read(self):
         desk = self.desk_on("agency")
         before = desk.store.count()
@@ -2580,6 +2615,102 @@ class LayoutRuleTests(unittest.TestCase):
         self.assertEqual(desk.store.get(mei["id"])["phone"], "+1 555 010 4000")
         out = desk.intake.propose_file("c.csv", "Name,Mobile\nMei Sato,+1 555 010 6000\n")
         self.assertEqual([c["field"] for c in out["rows"][0]["changes"]], ["Phone"])
+
+
+class ClientBillingTests(unittest.TestCase):
+    """Contract work billed to a client by the month (hours, or a retainer), kept beside the searches it pays for."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.desk = make_desk(self.tmp.name, playbook="recruiting")
+        self.desk.group({"action": "set", "group": "Head of Talent · Fernway", "client": "Fernway", "new": True})
+        self.desk.group({"action": "set", "group": "Staff Engineer · Fernway", "client": "Fernway", "new": True})
+        self.desk.deal({"action": "add", "name": "Mina Park", "group": "Head of Talent · Fernway"})
+        today = dt.date.today().replace(day=1)
+        self.last = (today - dt.timedelta(days=1)).isoformat()[:7]
+        self.before = ((today - dt.timedelta(days=1)).replace(day=1) - dt.timedelta(days=1)).isoformat()[:7]
+        self.this = today.isoformat()[:7]
+
+    def terms(self, **extra):
+        return self.desk.invoice(dict({"action": "terms", "client": "Fernway", "kind": "hourly", "rate": 95, "hours_week": 40,
+                                       "bill_to": "Halyard Ventures", "start": self.before}, **extra))
+
+    def test_terms_then_the_months_that_have_ended_are_waiting(self):
+        out = self.terms()
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["terms"]["bill_to"], "Halyard Ventures")
+        waiting = self.desk.to_bill()
+        self.assertEqual([row["period"] for row in waiting], [self.before, self.last])        # never the month still running
+        row = waiting[-1]
+        weekdays = self.desk._weekdays(self.last)
+        self.assertEqual((row["client"], row["bill_to"], row["hours"], row["amount"]), ("Fernway", "Halyard Ventures", float(weekdays * 8), weekdays * 8 * 95.0))
+        self.assertEqual(self.desk.today(full=False)["counts"]["to_bill"], 2)
+        self.assertEqual(self.desk.cash()["strip"]["to_bill"]["count"], 2)
+
+    def test_a_month_is_billed_once_with_the_hours_given(self):
+        self.terms()
+        out = self.desk.invoice({"action": "add", "client": "Fernway", "period": self.last, "hours": 152, "number": "2041"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual((out["invoice"]["amount"], out["owed"]), (14440.0, 14440.0))
+        self.assertIn("152 h", out["invoice"]["note"])
+        self.assertIn("to Halyard Ventures", out["invoice"]["note"])
+        self.assertEqual([row["period"] for row in self.desk.to_bill()], [self.before])
+        again = self.desk.invoice({"action": "add", "client": "Fernway", "period": self.last})
+        self.assertFalse(again["ok"])
+        self.assertIn("already billed", again["error"])
+        cash = self.desk.cash()
+        self.assertEqual(cash["strip"]["owed"]["value"], 14440.0)
+        self.assertEqual([(i["client"], i["period"]) for i in cash["invoices"]], [("Fernway", self.last)])
+        # paid, found by its number alone; then taken back
+        paid = self.desk.invoice({"action": "pay", "invoice": "2041"})
+        self.assertTrue(paid["ok"], paid)
+        self.assertEqual(paid["owed"], 0)
+        back = self.desk.invoice({"action": "undo", "client": "Fernway"})
+        self.assertTrue(back["ok"], back)
+        self.assertEqual(back["owed"], 14440.0)
+        self.assertEqual(self.desk.store.activities(limit=50)[0]["deal_id"], self.desk.store.find("Mina Park")["id"])  # no stray log line
+
+    def test_a_skipped_month_is_not_asked_for_and_a_retainer_bills_its_amount(self):
+        self.terms()
+        self.desk.invoice({"action": "skip", "client": "Fernway", "period": self.before})
+        self.assertEqual([row["period"] for row in self.desk.to_bill()], [self.last])
+        self.desk.invoice({"action": "unskip", "client": "Fernway", "period": self.before})
+        self.assertEqual(len(self.desk.to_bill()), 2)
+        self.desk.invoice({"action": "terms", "client": "Fernway", "kind": "retainer", "rate": 8000})
+        self.assertEqual({row["amount"] for row in self.desk.to_bill()}, {8000.0})
+        bad = self.desk.invoice({"action": "terms", "client": "Fernway", "kind": "hourly", "rate": 0})
+        self.assertFalse(bad["ok"])
+
+    def test_the_client_page_has_its_searches_records_and_billing(self):
+        self.terms()
+        view = self.desk.client_view("fernway")
+        self.assertEqual(view["client"]["name"], "Fernway")
+        self.assertEqual(sorted(row["name"] for row in view["searches"]), ["Head of Talent · Fernway", "Staff Engineer · Fernway"])
+        self.assertEqual([r["name"] for r in view["records"]], ["Mina Park"])
+        self.assertEqual(len(view["billing"]["to_bill"]), 2)
+        listed = self.desk.clients()
+        self.assertEqual([(row["name"], row["open"], row["to_bill"]) for row in listed], [("Fernway", 1, 2)])
+
+    def test_a_scheduled_job_cannot_bill_or_change_terms(self):
+        self.terms()
+        session = {"platform": "cron"}
+        self.assertIsNotNone(self.desk.guard("gtm_invoice", {"action": "terms", "client": "Fernway", "rate": 1}, session))
+        held = self.desk.guard("gtm_invoice", {"action": "add", "client": "Fernway", "period": self.last}, session)
+        self.assertIsNotNone(held)
+        self.assertEqual(len(self.desk.to_bill()), 2)          # nothing was billed
+
+    def test_a_desk_whose_records_are_never_billed_asks_for_no_record_invoice(self):
+        leads = make_desk(tempfile.mkdtemp(), playbook="client-leads")
+        leads.deal({"action": "add", "name": "Rosa Diaz", "group": "Fintech CFOs", "value": 50000})
+        rosa = leads.store.find("Rosa Diaz")
+        leads.deal({"action": "close", "deal": rosa["id"], "outcome": "won"})
+        leads.group({"action": "set", "group": "Fintech CFOs", "client": "Acme", "new": True})
+        leads.invoice({"action": "terms", "client": "Acme", "kind": "retainer", "rate": 12000, "start": self.last})
+        leads.invoice({"action": "add", "client": "Acme", "period": self.last})
+        today = leads.today(full=False)
+        self.assertEqual((today["counts"]["to_invoice"], today["counts"]["to_bill"]), (0, 0))
+        self.assertEqual(leads.cash()["strip"]["owed"]["value"], 12000.0)
 
 class FakeCtx:
     """The part of Hermes's plugin context that ``register`` uses, recording what it is given."""

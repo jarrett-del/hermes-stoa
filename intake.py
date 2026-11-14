@@ -125,7 +125,8 @@ class Intake:
         if action == "show":
             return dict(self.view(intake["id"]), ok=True, review=self.text(intake))
         if action == "apply":
-            return self.apply({"id": intake["id"], "rows": args.get("rows"), "skip": args.get("skip")}, self.desk.actor())
+            return self.apply({"id": intake["id"], "rows": args.get("rows"), "skip": args.get("skip"), "columns": args.get("columns")},
+                              self.desk.actor())
         if action == "discard":
             return self.discard(intake["id"])
         return {"ok": False, "error": "unknown action '%s'" % action, "actions": ["propose", "show", "apply", "discard", "list"]}
@@ -199,6 +200,10 @@ class Intake:
             return out
         waiting = ("The list is waiting for approval; nothing has been written. Do not apply it yourself unless the "
                    "person tells you to. To apply some rows only, pass rows=[...] or skip=[...] by row number.")
+        if ignored:
+            waiting += (" Some columns have no place on the desk (%s). Ask the person, in one line, whether to keep them in each "
+                        "new record's notes (what happens if they do not mind), add them to the playbook as fields, or leave them "
+                        "out; then apply with columns={\"<column>\": \"notes\" | \"field\" | \"skip\"}." % ", ".join(sorted(ignored)[:8]))
         slack = self.desk.slack
         if self.desk.desktop_open(session):
             out["directive"] = "::stoa-intake{id=\"%s\"}" % intake_id
@@ -537,7 +542,52 @@ class Intake:
         playbook = self.desk.playbook()
         return {"id": intake["id"], "source": intake["source"], "status": intake["status"], "at": intake["at"],
                 "origin": intake.get("origin") or "list", "counts": self.counts(intake), "result": intake["result"],
-                "rows": [self._shown(row, playbook) for row in intake["rows"]]}
+                "rows": [self._shown(row, playbook) for row in intake["rows"]], "columns": self.unplaced(intake)}
+
+    @staticmethod
+    def unplaced(intake: dict) -> list:
+        """The columns of a list that have no place on the desk, each with a value from it: ``[{name, example, rows}]``."""
+        found: dict = {}
+        for row in intake["rows"]:
+            if row.get("kind") not in ("new", "update", "same"):
+                continue
+            for pair in (row.get("row") or {}).get("kept") or []:
+                if isinstance(pair, (list, tuple)) and len(pair) == 2 and str(pair[1]).strip():
+                    entry = found.setdefault(str(pair[0]), {"name": str(pair[0]), "example": str(pair[1])[:80], "rows": 0})
+                    entry["rows"] += 1
+        return sorted(found.values(), key=lambda entry: entry["name"].lower())
+
+    @staticmethod
+    def _choices(value: Any) -> dict:
+        """What to do with each column that has no place: notes (the default), field, or skip."""
+        out = {}
+        for name, choice in (value.items() if isinstance(value, dict) else []):
+            choice = str(choice or "").strip().lower()
+            choice = {"note": "notes", "keep": "notes", "fields": "field", "add": "field", "leave": "skip", "drop": "skip", "ignore": "skip"}.get(choice, choice)
+            if choice in ("notes", "field", "skip"):
+                out[" ".join(str(name).split())] = choice
+        return out
+
+    @staticmethod
+    def _place(row: dict, choices: dict, keys: dict) -> bool:
+        """Put a row's unplaced columns where the person said. True when that gave it a field it did not have before."""
+        values = row["row"]
+        kept, gained = [], False
+        for pair in values.get("kept") or []:
+            name, value = " ".join(str(pair[0]).split()), pair[1]
+            choice = choices.get(name, "notes")
+            if choice == "skip":
+                continue
+            if choice == "field" and keys.get(name):
+                fields = dict(values.get("fields") or {})
+                if value and not fields.get(keys[name]):
+                    fields[keys[name]] = value
+                    gained = True
+                values["fields"] = fields
+                continue
+            kept.append(pair)
+        values["kept"] = kept
+        return gained
 
     @staticmethod
     def _shown(row: dict, playbook) -> dict:
@@ -754,6 +804,13 @@ class Intake:
             now = self.store.intake_get(intake["id"])
             return {"ok": True, "applied": False, "status": now["status"], "note": "Already dealt with: " + self.headline(now)}
         wanted, skipped = self._numbers(args.get("rows")), self._numbers(args.get("skip")) or set()
+        choices = self._choices(args.get("columns"))
+        keys: dict = {}
+        if any(choice == "field" for choice in choices.values()):
+            keys, error = self.desk.add_fields([name for name, choice in choices.items() if choice == "field"])
+            if error:
+                self.store.intake_finish(intake["id"], "open", intake["result"], intake["rows"])       # nothing done: still waiting
+                return error
         playbook = self.desk.playbook()
         label = ("intake: " + intake["source"])[:60]
         added, updated, left, problems, records = 0, 0, 0, [], []
@@ -761,6 +818,9 @@ class Intake:
             if row.get("done"):                 # decided by itself earlier
                 continue
             row["applied"] = False
+            gained = self._place(row, choices, keys) if choices else False
+            if row["kind"] == "same" and gained and row.get("deal"):
+                row["kind"] = "update"          # already there, but a column just made a field gives it something new
             if row["kind"] not in APPLICABLE:
                 continue
             if (wanted is not None and row["n"] not in wanted) or row["n"] in skipped:

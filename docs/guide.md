@@ -89,6 +89,12 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   email domain and everyone at it are on the same page, and there is no separate list of
   companies: one place to look. Where a group is a piece of work (a search, a campaign), a
   record's company has a page of its own as well.
+- **Clients, and billing by the month.** Where a search or a campaign is done *for* a client
+  (recruiting, lead searches), **Clients** on the pipeline lists them, and every "for Fernway" opens
+  the client's page: its searches, the candidates in them, who is on their side, and how it is
+  billed. Contract hours or a retainer are set up there (**Billing → Set terms**); each month that
+  ends is then waiting on **Today**, worked out from the month's weekdays, to record as an invoice
+  with the real hours, or to skip. Contingency fees stay on the placed candidate as before.
 - **People.** A record has its own person (name, email, phone, LinkedIn) and can carry the others
   around it: the buyer's boss, finance, a hiring manager. Their email and calls are then filed on
   that record too.

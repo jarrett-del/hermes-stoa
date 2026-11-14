@@ -200,6 +200,22 @@ they billed someone or were paid, record it:
 - Never tell the person an invoice was sent or a payment was collected because you recorded it:
   you recorded what they told you.
 
+### Billing a client by the month (contract hours, a retainer)
+
+Some work is billed to a client, not on a record: a contract recruiter's hours for a portfolio
+company, invoiced to the fund each month; a fractional lead's retainer. Use `client` in place of
+`deal` (the client named on a search, or an account).
+
+- "I bill Fernway 95 an hour, about 40 hours a week, invoiced monthly to Halyard Ventures, starting in
+  September" → `gtm_invoice(action="terms", client="Fernway", kind="hourly", rate=95, hours_week=40,
+  bill_to="Halyard Ventures", start="2026-09")`. A retainer: `kind="retainer", rate=<the monthly amount>`.
+- Each month that has ended and is not billed is listed on Today (`to_bill`), with the hours taken
+  from the month's weekdays at the usual hours a week. Do not record one until the person says to.
+- "Bill Fernway for October, 160 hours" → `gtm_invoice(action="add", client="Fernway", period="2026-10",
+  hours=160, number=...)`. Leave `hours` out to use the usual. A month already billed is refused.
+- "I took October off" → `action="skip"`; "bill it after all" → `"unskip"`.
+- Paid, voided, corrected, undone: as for a record, with `client` (or just the invoice number).
+
 ## People and companies
 
 A record has its own person (its name and email). Everyone else around it, a buyer's boss, the

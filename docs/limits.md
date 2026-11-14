@@ -51,7 +51,12 @@
 - A proposal is as good as the evidence the agent quotes. Read it before you approve.
 - Stoa keeps the account of invoices; it does not create, send or collect them, and it has no link
   to an accounting system. One currency per desk (the playbook's). An invoice belongs to one
-  record. "Collected this month" counts payments recorded since 0.13.
+  record, or to one client billed by the month. "Collected this month" counts payments recorded since 0.13.
+- Billing a client by the month is monthly only (not weekly or every two weeks), one rate per
+  client, and the suggested hours count weekdays: public holidays and time off are yours to take
+  off before recording. Stoa does not track time.
+- A field added from an import goes onto the desk's own copy of its playbook, so every pipeline on
+  that playbook gets it, and later versions of the shipped playbook no longer replace that copy.
 - The forecast is arithmetic, not a prediction: stage odds times amounts, by the dates you set.
 - On a tour, what you do is thrown away when you leave, Slack cards posted from it stop working,
   lookups are off, and scheduled jobs do nothing until it ends.

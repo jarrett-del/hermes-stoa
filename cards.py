@@ -14,6 +14,14 @@ ACTION_MORE = PREFIX + "more"
 ACTION_REOPEN = PREFIX + "reopen"
 
 
+def exact(value: float, currency: str = "USD") -> str:
+    """An amount to the cent, as on an invoice: $16,720 or $15,200.50."""
+    symbol = {"USD": "$", "EUR": "€", "GBP": "£"}.get(currency, "")
+    text = "{:,.2f}".format(float(value or 0))
+    text = text[:-3] if text.endswith(".00") else text
+    return symbol + text if symbol else "%s %s" % (text, currency)
+
+
 def money(value: float, currency: str = "USD") -> str:
     if not value:
         return ""

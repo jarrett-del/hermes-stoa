@@ -680,6 +680,13 @@ const CSS = `
 .stoa-rrow:hover { background: var(--ui-row-hover-background); }
 .stoa-rrow[data-closed="1"] { opacity: .6; }
 .stoa-stagegroup + .stoa-stagegroup { margin-top: 12px; }
+.stoa-billform { flex-basis: 100%; display: grid; grid-template-columns: minmax(110px, 150px) minmax(110px, 150px) auto auto; gap: 8px 12px; align-items: end; padding: 6px 0 4px; animation: stoa-lift .18s ease both; }
+.stoa-billform label .stoa-field { margin-top: 3px; }
+.stoa-placed { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-placerow { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
+.stoa-placerow .stoa-select { flex: none; width: 140px; }
+.stoa-billtotal b { display: block; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stoa-crow[data-cols="6"] { grid-template-columns: minmax(0, 1.6fr) 84px minmax(0, 1fr) 70px minmax(0, 1.3fr) 96px; }
 .stoa-stagehead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 2px; border-bottom: 1px solid var(--ui-stroke-tertiary); }
 `
 
@@ -935,6 +942,7 @@ function changeText(change) {
 function Review({ id }) {
   const query = useQuery({ queryKey: ['stoa', 'intake', id], queryFn: () => rest('/intake/' + encodeURIComponent(id)), staleTime: 1500 })
   const [off, setOff] = useState({})
+  const [placed, setPlaced] = useState({}) // what to do with each column that has no place: notes (the default), field or skip
   const [busy, setBusy] = useState(false)
   const intake = query.data
   if (query.error) return h('div', { className: 'stoa-box stoa-sub' }, 'That list is no longer here.')
@@ -946,7 +954,7 @@ function Review({ id }) {
   const counts = intake.counts, result = intake.result || {}
   const send = verb => {
     setBusy(true)
-    rest('/intake/' + encodeURIComponent(id) + '/' + verb, { method: 'POST', body: verb === 'apply' ? { rows: chosen.map(row => row.n) } : {} })
+    rest('/intake/' + encodeURIComponent(id) + '/' + verb, { method: 'POST', body: verb === 'apply' ? { rows: chosen.map(row => row.n), columns: placed } : {} })
       .then(done => {
         refresh()
         if (verb === 'apply' && done.applied) host.notify({ kind: 'success', message: done.added + ' added, ' + done.updated + ' updated' })
@@ -974,6 +982,14 @@ function Review({ id }) {
         row.case ? h('span', { className: 'stoa-sub', style: { display: 'block' } }, row.case) : null,
         (row.warnings || []).map((warning, index) => h('span', { key: index, className: 'stoa-sub', style: { display: 'block' } }, warning))),
       h(Chip, { tone: row.kind === 'new' ? 'good' : '' }, row.kind === 'new' ? 'new' : 'update')))) : null,
+    open && (intake.columns || []).length ? h('div', { className: 'stoa-placed' },
+      h('div', { className: 'stoa-sub', style: { marginBottom: 4 } }, 'These columns have no place on the desk. What should happen to them?'),
+      intake.columns.map(column => h('div', { key: column.name, className: 'stoa-placerow' },
+        h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name' }, column.name),
+          h('span', { className: 'stoa-sub' }, '  e.g. ' + column.example)),
+        h('select', { className: 'stoa-select', value: placed[column.name] || 'notes', disabled: busy, 'aria-label': 'What to do with ' + column.name,
+          onChange: event => setPlaced({ ...placed, [column.name]: event.target.value }) },
+        h('option', { value: 'notes' }, 'Keep in notes'), h('option', { value: 'field' }, 'Add as a field'), h('option', { value: 'skip' }, 'Leave out'))))) : null,
     rest_.length ? h('details', { className: 'stoa-rest' },
       h('summary', null, plural(rest_.length, 'row', 'rows') + ' left out'),
       rest_.map(row => h('p', { key: row.n }, (row.name || 'Row ' + row.n) + ': ' + row.why))) : null,
@@ -1313,7 +1329,7 @@ const TODAY_LISTS = [
   { key: 'new', title: 'New, nothing planned', tone: '', help: 'Added in the last week, with no next step yet.' }
 ]
 
-function Today({ state, openId, setOpenId }) {
+function Today({ state, openId, setOpenId, openClient }) {
   const pb = state.playbook, day = state.today
   const [form, setForm] = useState(null) // the row with its "what comes next" form open: { id, mode }
   const [busy, setBusy] = useState('')
@@ -1365,6 +1381,7 @@ function Today({ state, openId, setOpenId }) {
   const counts = day.counts
   const tally = [[counts.overdue, 'overdue', 'bad'], [counts.due_today, 'due today', 'warn'], [counts.approvals, 'to approve', 'good'],
     [counts.invoices_overdue, counts.invoices_overdue === 1 ? 'invoice overdue' : 'invoices overdue', 'bad'], [counts.to_invoice, 'to invoice', 'warn'],
+    [counts.to_bill, counts.to_bill === 1 ? 'month to bill' : 'months to bill', 'warn'], [counts.client_overdue, 'client ' + (counts.client_overdue === 1 ? 'invoice' : 'invoices') + ' late', 'bad'],
     [counts.drafts, counts.drafts === 1 ? 'draft waiting' : 'drafts waiting', 'good'], [counts.quiet, 'gone quiet', ''], [counts.new, 'new', '']].filter(item => item[0])
   return h('div', { className: 'stoa-today' },
     h('div', { className: 'stoa-todayhead' },
@@ -1372,6 +1389,20 @@ function Today({ state, openId, setOpenId }) {
       tally.length ? h('div', { className: 'stoa-chips', style: { marginTop: 0 } }, tally.map(item => h(Chip, { key: item[1], tone: item[2] }, item[0] + ' ' + item[1])))
         : h('span', { className: 'stoa-sub' }, counts.coming ? 'What is coming up is on the right.' : state.deals.length ? 'No next step is due and nobody has gone quiet.' : '')),
     h(Approvals, { state, setOpenId }),
+    (day.to_bill || []).length ? h('div', { className: 'stoa-tsec' },
+      h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
+        h('span', { className: 'stoa-eyebrow', title: 'Months that have ended for clients billed by the month, not billed yet' }, 'To bill'),
+        h('span', { className: 'stoa-num' }, String(day.to_bill.length))),
+      day.to_bill.map(row => h(BillMonth, { key: row.client + row.period, row, pb, showClient: true, openClient }))) : null,
+    (day.client_overdue || []).length ? h('div', { className: 'stoa-tsec' },
+      h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
+        h('span', { className: 'stoa-eyebrow' }, 'Client invoices overdue'), h('span', { className: 'stoa-num' }, String(day.client_overdue.length))),
+      day.client_overdue.map(row => h('div', { key: row.invoice, className: 'stoa-irow' },
+        h('span', { className: 'stoa-grow' },
+          h('button', { type: 'button', className: 'stoa-proplink stoa-name', onClick: () => openClient(row.client) }, row.client),
+          h('span', { className: 'stoa-sub', style: { display: 'block' } }, [row.period ? monthLabel(row.period) : '', row.number ? '#' + row.number : '', exact(row.owed, pb.currency) + ' owed'].filter(Boolean).join(' · '))),
+        h('span', { className: 'stoa-num', 'data-tone': 'bad' }, row.days + 'd late'),
+        h('span', { className: 'stoa-tacts' }, h(Btn, { kind: 'go', onClick: () => billClient(row.client, { verb: 'pay', invoice: String(row.invoice) }) }, 'Paid'))))) : null,
     TODAY_LISTS.map(list => (day[list.key] || []).length ? h('div', { key: list.key, className: 'stoa-tsec' },
       h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
         h('span', { className: 'stoa-eyebrow', title: list.help }, list.key === 'to_invoice' ? pb.won.label + ', not invoiced' : list.title),
@@ -1926,10 +1957,14 @@ async function bill(dealId, body) {
 }
 
 /** One invoice, with the moves that fit where it stands. */
-function Invoice({ invoice, dealId, currency, name, onOpen }) {
+function Invoice({ invoice, dealId, client, currency, name, onOpen }) {
   const [busy, setBusy] = useState(false)
   const [part, setPart] = useState(null) // null, or the amount being typed for a part payment
-  const run = body => { setBusy(true); return bill(dealId, { invoice: String(invoice.id), ...body }).then(result => { setBusy(false); return result }) }
+  const run = body => {
+    setBusy(true)
+    return (client ? billClient(client, { invoice: String(invoice.id), ...body }) : bill(dealId, { invoice: String(invoice.id), ...body }))
+      .then(result => { setBusy(false); return result })
+  }
   const owing = invoice.state === 'sent' || invoice.state === 'partial' || invoice.state === 'overdue'
   const takePart = () => { const amount = Number(part); if (amount > 0) run({ verb: 'pay', amount }).then(result => { if (result) setPart(null) }) }
   const when = invoice.state === 'paid' ? (invoice.paid_on ? 'paid ' + shortDate(invoice.paid_on) : 'paid')
@@ -2025,20 +2060,27 @@ const BASIS = {
 }
 
 /** The Cash tab: what came in and what is owed, what the open pipeline is likely to bring, and where won work stands. */
-function Cash({ state, openId, setOpenId }) {
+function Cash({ state, openId, setOpenId, openClient }) {
   const cash = state.cash, pb = state.playbook
   const [over, setOver] = useState('')
   if (!cash) return h('p', { className: 'stoa-sub' }, 'The money side needs the gateway restarted after this update (hermes gateway restart).')
   const strip = cash.strip, forecast = cash.forecast, lane = cash.delivery
+  const records = pb.billing !== 'none'          // records themselves are billed here (not only clients by the month)
+  const toBill = cash.to_bill || []
   const tiles = [
     [pb.won.label + ' this month', strip.won_month.value, plural(strip.won_month.count, pb.terms.deal, pb.terms.deals), '', 'What was closed as ' + pb.won.label.toLowerCase() + ' since the first of the month.'],
     ['Collected this month', strip.collected_month.value, 'payments recorded', 'good', 'Every payment recorded on an invoice this month.'],
     ['Invoiced, not yet paid', strip.owed.value, plural(strip.owed.count, 'invoice', 'invoices'), '', 'What is still owed on invoices that have been sent.'],
     ['Overdue', strip.overdue.value, plural(strip.overdue.count, 'invoice', 'invoices') + ' past due', strip.overdue.count ? 'bad' : '', 'Owed on invoices whose due date has passed.'],
-    [pb.won.label + ', not invoiced', strip.uninvoiced.value, plural(strip.uninvoiced.count, pb.terms.deal, pb.terms.deals), strip.uninvoiced.count ? 'warn' : '', 'Won work whose invoices add up to less than its value.']]
+    [pb.won.label + ', not invoiced', strip.uninvoiced.value, plural(strip.uninvoiced.count, pb.terms.deal, pb.terms.deals), strip.uninvoiced.count ? 'warn' : '', 'Won work whose invoices add up to less than its value.'],
+    ['To bill', (strip.to_bill || { value: 0 }).value, plural((strip.to_bill || { count: 0 }).count, 'month', 'months') + ' ended, not billed', (strip.to_bill || { count: 0 }).count ? 'warn' : '', 'Months that have ended for clients billed by the month.']]
+    .filter((tile, index) => (records || (index !== 0 && index !== 4)) && (index !== 5 || toBill.length || (cash.invoices || []).some(item => item.client)))
   const most = Math.max(1, ...forecast.buckets.map(bucket => bucket.value))
   const shown = forecast.buckets.filter(bucket => bucket.count)
   const stages = lane.stages.length ? lane.stages : [{ id: '', label: pb.won.label }]
+  const invoiceProps = invoice => invoice.client
+    ? { key: invoice.id, invoice, client: invoice.client, currency: pb.currency, name: invoice.client + (invoice.period ? ' · ' + monthLabel(invoice.period) : ''), onOpen: () => openClient(invoice.client) }
+    : { key: invoice.id, invoice, dealId: invoice.deal, currency: pb.currency, name: invoice.name, onOpen: () => setOpenId(invoice.deal) }
   const owing = cash.invoices.filter(invoice => invoice.state !== 'paid')
   const settled = cash.invoices.filter(invoice => invoice.state === 'paid')
   const drop = (event, stage) => {
@@ -2052,8 +2094,10 @@ function Cash({ state, openId, setOpenId }) {
   return h('div', { className: 'stoa-cash' },
     h('div', { className: 'stoa-strip' }, tiles.map(tile => h('div', { key: tile[0], className: 'stoa-tile', 'data-tone': tile[3], title: tile[4] },
       h('span', { className: 'stoa-eyebrow' }, tile[0]), h('b', null, money(tile[1], pb.currency) || '0'), h('span', { className: 'stoa-sub' }, tile[2])))),
-    h('div', { className: 'stoa-h2' }, 'Likely to come in'),
-    h('div', { className: 'stoa-box' },
+    toBill.length ? h('div', { className: 'stoa-h2' }, 'To bill') : null,
+    toBill.length ? h('div', { style: { maxWidth: 980 } }, toBill.map(row => h(BillMonth, { key: row.client + row.period, row, pb, showClient: true, openClient }))) : null,
+    records ? h('div', { className: 'stoa-h2' }, 'Likely to come in') : null,
+    records ? h('div', { className: 'stoa-box' },
       h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 14px' } },
         h('span', { className: 'stoa-name', style: { fontSize: 18 } }, money(forecast.weighted, pb.currency) || '0'),
         h('span', { className: 'stoa-sub' }, 'weighted, of ' + (money(forecast.value, pb.currency) || '0') + ' open')),
@@ -2063,9 +2107,9 @@ function Cash({ state, openId, setOpenId }) {
         h('span', { className: 'stoa-num' }, (money(bucket.weighted, pb.currency) || '0') + ' of ' + (money(bucket.value, pb.currency) || '0') + ' · ' + bucket.count))))
         : h('div', { className: 'stoa-sub', style: { marginTop: 6 } }, 'Nothing is open.'),
       h('div', { className: 'stoa-sub', style: { marginTop: 10 } }, BASIS[forecast.basis] + ' A ' + pb.terms.deal + ' goes in a month by its expected close date (Edit on the record).'),
-      h('div', { className: 'stoa-chain', style: { margin: '6px 0 0' } }, forecast.odds.map(item => item.label + ' ' + item.odds + '%').join('  ·  '))),
-    h('div', { className: 'stoa-h2' }, 'After the win'),
-    lane.records.length ? h('div', { className: 'stoa-board', style: { gridAutoColumns: 'minmax(200px, 1fr)' } }, stages.map(stage => {
+      h('div', { className: 'stoa-chain', style: { margin: '6px 0 0' } }, forecast.odds.map(item => item.label + ' ' + item.odds + '%').join('  ·  '))) : null,
+    records ? h('div', { className: 'stoa-h2' }, 'After the win') : null,
+    !records ? null : lane.records.length ? h('div', { className: 'stoa-board', style: { gridAutoColumns: 'minmax(200px, 1fr)' } }, stages.map(stage => {
       const here = lane.records.filter(record => (record.delivery || '') === stage.id)
       return h('div', { key: stage.id || 'won', className: 'stoa-col', 'data-over': over === stage.id && stage.id ? '1' : '0',
         onDragOver: event => { if (dragging(event) && stage.id) { event.preventDefault(); if (over !== stage.id) setOver(stage.id) } },
@@ -2089,9 +2133,9 @@ function Cash({ state, openId, setOpenId }) {
     })) : h('p', { className: 'stoa-sub' }, 'Nothing has been ' + pb.won.label.toLowerCase() + ' yet. When something is, it lands here: where the work stands, and whether it has been billed.'),
     h('div', { className: 'stoa-h2' }, 'Invoices'),
     owing.length || settled.length ? h('div', { style: { maxWidth: 980 } },
-      owing.map(invoice => h(Invoice, { key: invoice.id, invoice, dealId: invoice.deal, currency: pb.currency, name: invoice.name, onOpen: () => setOpenId(invoice.deal) })),
+      owing.map(invoice => h(Invoice, invoiceProps(invoice))),
       settled.length ? h('div', { className: 'stoa-eyebrow', style: { margin: '14px 0 2px' } }, 'Lately paid') : null,
-      settled.map(invoice => h(Invoice, { key: invoice.id, invoice, dealId: invoice.deal, currency: pb.currency, name: invoice.name, onOpen: () => setOpenId(invoice.deal) })))
+      settled.map(invoice => h(Invoice, invoiceProps(invoice))))
       : h('p', { className: 'stoa-sub' }, 'No invoices yet. Open a record and press + Invoice, or tell Stoa: “I invoiced Kestrel 12k today, net 30.”'))
 }
 
@@ -2269,7 +2313,7 @@ function Timeline({ deal, sessionId }) {
 }
 
 /** What the record is connected to: the group it is in and the others there, others at the same company, its people, its money. */
-function RecordRelated({ deal, pb, state, openRecord, openGroup, openCompany }) {
+function RecordRelated({ deal, pb, state, openRecord, openGroup, openCompany, openClient }) {
   const deals = state.deals || []
   const inGroup = deal.group ? deals.filter(item => item.id !== deal.id && sameName(item.group, deal.group)) : []
   // Others at the same company that the group above does not already show (a candidate's colleagues, say).
@@ -2278,7 +2322,9 @@ function RecordRelated({ deal, pb, state, openRecord, openGroup, openCompany }) 
     : []
   const sortOpen = rows => rows.slice().sort((a, b) => (a.status !== 'open') - (b.status !== 'open') || (b.position || 0) - (a.position || 0) || a.name.localeCompare(b.name))
   const billed = pb.billing !== 'none' && (deal.status === 'won' || (deal.invoices || []).length > 0)
-  const groupSub = [deal.client ? 'for ' + deal.client : '', deal.group_status ? deal.group_status.toLowerCase() : ''].filter(Boolean).join(' · ')
+  const groupSub = deal.client || deal.group_status ? h('span', null,
+    deal.client ? ['for ', h('button', { key: 'c', type: 'button', className: 'stoa-proplink', onClick: () => openClient(deal.client) }, deal.client)] : null,
+    deal.group_status ? (deal.client ? ' · ' : '') + deal.group_status.toLowerCase() : null) : null
   return h('div', { className: 'stoa-rpcol' },
     deal.group ? h(Section, { title: cap(pb.terms.group), aside: h('button', { type: 'button', className: 'stoa-proplink stoa-sub', onClick: () => openGroup(deal.group) }, 'Open  ›') },
       h('button', { type: 'button', className: 'stoa-proplink stoa-name', style: { fontSize: 14 }, onClick: () => openGroup(deal.group) }, deal.group),
@@ -2294,7 +2340,7 @@ function RecordRelated({ deal, pb, state, openRecord, openGroup, openCompany }) 
     billed ? h('section', { className: 'stoa-box stoa-rpsec' }, h(Money, { deal, pb })) : null)
 }
 
-function RecordPage({ id, state: shown, sessionId, back, backLabel, openRecord, openGroup, openCompany }) {
+function RecordPage({ id, state: shown, sessionId, back, backLabel, openRecord, openGroup, openCompany, openClient }) {
   const query = useQuery({ queryKey: ['stoa', 'deal', id], queryFn: () => rest('/deal/' + encodeURIComponent(id)), staleTime: 1500 })
   const [busy, setBusy] = useState(false)
   const [nextForm, setNextForm] = useState('') // '', 'done' or 'plan'
@@ -2310,7 +2356,8 @@ function RecordPage({ id, state: shown, sessionId, back, backLabel, openRecord, 
   const oneLine = pb.group_is_company && deal.group && (!deal.company || sameName(deal.company, deal.group))
   // Where it sits: "at" its company, "in" its group (and who that group is for, when the name does not already say).
   const where = []
-  const forClient = deal.client && !String(deal.group || '').toLowerCase().includes(deal.client.toLowerCase()) ? ', for ' + deal.client : ''
+  const forClient = deal.client && !pb.group_is_company
+    ? h('span', null, ', for ', h('button', { type: 'button', className: 'stoa-proplink', onClick: () => openClient(deal.client) }, deal.client)) : null
   if (oneLine) where.push(h('span', { key: 'g' }, h('button', { type: 'button', className: 'stoa-proplink', onClick: () => openGroup(deal.group) }, deal.group)))
   else {
     if (deal.company) where.push(h('span', { key: 'c' }, 'at ', h('button', { type: 'button', className: 'stoa-proplink', onClick: () => (pb.group_is_company && deal.group ? openGroup(deal.group) : openCompany(deal.company)) }, deal.company)))
@@ -2360,7 +2407,7 @@ function RecordPage({ id, state: shown, sessionId, back, backLabel, openRecord, 
       h('div', { className: 'stoa-rpcol' },
         h(Section, { title: 'Notes' }, h(RecordNotes, { key: 'notes-' + deal.id, deal, bare: true })),
         h(Timeline, { deal, sessionId })),
-      h(RecordRelated, { deal, pb, state, openRecord, openGroup, openCompany })))
+      h(RecordRelated, { deal, pb, state, openRecord, openGroup, openCompany, openClient })))
 }
 
 /** The records in a group or at a company, a stage at a time in the playbook's order, the closed ones last. */
@@ -2400,7 +2447,7 @@ function Lately({ entries, openRecord }) {
       h('div', { className: 'stoa-sub' }, [ago(entry.at), entry.by].filter(Boolean).join(' · '))))))
 }
 
-function GroupPage({ name, state, sessionId, back, backLabel, openRecord, onRenamed }) {
+function GroupPage({ name, state, sessionId, back, backLabel, openRecord, openClient, onRenamed }) {
   const query = useQuery({ queryKey: ['stoa', 'group', name], queryFn: () => rest('/group', { method: 'POST', body: { name } }), staleTime: 1500 })
   const blank = { name: '', email: '', title: '', role: '', phone: '' }
   const [draft, setDraft] = useState(null) // null until something is edited
@@ -2471,7 +2518,9 @@ function GroupPage({ name, state, sessionId, back, backLabel, openRecord, onRena
       h('div', { className: 'stoa-grow' },
         h('div', { className: 'stoa-eyebrow' }, cap(term)),
         h('h2', { className: 'stoa-rptitle' }, group.name),
-        sub ? h('div', { className: 'stoa-rpwhere stoa-sub' }, sub) : null),
+        !company && group.client ? h('div', { className: 'stoa-rpwhere' }, 'for ', h('button', { type: 'button', className: 'stoa-proplink', onClick: () => openClient(group.client) }, group.client),
+          group.status !== 'open' ? h('span', { className: 'stoa-sub' }, '  ·  ' + group.status_label.toLowerCase()) : null)
+          : sub ? h('div', { className: 'stoa-rpwhere stoa-sub' }, sub) : null),
       h('div', { className: 'stoa-rpstats' }, stats.map(pair => h('div', { key: pair[0] }, h('span', { className: 'stoa-eyebrow' }, pair[0]), h('b', null, pair[1]))))),
     h('div', { className: 'stoa-rpbar', 'data-plain': '1' },
       h('div', { className: 'stoa-btns', style: { marginTop: 0 } },
@@ -2511,6 +2560,7 @@ function GroupPage({ name, state, sessionId, back, backLabel, openRecord, onRena
         h(Section, { main: true, title: cap(pb.terms.deals) + ' (' + data.records.length + ')' },
           h(ByStage, { records: data.records, pb, openRecord, showCompany: !company }))),
       h('div', { className: 'stoa-rpcol' },
+        company && data.billing ? h(ClientBilling, { key: 'bill:' + group.name, name: group.name, billing: data.billing, pb }) : null,
         h(Section, { title: company ? 'People there' : 'On their side', aside: h(Btn, { kind: 'quiet', onClick: () => setAddingPerson(!addingPerson) }, addingPerson ? 'Close' : '+  Person') },
           ours.map(person => h(PersonLine, { key: 'g' + person.id, person, openRecord, busy,
             remove: () => send('/group/person', { verb: 'remove', group: group.name, person: String(person.id) }) })),
@@ -2577,6 +2627,213 @@ function CompanyPage({ name, state, back, backLabel, openRecord, openGroup }) {
           (data.people || []).length ? data.people.map((person, index) => h(PersonLine, { key: index, person: { ...person, on: 'record' }, openRecord }))
             : h('div', { className: 'stoa-sub' }, 'Nobody yet.')),
         h(Section, { title: 'Lately' }, h(Lately, { entries: (data.activity || []).map(entry => ({ ...entry, deal: entry.deal || entry.record })), openRecord })))))
+}
+
+// -- a client: the company the work is for, its searches, and how it is billed when that is by the month ----
+/** Whether the desk keeps money for clients billed by the month: then there is a Cash tab even where records are never billed. */
+const hasClientMoney = data => Boolean(data.cash && (((data.cash.strip || {}).to_bill || { count: 0 }).count || (data.cash.invoices || []).some(item => item.client)))
+  || (data.clients || []).some(row => row.terms && row.terms.kind)
+
+async function billClient(client, body) {
+  try {
+    const result = await rest('/client/bill', { method: 'POST', body: { client, ...body } })
+    refresh()
+    return result
+  } catch (error) {
+    host.notifyError(error, 'Stoa could not save that')
+    return null
+  }
+}
+
+const monthLabel = period => { const d = new Date(period + '-15T12:00:00'); return isNaN(d) ? period : d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) }
+const termsLine = (terms, currency, client) => {
+  if (!terms || !terms.kind) return ''
+  const to = terms.bill_to && !sameName(terms.bill_to, client) ? ' to ' + terms.bill_to : ''
+  return terms.kind === 'hourly'
+    ? exact(terms.rate, currency) + ' an hour · ' + terms.hours_week + ' h a week · billed monthly' + to
+    : exact(terms.rate, currency) + ' a month · billed monthly' + to
+}
+
+/** A month that has ended and is not billed: what it comes to, and the invoice recorded in one go (or the month skipped). */
+function BillMonth({ row, pb, showClient, openClient }) {
+  const hourly = row.kind === 'hourly'
+  const [open, setOpen] = useState(false)
+  const [hours, setHours] = useState(hourly ? String(row.hours) : '')
+  const [amount, setAmount] = useState(String(row.amount))
+  const [number, setNumber] = useState('')
+  const [busy, setBusy] = useState(false)
+  const total = hourly ? Math.round((Number(hours) || 0) * row.rate * 100) / 100 : Number(amount) || 0
+  const record = () => {
+    if (busy || !(total > 0)) return
+    setBusy(true)
+    billClient(row.client, { verb: 'add', period: row.period, number: number.trim(), ...(hourly ? { hours: Number(hours) } : { amount: Number(amount) }) })
+      .then(result => { setBusy(false); if (result) { setOpen(false); host.notify({ kind: 'success', message: row.label + ' recorded for ' + row.client + ': ' + exact(total, pb.currency) + '.' }) } })
+  }
+  const skip = () => { setBusy(true); billClient(row.client, { verb: 'skip', period: row.period }).then(() => setBusy(false)) }
+  const enter = event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) record(); if (event.key === 'Escape') setOpen(false) }
+  return h('div', { className: 'stoa-irow' },
+    h('span', { className: 'stoa-grow' },
+      h('span', { className: 'stoa-name', style: { display: 'block' } },
+        showClient ? h('button', { type: 'button', className: 'stoa-proplink stoa-name', onClick: () => openClient(row.client) }, row.client) : null,
+        showClient ? h('span', { className: 'stoa-sub', style: { fontWeight: 400 } }, '  ·  ') : null, row.label),
+      h('span', { className: 'stoa-sub', style: { display: 'block' } },
+        (hourly ? row.hours + ' h × ' + exact(row.rate, pb.currency) : 'Retainer') + (row.bill_to && !sameName(row.bill_to, row.client) ? '  ·  to ' + row.bill_to : ''))),
+    h('span', { className: 'stoa-num' }, exact(row.amount, pb.currency)),
+    h('span', { className: 'stoa-tacts' },
+      h(Btn, { kind: 'go', disabled: busy, onClick: () => setOpen(!open) }, open ? 'Close' : 'Record invoice'),
+      h(Btn, { disabled: busy, title: 'Not billed for this month: time off, a pause. It can be billed later from the client.', onClick: skip }, 'Skip')),
+    open ? h('div', { className: 'stoa-billform' },
+      hourly ? h(Field, { label: 'Hours in ' + row.label.split(' ')[0], type: 'number', min: 0, step: 'any', autoFocus: true, value: hours, onChange: event => setHours(event.target.value), onKeyDown: enter })
+        : h(Field, { label: 'Amount', type: 'number', min: 0, step: 'any', autoFocus: true, value: amount, onChange: event => setAmount(event.target.value), onKeyDown: enter }),
+      h(Field, { label: 'Invoice number', value: number, placeholder: 'optional', onChange: event => setNumber(event.target.value), onKeyDown: enter }),
+      h('div', { className: 'stoa-billtotal' }, h('small', { className: 'stoa-eyebrow' }, 'The invoice'), h('b', null, exact(total, pb.currency))),
+      h(Btn, { kind: 'primary', disabled: busy || !(total > 0), onClick: record }, 'Record it'),
+      h('span', { className: 'stoa-sub', style: { gridColumn: '1 / -1' } }, 'Stoa keeps the record; send the invoice itself the way you always do.')) : null)
+}
+
+/** How a client is billed by the month: the terms, the months waiting, and its invoices. */
+function ClientBilling({ name, billing, pb, compact }) {
+  const terms = billing.terms || {}
+  const [editing, setEditing] = useState(false)
+  const start = { kind: terms.kind || 'hourly', rate: terms.rate ? String(terms.rate) : '', hours_week: String(terms.hours_week || 40),
+    bill_to: terms.bill_to || '', start: terms.start || new Date().toISOString().slice(0, 7), end: terms.end || '' }
+  const [v, setV] = useState(start)
+  const [busy, setBusy] = useState(false)
+  const set = key => event => setV({ ...v, [key]: event.target.value })
+  const save = clear => {
+    setBusy(true)
+    const body = clear ? { name, terms: { kind: '' } }
+      : { name, terms: { kind: v.kind, rate: Number(v.rate), hours_week: v.kind === 'hourly' ? Number(v.hours_week) : undefined, bill_to: v.bill_to.trim(), start: v.start, end: v.end } }
+    rest('/client', { method: 'POST', body })
+      .then(() => { refresh(); setEditing(false); host.notify({ kind: 'success', message: clear ? 'Billing terms taken off ' + name + '.' : 'Billing terms saved on ' + name + '.' }) })
+      .catch(error => host.notifyError(error, 'Stoa could not save those terms'))
+      .then(() => setBusy(false))
+  }
+  const invoices = billing.invoices || []
+  const totals = [billing.billed ? 'billed ' + exact(billing.billed, pb.currency) : '', billing.paid ? 'paid ' + exact(billing.paid, pb.currency) : '',
+    billing.owed ? 'owed ' + exact(billing.owed, pb.currency) : ''].filter(Boolean).join(' · ')
+  return h(Section, { title: 'Billing', aside: h(Btn, { kind: 'quiet', onClick: () => { setV(start); setEditing(!editing) } }, editing ? 'Close' : terms.kind ? 'Edit terms' : 'Set terms') },
+    editing ? h('div', null,
+      h('div', { className: 'stoa-form', 'data-one': '1', style: { marginTop: 0 } },
+        h(Field, { label: 'Billed' }, h('select', { className: 'stoa-field', value: v.kind, onChange: set('kind') },
+          h('option', { value: 'hourly' }, 'By the hour, every month'), h('option', { value: 'retainer' }, 'A fixed amount every month'))),
+        h(Field, { label: v.kind === 'hourly' ? 'Rate per hour' : 'Amount each month', type: 'number', min: 0, step: 'any', value: v.rate, onChange: set('rate') }),
+        v.kind === 'hourly' ? h(Field, { label: 'Usual hours a week', type: 'number', min: 1, max: 80, value: v.hours_week, onChange: set('hours_week') }) : null,
+        h(Field, { label: 'Invoice goes to', value: v.bill_to, placeholder: name + ' (or the fund, a parent company…)', onChange: set('bill_to') }),
+        h(Field, { label: 'First month billed', type: 'month', value: v.start, onChange: set('start') }),
+        h(Field, { label: 'Last month (when it ends)', type: 'month', value: v.end, onChange: set('end') })),
+      h('div', { className: 'stoa-btns' },
+        h(Btn, { kind: 'primary', disabled: busy || !(Number(v.rate) > 0), onClick: () => save(false) }, 'Save terms'),
+        terms.kind ? h(Btn, { kind: 'quiet', disabled: busy, onClick: () => save(true) }, 'Not billed by the month') : null))
+      : terms.kind ? h('div', null,
+        h('div', { className: 'stoa-name' }, termsLine(terms, pb.currency, name)),
+        h('div', { className: 'stoa-sub' }, 'Since ' + monthLabel(terms.start) + (terms.end ? ', until ' + monthLabel(terms.end) : '')))
+        : h('div', { className: 'stoa-sub' }, 'Not billed by the month. Set terms for contract hours or a retainer, and each month that ends is waiting on Today to be billed.'),
+    (billing.to_bill || []).length ? h('div', { style: { marginTop: 12 } },
+      h('small', { className: 'stoa-eyebrow' }, 'To bill'),
+      billing.to_bill.map(row => h(BillMonth, { key: row.period, row, pb }))) : null,
+    invoices.length ? h('div', { style: { marginTop: 12 } },
+      h('small', { className: 'stoa-eyebrow' }, 'Invoices'),
+      totals ? h('div', { className: 'stoa-sub', style: { margin: '2px 0 2px' } }, cap(totals)) : null,
+      (compact ? invoices.slice(0, 6) : invoices).map(invoice => h(Invoice, { key: invoice.id, invoice, client: name, currency: pb.currency,
+        name: invoice.period_label || '' }))) : null)
+}
+
+/** Every client: what is open for them, and how each is billed. */
+function Clients({ state, openClient }) {
+  const filter = useValue($filter)
+  const pb = state.playbook
+  const text = filter.text.toLowerCase()
+  const rows = (state.clients || []).filter(row => !text || row.name.toLowerCase().includes(text))
+  if (!rows.length) return h('p', { className: 'stoa-sub' }, text ? 'No client matches “' + filter.text + '”.' : 'No client yet. Name the client on a ' + pb.terms.group + ' (open it, then Edit), and it is listed here.')
+  return h('div', { className: 'stoa-companies' },
+    h('div', { className: 'stoa-crow stoa-chead', 'data-cols': '6' }, ['Client', cap(pb.terms.groups), 'Open', pb.won.label, 'Billing', 'Owed'].map(label => h('span', { key: label, className: 'stoa-eyebrow' }, label))),
+    rows.map(row => h('button', { type: 'button', key: row.key, className: 'stoa-crow', 'data-cols': '6', onClick: () => openClient(row.name) },
+      h('span', { className: 'stoa-name stoa-clip' }, row.name),
+      h('span', { className: 'stoa-num' }, row.open_groups + (row.groups.length > row.open_groups ? ' of ' + row.groups.length : '')),
+      h('span', { className: 'stoa-num' }, row.open ? row.open + (row.open_value ? ' · ' + money(row.open_value, pb.currency) : '') : '—'),
+      h('span', { className: 'stoa-num' }, row.won ? String(row.won) : '—'),
+      h('span', { className: 'stoa-clip stoa-sub' }, row.terms && row.terms.kind ? (row.terms.kind === 'hourly' ? exact(row.terms.rate, pb.currency) + '/h' : exact(row.terms.rate, pb.currency) + '/mo')
+        + (row.to_bill ? ' · ' + row.to_bill + ' to bill' : '') : 'by placement'),
+      h('span', { className: 'stoa-num', 'data-tone': row.overdue ? 'bad' : '' }, row.owed ? exact(row.owed, pb.currency) : '—'))))
+}
+
+function ClientPage({ name, state, back, backLabel, openRecord, openGroup }) {
+  const query = useQuery({ queryKey: ['stoa', 'client', name], queryFn: () => rest('/client', { method: 'POST', body: { name } }), staleTime: 1500 })
+  const [note, setNote] = useState(null)
+  const [domain, setDomain] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const [newName, setNewName] = useState('')
+  const data = query.data
+  if (query.error) return h('div', null, h(BackRow, { back, label: backLabel }), h('div', { className: 'stoa-box stoa-sub' }, 'No client by that name is on the desk any more.'))
+  if (!data) return h('div', null, h(BackRow, { back, label: backLabel }), h('div', { className: 'stoa-sub' }, 'Loading…'))
+  const pb = state.playbook, client = data.client, term = pb.terms.group
+  const changed = (note !== null && note !== client.note) || (domain !== null && domain.trim().toLowerCase() !== client.domain)
+  const save = () => {
+    setBusy(true)
+    rest('/client', { method: 'POST', body: { name: client.name, note: note === null ? client.note : note, domain: domain === null ? client.domain : domain } })
+      .then(() => { refresh(); setNote(null); setDomain(null); host.notify({ kind: 'success', message: 'Saved on ' + client.name + '.' }) })
+      .catch(error => host.notifyError(error, 'Stoa could not save that'))
+      .then(() => setBusy(false))
+  }
+  const openSearch = () => {
+    const title = newName.trim()
+    if (!title || busy) return
+    setBusy(true)
+    rest('/group', { method: 'POST', body: { name: title, new: true, client: client.name } })
+      .then(result => { refresh(); setNewName(''); setOpening(false); openGroup(result.group.name) })
+      .catch(error => host.notifyError(error, 'Stoa could not open that'))
+      .then(() => setBusy(false))
+  }
+  const billing = data.billing || {}
+  const stats = [['Open', data.open ? data.open + (data.open_value ? ' · ' + money(data.open_value, pb.currency) : '') : '0'],
+    [cap(pb.terms.groups), String(data.searches.filter(row => row.status === 'open' || row.status === 'hold').length)],
+    [pb.won.label, String(data.won)], ['Owed', billing.owed ? exact(billing.owed, pb.currency) : '—']]
+  return h('div', { className: 'stoa-rp' },
+    h(BackRow, { back, label: backLabel }),
+    h('div', { className: 'stoa-rphead' },
+      h('div', { className: 'stoa-grow' },
+        h('div', { className: 'stoa-eyebrow' }, 'Client'),
+        h('h2', { className: 'stoa-rptitle' }, client.name),
+        h('div', { className: 'stoa-rpwhere stoa-sub' }, [termsLine(billing.terms, pb.currency, client.name), client.domain].filter(Boolean).join('  ·  ') || 'Billed by placement')),
+      h('div', { className: 'stoa-rpstats' }, stats.map(pair => h('div', { key: pair[0] }, h('span', { className: 'stoa-eyebrow' }, pair[0]), h('b', null, pair[1]))))),
+    h('div', { className: 'stoa-rpbar', 'data-plain': '1' },
+      opening ? h('div', { className: 'stoa-newgroup', style: { margin: 0 } },
+        h(Field, { label: 'New ' + term + ' for ' + client.name, autoFocus: true, value: newName, placeholder: 'Its name (the role)',
+          onChange: event => setNewName(event.target.value), onKeyDown: event => { if (event.key === 'Enter') openSearch(); if (event.key === 'Escape') setOpening(false) } }),
+        h(Btn, { kind: 'primary', disabled: busy || !newName.trim(), onClick: openSearch }, 'Open it'),
+        h(Btn, { kind: 'quiet', onClick: () => setOpening(false) }, 'Cancel'))
+        : h('div', { className: 'stoa-btns', style: { marginTop: 0 } }, h(Btn, { kind: 'primary', onClick: () => setOpening(true) }, '+  New ' + term))),
+    h('div', { className: 'stoa-rpgrid' },
+      h('div', { className: 'stoa-rpcol' },
+        h(Section, { title: 'Details' },
+          h('div', { className: 'stoa-form', 'data-one': '1', style: { marginTop: 0 } },
+            h(Field, { label: 'Email domain', value: domain === null ? client.domain : domain, placeholder: 'fernway.com',
+              title: 'Mail from anyone at this domain is recognised as coming from this client', onChange: event => setDomain(event.target.value) })),
+          h('small', { className: 'stoa-eyebrow', style: { display: 'block', marginTop: 12 } }, 'Notes'),
+          h('textarea', { className: 'stoa-field stoa-notes', rows: 4, value: note === null ? client.note : note,
+            placeholder: 'What to know about them: who decides, how they hire, what was agreed…', onChange: event => setNote(event.target.value) }),
+          changed ? h('div', { className: 'stoa-btns' }, h(Btn, { kind: 'primary', disabled: busy, onClick: save }, 'Save'),
+            h(Btn, { kind: 'quiet', disabled: busy, onClick: () => { setNote(null); setDomain(null) } }, 'Cancel')) : null)),
+      h('div', { className: 'stoa-rpcol' },
+        h(Section, { main: true, title: cap(pb.terms.groups) + ' (' + data.searches.length + ')' },
+          data.searches.length ? h('div', { className: 'stoa-rlist' }, data.searches.map(row => h('button', { type: 'button', key: row.name, className: 'stoa-rrow',
+            'data-closed': row.status === 'open' || row.status === 'hold' ? '0' : '1', onClick: () => openGroup(row.name) },
+          h('span', { className: 'stoa-grow' },
+            h('span', { className: 'stoa-name stoa-clip', style: { display: 'block' } }, row.name),
+            h('span', { className: 'stoa-sub stoa-clip', style: { display: 'block' } },
+              [row.status === 'open' ? '' : row.status_label, plural(row.open, 'open', 'open'), row.won ? row.won + ' ' + pb.won.label.toLowerCase() : '']
+                .concat(row.facts.slice(0, 2).map(fact => fact.label + ' ' + fact.value)).filter(Boolean).join(' · '))),
+          row.open_value ? h('span', { className: 'stoa-num' }, money(row.open_value, pb.currency)) : null)))
+            : h('p', { className: 'stoa-sub' }, 'None yet. Open one above.')),
+        h(Section, { title: cap(pb.terms.deals) + ' (' + data.records.length + ')' }, h(ByStage, { records: data.records, pb, openRecord }))),
+      h('div', { className: 'stoa-rpcol' },
+        h(ClientBilling, { key: 'bill:' + client.name, name: client.name, billing, pb }),
+        h(Section, { title: 'On their side' },
+          data.people.length ? data.people.map(person => h(PersonLine, { key: person.on + person.id, person: { ...person, record_name: person.record_name || person.group }, openRecord }))
+            : h('div', { className: 'stoa-sub' }, 'Nobody yet. Add them on a ' + term + '.')),
+        h(Section, { title: 'Lately' }, h(Lately, { entries: data.activity || [], openRecord })))))
 }
 
 // -- the full page -------------------------------------------------------------------------------
@@ -2735,8 +2992,8 @@ function Page() {
     return () => clearTimeout(timer)
   }, [adding, tab])
   // A desk whose records are never billed has no Cash tab: if that was the last one shown, show Today.
-  const unbilled = Boolean(query.data && query.data.playbook && query.data.playbook.billing === 'none')
-  useEffect(() => { if (tab === 'cash' && unbilled) $tab.set('today') }, [tab, unbilled])
+  const cashShown = Boolean(query.data && query.data.playbook && (query.data.playbook.billing !== 'none' || hasClientMoney(query.data)))
+  useEffect(() => { if (tab === 'cash' && query.data && !cashShown) $tab.set('today') }, [tab, cashShown, Boolean(query.data)])
   if (!query.data) return h('div', { className: 'stoa stoa-page' }, h(Unavailable, { error: query.error, loading: query.isLoading }))
   const state = query.data, pb = state.playbook, totals = state.totals
   const day = state.today || { counts: {}, needs: 0 }
@@ -2751,10 +3008,11 @@ function Page() {
   const openRecord = id => push('record', id)
   const openGroup = name => push('group', name)
   const openCompany = name => push('company', name)
+  const openClient = name => push('client', name)
   const back = () => setStack(now => now.slice(0, -1))
   const renamed = name => setStack(now => now.slice(0, -1).concat([{ kind: 'group', id: name }]))
   // Where an account or a client is the company, there is one place to look: the group's own page. No separate list of companies.
-  const view = savedView === 'companies' && pb.group_is_company ? 'groups' : savedView
+  const view = (savedView === 'companies' || savedView === 'clients') && pb.group_is_company ? 'groups' : savedView
   const groups = state.groups || []
   const pipes = state.pipelines || []
   const showPipe = id => {
@@ -2776,13 +3034,14 @@ function Page() {
     ['From the map', totals.tracked, cap(pb.terms.deals) + ' that started on a market map.', ''],
     ['Won', totals.won + (totals.won_value ? ' · ' + money(totals.won_value, pb.currency) : ''), 'Closed as ' + pb.won.label.toLowerCase() + ', all time.', '']]
   const side = adding ? h(NewRecord, { state, close: () => setAdding(false), opened: id => { setAdding(false); openRecord(id) } }) : null
-  const tabLabel = { today: 'Today', pipeline: view === 'groups' ? cap(pb.terms.groups) : view === 'companies' ? 'Companies' : 'Pipeline', cash: 'Cash', activity: 'Activity' }[tab] || 'Back'
+  const tabLabel = { today: 'Today', pipeline: view === 'groups' ? cap(pb.terms.groups) : view === 'companies' ? 'Companies' : view === 'clients' ? 'Clients' : 'Pipeline', cash: 'Cash', activity: 'Activity' }[tab] || 'Back'
   const before = stack.length > 1 ? stack[stack.length - 2] : null
   const backLabel = !before ? tabLabel : before.kind === 'record' ? ((state.deals.find(item => item.id === before.id) || {}).name || 'Back') : before.id
   const sheet = !top ? null
-    : top.kind === 'record' ? h(RecordPage, { key: 'r:' + top.id, id: top.id, state, back, backLabel, openRecord, openGroup, openCompany })
-      : top.kind === 'group' ? h(GroupPage, { key: 'g:' + top.id, name: top.id, state, back, backLabel, openRecord, onRenamed: renamed })
-        : h(CompanyPage, { key: 'c:' + top.id, name: top.id, state, back, backLabel, openRecord, openGroup })
+    : top.kind === 'record' ? h(RecordPage, { key: 'r:' + top.id, id: top.id, state, back, backLabel, openRecord, openGroup, openCompany, openClient })
+      : top.kind === 'group' ? h(GroupPage, { key: 'g:' + top.id, name: top.id, state, back, backLabel, openRecord, openClient, onRenamed: renamed })
+        : top.kind === 'client' ? h(ClientPage, { key: 'cl:' + top.id, name: top.id, state, back, backLabel, openRecord, openGroup })
+          : h(CompanyPage, { key: 'c:' + top.id, name: top.id, state, back, backLabel, openRecord, openGroup })
   const paged = Boolean(sheet) && ['today', 'pipeline', 'cash', 'activity'].includes(tab)
   const nothing = h('div', { className: 'stoa-sub' },
     h('p', { style: { marginTop: 0 } }, 'Nothing on the desk yet. Add a ' + pb.terms.deal + ' with the button above, tell Stoa about one below, drop a list on the page, or ask it to map a market.'),
@@ -2811,7 +3070,7 @@ function Page() {
     h('div', { className: 'stoa-rule' }),
     h('div', { className: 'stoa-tabsrow' },
       h('div', { className: 'stoa-tabs', role: 'tablist' }, [['today', 'Today', day.needs], ['pipeline', 'Pipeline', totals.open]]
-        .concat(pb.billing === 'none' ? [] : [['cash', 'Cash', state.cash ? state.cash.strip.overdue.count : 0]])
+        .concat(cashShown ? [['cash', 'Cash', state.cash ? state.cash.strip.overdue.count + (state.cash.strip.to_bill || { count: 0 }).count : 0]] : [])
         .concat([['market', 'Market map', totals.mapped], ['activity', 'Activity', 0], ['setup', 'Setup', 0]]).map(item =>
         h('button', { type: 'button', key: item[0], role: 'tab', 'aria-selected': tab === item[0], className: 'stoa-tab', 'data-on': tab === item[0] ? '1' : '0',
           onClick: () => setTab(item[0]) }, item[1], item[2] ? h('small', null, String(item[2])) : null))),
@@ -2821,21 +3080,23 @@ function Page() {
     (tab === 'today' || tab === 'pipeline') && welcome && !waiting ? h(Welcome, { skip }) : null,
     paged ? h('div', { ref: split }, sheet) : null,
     !paged && tab === 'today' && (!welcome || waiting) ? h('div', { className: 'stoa-split', ref: split, 'data-side': side || state.deals.length ? '1' : '0' },
-      state.deals.length || waiting ? h(Today, { state, openId: '', setOpenId: openRecord }) : nothing,
+      state.deals.length || waiting || (day.to_bill || []).length ? h(Today, { state, openId: '', setOpenId: openRecord, openClient }) : nothing,
       side || (state.deals.length ? h(Ahead, { state, setOpenId: openRecord }) : null)) : null,
     !paged && tab === 'pipeline' && (!welcome || waiting) ? h('div', null,
       state.deals.length && view === 'board' ? h(Funnel, { state }) : null,
       state.deals.length || groups.length ? h('div', { className: 'stoa-viewrow' },
         h('div', { className: 'stoa-grow', style: { maxWidth: 760 } }, h(Filters, { state })),
         h('div', { className: 'stoa-tabs', style: { margin: 0 }, role: 'group', 'aria-label': 'How the pipeline is shown' },
-          [['board', 'Board'], ['groups', cap(pb.terms.groups || 'groups')]].concat(pb.group_is_company ? [] : [['companies', 'Companies']]).map(item => h('button', { type: 'button', key: item[0], className: 'stoa-tab', style: { height: 26, padding: '0 11px', fontSize: 12 },
+          [['board', 'Board']].concat(pb.group_is_company ? [] : [['clients', 'Clients']]).concat([['groups', cap(pb.terms.groups || 'groups')]])
+            .concat(pb.group_is_company ? [] : [['companies', 'Companies']]).map(item => h('button', { type: 'button', key: item[0], className: 'stoa-tab', style: { height: 26, padding: '0 11px', fontSize: 12 },
             'data-on': view === item[0] ? '1' : '0', 'aria-pressed': view === item[0], onClick: () => $view.set(item[0]) }, item[1])))) : null,
       h('div', { className: 'stoa-split', ref: split, 'data-side': side ? '1' : '0' },
-        view === 'groups' && (state.deals.length || groups.length) ? h(Groups, { state, current: '', openGroup })
+        view === 'clients' && !pb.group_is_company ? h(Clients, { state, openClient })
+          : view === 'groups' && (state.deals.length || groups.length) ? h(Groups, { state, current: '', openGroup })
           : !state.deals.length ? nothing : view === 'companies' ? h(Companies, { state, current: '', openCompany })
             : h(Board, { state, openId: '', setOpenId: openRecord }), side)) : null,
     !paged && tab === 'cash' ? h('div', { className: 'stoa-split', ref: split, 'data-side': '0' },
-      h(Cash, { state, openId: '', setOpenId: openRecord })) : null,
+      h(Cash, { state, openId: '', setOpenId: openRecord, openClient })) : null,
     tab === 'market' ? (market
       ? h('div', null,
         state.markets.length > 1 ? h('div', { className: 'stoa-tabs', style: { marginTop: 0 } }, state.markets.map(item =>

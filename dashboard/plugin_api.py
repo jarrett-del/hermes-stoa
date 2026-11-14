@@ -231,6 +231,7 @@ def state() -> dict:
         "deals": [_card(d, deal, playbook, touches, pending, groups) for deal in deals],
         "markets": markets,
         "companies": d.companies(),
+        "clients": [] if playbook.group_is_company() else d.clients(),
         "groups": d.groups(),
         "cash": d.cash(),
         "intakes": d.intake.waiting(),
@@ -393,6 +394,45 @@ def group(body: dict = Body(...)) -> dict:
         raise HTTPException(404 if "matches" in str(result.get("error")) else 400, result.get("error") or "could not do that")
     if changes or body.get("to") or body.get("new"):
         d.announce()
+    return result
+
+
+@router.post("/client")
+def client(body: dict = Body(...)) -> dict:
+    """One client: its searches, records, people, billing and recent activity. With ``note``, ``domain`` or ``terms``,
+    saves them first (``terms`` with an empty kind clears them)."""
+    d = desk()
+    body = body or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "say which client")
+    if body.get("note") is not None or body.get("domain") is not None:
+        d.store.org_put(d._client_name(name), note=body.get("note"), domain=body.get("domain"), actor="dashboard")
+        d.announce()
+    if "terms" in body:
+        saved = d.client_terms(name, body.get("terms"), actor="dashboard")
+        if not saved.get("ok"):
+            raise HTTPException(400, saved.get("error") or "could not save the terms")
+        d.announce()
+    result = d.client_view(name)
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error") or "no such client")
+    return result
+
+
+@router.post("/client/bill")
+def client_bill(body: dict = Body(...)) -> dict:
+    """add | skip | unskip | pay | send | void | remove | undo for a client billed by the month."""
+    d = desk()
+    body = body or {}
+    verb = str(body.get("verb") or "")
+    if verb not in ("add", "skip", "unskip", "pay", "send", "void", "remove", "undo"):
+        raise HTTPException(400, "unknown action")
+    args = {key: body[key] for key in ("client", "period", "hours", "amount", "number", "due", "invoice", "on") if key in body}
+    result = d.client_invoice(dict(args, action=verb), actor="dashboard")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "could not do that")
+    d.announce()
     return result
 
 
@@ -629,7 +669,7 @@ def intake_row(intake_id: str, body: dict = Body(...)) -> dict:
 def intake_act(intake_id: str, verb: str, body: Optional[dict] = Body(None)) -> dict:
     d = desk()
     if verb == "apply":
-        result = d.intake.apply({"id": intake_id, "rows": (body or {}).get("rows")}, "app")
+        result = d.intake.apply({"id": intake_id, "rows": (body or {}).get("rows"), "columns": (body or {}).get("columns")}, "app")
     elif verb == "discard":
         result = d.intake.discard(intake_id)
     else:

@@ -220,7 +220,25 @@ ADDED_COLUMNS = {
               # a few lines kept on the record itself, edited in place (the log is what happened; this is what to know)
               "notes": "TEXT NOT NULL DEFAULT ''", "phone": "TEXT NOT NULL DEFAULT ''"},
     "intakes": {"origin": "TEXT NOT NULL DEFAULT 'list'"},    # list: rows someone sent. proposal: changes Hermes suggests
+    # the month a client's invoice covers (YYYY-MM), for billing that is by the month rather than by the record
+    "invoices": {"period": "TEXT NOT NULL DEFAULT ''"},
+    # how a client is billed: hourly or a monthly retainer, the rate, the hours, who the invoice goes to (JSON)
+    "orgs": {"terms": "TEXT NOT NULL DEFAULT '{}'"},
 }
+
+# An invoice to a client rather than on a record (hourly contract work, a retainer) carries the client's key in
+# place of a record id: "client:<key>". It has no record, so it writes no activity line; its ledger entries are
+# kept under that same id, so it is taken back the way a record's change is.
+CLIENT = "client:"
+
+
+def client_ref(name: Any) -> str:
+    key = org_key(name)
+    return CLIENT + key if key else ""
+
+
+def is_client(ref: Any) -> bool:
+    return str(ref or "").startswith(CLIENT)
 
 EDITABLE = ("name", "company", "grp", "email", "linkedin", "value", "owner", "next_step", "next_due", "source", "close_on", "delivery",
             "notes", "phone")
@@ -231,7 +249,7 @@ TRACKED = ("name", "company", "grp", "email", "linkedin", "value_cents", "owner"
            "stage", "status", "lost_reason", "snoozed_until", "stage_at", "close_on", "delivery", "notes", "phone")
 # Put back by an undo only if nothing has touched them since; a difference there never stops the undo.
 SOFT = ("stage_at", "snoozed_until", "lost_reason", "fields._prev_stage", "delivery")
-INVOICE = ("number", "amount_cents", "paid_cents", "status", "issued_on", "due_on", "paid_on", "note")
+INVOICE = ("number", "amount_cents", "paid_cents", "status", "issued_on", "due_on", "paid_on", "note", "period")
 INVOICE_STATUS = ("draft", "sent", "paid", "void")
 UNDOABLE = "('insert', 'update', 'archive')"
 STANDING = ("op IN " + UNDOABLE + " AND seq NOT IN (SELECT reverts FROM ledger WHERE reverts IS NOT NULL)")
@@ -899,8 +917,8 @@ class Store:
                                              (live["deal_id"], live["contact_id"])).fetchone():
                         conflicts.append({"field": "person", "then": "removed", "now": "on the record again"})
             if conflicts:
-                return {"text": text, "archived": False, "deal": self._deal(conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()),
-                        "conflicts": conflicts}
+                row = None if is_client(deal_id) else conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+                return {"text": text, "archived": False, "deal": self._deal(row) if row else None, "conflicts": conflicts}
             archived = False
             for entry in entries:       # newest first
                 kind, what = entry["entity"], entry["op"]
@@ -958,9 +976,10 @@ class Store:
                     before, after = {"archived_at": entry["after"].get("archived_at")}, {"archived_at": ""}
                 self._entry(conn, batch, kind, entry["entity_id"], deal_id, "undo", before, after, actor,
                             "Took back: " + entry["summary"], reverts=entry["seq"], at=stamp)
-            conn.execute("UPDATE activities SET undone = ? WHERE deal_id = ? AND op = ? AND undone = ''", (stamp, deal_id, target))
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
-                         (deal_id, stamp, "undo", actor, "Took back: " + text, batch))
+            if not is_client(deal_id):
+                conn.execute("UPDATE activities SET undone = ? WHERE deal_id = ? AND op = ? AND undone = ''", (stamp, deal_id, target))
+                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                             (deal_id, stamp, "undo", actor, "Took back: " + text, batch))
         return {"text": text, "archived": archived, "deal": None if archived else self.get(deal_id), "conflicts": []}
 
     # -- the other people on a record ---------------------------------------------------------------
@@ -1107,8 +1126,10 @@ class Store:
         return invoice
 
     def invoices(self, deal_id: str = "") -> list:
-        """The invoices on one record, or every invoice on the desk, oldest first. Removed ones are left out."""
-        sql = ("SELECT i.* FROM invoices i JOIN deals d ON d.id = i.deal_id WHERE i.archived_at = '' AND d.archived_at = ''"
+        """The invoices on one record or one client (``client:<key>``), or every invoice on the desk, oldest first.
+        Removed ones are left out, and so are those of a record taken off the desk."""
+        sql = ("SELECT i.* FROM invoices i LEFT JOIN deals d ON d.id = i.deal_id WHERE i.archived_at = '' "
+               "AND ((d.id IS NOT NULL AND d.archived_at = '') OR i.deal_id LIKE 'client:%')"
                + (" AND i.deal_id = ?" if deal_id else "") + " ORDER BY i.id")
         with self._conn() as conn:
             return [self._invoice(row) for row in conn.execute(sql, [deal_id] if deal_id else []).fetchall()]
@@ -1141,7 +1162,7 @@ class Store:
         return "Invoice %s" % invoice["number"] if invoice.get("number") else "Invoice"
 
     def invoice_add(self, deal_id: str, amount: Any, *, actor: str = "", number: str = "", due_on: str = "", issued_on: str = "",
-                    status: str = "sent", note: str = "") -> dict:
+                    status: str = "sent", note: str = "", period: str = "") -> dict:
         cents = to_cents(amount)
         if cents <= 0:
             raise ValueError("an invoice needs an amount above zero")
@@ -1151,20 +1172,23 @@ class Store:
         status = status if status in ("draft", "sent") else "sent"
         issued_on = issued_on or (today() if status == "sent" else "")
         number, note = " ".join(str(number or "").split())[:40], str(note or "").strip()[:500]
+        if period and not re.fullmatch(r"\d{4}-\d{2}", period):
+            raise ValueError("the period is a month: YYYY-MM")
         stamp, batch = now(), self._op()
         with self._conn() as conn:
-            if not conn.execute("SELECT 1 FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone():
+            if not is_client(deal_id) and not conn.execute("SELECT 1 FROM deals WHERE id = ? AND archived_at = ''", (deal_id,)).fetchone():
                 raise KeyError(deal_id)
-            made = conn.execute("INSERT INTO invoices (deal_id, number, amount_cents, status, issued_on, due_on, note, created_at, updated_at) "
-                                "VALUES (?,?,?,?,?,?,?,?,?)", (deal_id, number, cents, status, issued_on, due_on, note, stamp, stamp)).lastrowid
+            made = conn.execute("INSERT INTO invoices (deal_id, number, amount_cents, status, issued_on, due_on, note, period, created_at, updated_at) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?)", (deal_id, number, cents, status, issued_on, due_on, note, period, stamp, stamp)).lastrowid
             said = "%s for %s%s%s" % ("Invoice %s" % number if number else "Invoice", _plain(cents), " (draft)" if status == "draft" else "",
                                       ", due %s" % due_on if due_on else "")
             self._entry(conn, batch, "invoice", made, deal_id, "insert",
-                        after={"number": number, "amount_cents": cents, "status": status, "issued_on": issued_on, "due_on": due_on},
+                        after={"number": number, "amount_cents": cents, "status": status, "issued_on": issued_on, "due_on": due_on, "period": period},
                         actor=actor, summary=said, at=stamp)
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
-                         (deal_id, stamp, "invoice", actor, said, batch))
-            conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
+            if not is_client(deal_id):
+                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                             (deal_id, stamp, "invoice", actor, said, batch))
+                conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, deal_id))
         return self.invoice(made)
 
     def invoice_update(self, invoice_id: Any, *, actor: str = "", said: str = "", **values: Any) -> Optional[dict]:
@@ -1196,9 +1220,10 @@ class Store:
             conn.execute("UPDATE invoices SET %s, updated_at = ? WHERE id = ?" % ", ".join(key + " = ?" for key in new),
                          list(new.values()) + [stamp, invoice_id])
             self._entry(conn, batch, "invoice", invoice_id, invoice["deal_id"], "update", {key: invoice[key] for key in new}, new, actor, said, at=stamp)
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
-                         (invoice["deal_id"], stamp, "invoice", actor, said, batch))
-            conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, invoice["deal_id"]))
+            if not is_client(invoice["deal_id"]):
+                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                             (invoice["deal_id"], stamp, "invoice", actor, said, batch))
+                conn.execute("UPDATE deals SET updated_at = ? WHERE id = ?", (stamp, invoice["deal_id"]))
         return self.invoice(invoice_id)
 
     def invoice_pay(self, invoice_id: Any, amount: Any = None, *, on: str = "", actor: str = "") -> Optional[dict]:
@@ -1221,7 +1246,8 @@ class Store:
         """Cents received during a month (``YYYY-MM``): every recorded payment that still stands, read off the ledger."""
         with self._conn() as conn:
             live = {str(row["id"]) for row in conn.execute(
-                "SELECT i.id FROM invoices i JOIN deals d ON d.id = i.deal_id WHERE i.archived_at = '' AND d.archived_at = ''").fetchall()}
+                "SELECT i.id FROM invoices i LEFT JOIN deals d ON d.id = i.deal_id WHERE i.archived_at = '' "
+                "AND ((d.id IS NOT NULL AND d.archived_at = '') OR i.deal_id LIKE 'client:%')").fetchall()}
             rows = conn.execute("SELECT at, entity_id, before, after FROM ledger WHERE entity = 'invoice' AND op = 'update' AND " + STANDING).fetchall()
         total = 0
         for row in rows:
@@ -1246,8 +1272,9 @@ class Store:
             conn.execute("UPDATE invoices SET archived_at = ?, updated_at = ? WHERE id = ?", (stamp, stamp, invoice_id))
             self._entry(conn, batch, "invoice", invoice_id, invoice["deal_id"], "archive", {"archived_at": ""}, {"archived_at": stamp}, actor,
                         "%s removed" % self._named(invoice), at=stamp)
-            conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
-                         (invoice["deal_id"], stamp, "invoice", actor, "%s removed" % self._named(invoice), batch))
+            if not is_client(invoice["deal_id"]):
+                conn.execute("INSERT INTO activities (deal_id, at, kind, actor, text, op) VALUES (?,?,?,?,?,?)",
+                             (invoice["deal_id"], stamp, "invoice", actor, "%s removed" % self._named(invoice), batch))
         return True
 
     # -- companies: a few facts kept per company, whatever records it has ---------------------------
@@ -1267,6 +1294,8 @@ class Store:
         for k in ("domain", "website", "note"):
             if values.get(k) is not None:
                 clean[k] = str(values[k]).strip()[:4000] if k == "note" else " ".join(str(values[k]).split()).lower()[:200]
+        if isinstance(values.get("terms"), dict):
+            clean["terms"] = json.dumps(values["terms"], sort_keys=True)
         with self._conn() as conn:
             conn.execute("INSERT INTO orgs (key, name, updated_at) VALUES (?,?,?) ON CONFLICT (key) DO NOTHING",
                          (key, " ".join(str(name).split())[:200], now()))

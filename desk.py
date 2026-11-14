@@ -681,7 +681,9 @@ class Desk:
         approvals = self.intake.queue()
         # Money: invoices past their date, and (once the desk keeps invoices at all) recent wins with nothing billed.
         everyone = {deal["id"]: deal for deal in self.store.list(status="all")}
-        invoices = [i for i in self.store.invoices() if i["deal_id"] in everyone]
+        every_invoice = self.store.invoices()
+        invoices = [i for i in every_invoice if i["deal_id"] in everyone]
+        clients = {st.client_ref(org["name"]): org["name"] for org in self.store.orgs()}
         lists["invoices_overdue"] = sorted(
             [{"id": i["deal_id"], "invoice": i["id"], "number": i["number"], "owed": i["owed"], "days": i["days_overdue"], "due": i["due_on"]}
              for i in invoices if i["state"] == "overdue" and not cards.snoozed(everyone[i["deal_id"]])], key=lambda row: -row["days"])
@@ -692,15 +694,21 @@ class Desk:
         recent = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
         lists["to_invoice"] = [{"id": deal["id"], "amount": deal["value"], "days": int(st.days_since(deal["stage_at"]) or 0)}
                                for deal in everyone.values()
-                               if invoices and deal["status"] == "won" and deal["value_cents"] > 0 and not billed.get(deal["id"])
+                               if invoices and playbook.billing != "none" and deal["status"] == "won" and deal["value_cents"] > 0 and not billed.get(deal["id"])
                                and deal["stage_at"] >= recent and not cards.snoozed(deal)]
         by_id = dict(everyone, **by_id)
-        counts = dict({key: len(rows) for key, rows in lists.items()}, approvals=len(approvals))
-        needs = sum(counts[key] for key in ("overdue", "due_today", "quiet", "new", "drafts", "approvals", "invoices_overdue", "to_invoice"))
+        to_bill = self.to_bill()
+        client_late = sorted([{"client": clients[i["deal_id"]], "invoice": i["id"], "number": i["number"], "owed": i["owed"], "days": i["days_overdue"],
+                               "period": i.get("period") or ""} for i in every_invoice if i["deal_id"] in clients and i["state"] == "overdue"],
+                             key=lambda row: -row["days"])
+        counts = dict({key: len(rows) for key, rows in lists.items()}, approvals=len(approvals), to_bill=len(to_bill), client_overdue=len(client_late))
+        needs = sum(counts[key] for key in ("overdue", "due_today", "quiet", "new", "drafts", "approvals", "invoices_overdue", "to_invoice",
+                                            "to_bill", "client_overdue"))
         if full:
             lists = {key: [dict(self.view(by_id[row["id"]], playbook, touches=touches), **{k: v for k, v in row.items() if k != "id"})
                            for row in rows[:15]] for key, rows in lists.items()}
-        out = dict(lists, ok=True, view="today", date=date, playbook=playbook.name, approvals=approvals, counts=counts, needs=needs)
+        out = dict(lists, ok=True, view="today", date=date, playbook=playbook.name, approvals=approvals, counts=counts, needs=needs,
+                   to_bill=to_bill, client_overdue=client_late)
         if full:
             out["terms"] = playbook.terms
             if self.tour():
@@ -729,6 +737,10 @@ class Desk:
         section("Invoices overdue", "invoices_overdue", lambda d: "%s — %s%s, %dd late" % (
             d["name"], money(d["owed"]), " (#%s)" % d["number"] if d["number"] else "", d["days"]))
         section("%s, not invoiced" % playbook.won["label"], "to_invoice", lambda d: "%s — %s, %dd ago" % (d["name"], money(d["amount"]), d["days"]))
+        section("To bill", "to_bill", lambda d: "%s — %s: %s%s" % (d["bill_to"] if d["bill_to"] == d["client"] else "%s (to %s)" % (d["client"], d["bill_to"]),
+                                                                  d["label"], cards.exact(d["amount"], playbook.currency), " for %s h" % int(d["hours"]) if d.get("hours") else ""))
+        section("Client invoices overdue", "client_overdue", lambda d: "%s — %s%s, %dd late" % (
+            d["client"], money(d["owed"]), " (#%s)" % d["number"] if d["number"] else "", d["days"]))
         section("Gone quiet", "quiet", lambda d: "%s — %s, quiet %dd (a nudge is due after %dd)"
                 % (d["name"], d["stage_label"], d["days"], d["expected"]))
         section("New, nothing planned yet", "new", lambda d: "%s — %s" % (d["name"], d.get("company") or d["stage_label"]))
@@ -1439,6 +1451,15 @@ class Desk:
     def invoice(self, args: dict, actor: str = "") -> dict:
         action = str(args.get("action") or "list").lower()
         actor = actor or self.actor()
+        if args.get("client") and not args.get("deal"):
+            return self.client_invoice(args, actor)
+        named_first = str(args.get("invoice") or "").strip()
+        if named_first and not args.get("deal") and action not in ("list", "add"):
+            homes = self.store.invoice_numbered(named_first)
+            if homes and all(st.is_client(i["deal_id"]) for i in homes) and len({i["deal_id"] for i in homes}) == 1:
+                org = next((o for o in self.store.orgs() if st.client_ref(o["name"]) == homes[0]["deal_id"]), None)
+                if org:                     # "invoice 1043 was paid", and 1043 went to a client: it is that client's
+                    return self.client_invoice(dict(args, client=org["name"]), actor)
         if action == "list" and not args.get("deal"):
             cash = self.cash()
             return {"ok": True, "action": "list", "invoices": cash["invoices"], "strip": cash["strip"]}
@@ -1546,6 +1567,384 @@ class Desk:
             out.update(money=self.money(fresh), invoices=[self._bill(i) for i in self.store.invoices(deal["id"])])
         return out
 
+    # -- billing a client by the month: hourly contract work, or a retainer ----------------------------------
+    # Some work is billed to a client, not on a record: a contract recruiter's hours for a portfolio company,
+    # billed to the fund each month; a fractional lead's retainer. The terms are kept on the client (the company
+    # a search is for, or an account), and each month that has ended and is not billed yet is waiting on Today.
+    BILL_KINDS = ("hourly", "retainer")
+
+    @staticmethod
+    def _month(value: Any) -> str:
+        """``YYYY-MM`` for a month written as 2026-10, "October 2026", "Oct 2026" or "october" (this year); "" if not one."""
+        text = " ".join(str(value or "").split()).lower()
+        if not text:
+            return ""
+        if re.fullmatch(r"\d{4}-\d{2}", text):
+            return text if 1 <= int(text[5:]) <= 12 else ""
+        names = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+        found = re.fullmatch(r"([a-z]+)\.?(?:\s+(\d{4}))?", text)
+        if not found:
+            return ""
+        month = next((index + 1 for index, name in enumerate(names) if name.startswith(found.group(1)) and len(found.group(1)) >= 3), 0)
+        if not month:
+            return ""
+        return "%s-%02d" % (found.group(2) or dt.date.today().year, month)
+
+    @staticmethod
+    def _month_label(period: str) -> str:
+        try:
+            return dt.date(int(period[:4]), int(period[5:7]), 1).strftime("%B %Y")
+        except (ValueError, TypeError):
+            return period
+
+    @staticmethod
+    def _weekdays(period: str) -> int:
+        first = dt.date(int(period[:4]), int(period[5:7]), 1)
+        after = (first.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+        return sum(1 for n in range((after - first).days) if (first + dt.timedelta(days=n)).weekday() < 5)
+
+    def _clean_terms(self, raw: Any) -> dict:
+        """Terms as they are kept, checked: ``{kind, rate, hours_week, bill_to, start, end, due_days, skipped}``.
+        Raises ValueError with what is wrong."""
+        raw = raw if isinstance(raw, dict) else {}
+        kind = str(raw.get("kind") or "").strip().lower()
+        if kind in ("hour", "hours", "contract", "time"):
+            kind = "hourly"
+        if kind in ("monthly", "month", "fixed"):
+            kind = "retainer"
+        if kind not in self.BILL_KINDS:
+            raise ValueError("kind is hourly (a rate per hour, hours a week) or retainer (an amount each month)")
+        rate = st.to_cents(raw.get("rate"))
+        if rate <= 0:
+            raise ValueError("an hourly rate above zero" if kind == "hourly" else "a monthly amount above zero")
+        out = {"kind": kind, "rate": rate / 100, "bill_to": " ".join(str(raw.get("bill_to") or "").split())[:120]}
+        if kind == "hourly":
+            try:
+                hours = float(raw.get("hours_week") if raw.get("hours_week") not in (None, "") else 40)
+            except (TypeError, ValueError):
+                raise ValueError("hours a week is a number, such as 40")
+            if not 0 < hours <= 80:
+                raise ValueError("hours a week is between 1 and 80")
+            out["hours_week"] = int(hours) if hours == int(hours) else round(hours, 2)
+        for key in ("start", "end"):
+            month = self._month(raw.get(key))
+            if raw.get(key) not in (None, "") and not month:
+                raise ValueError("%s is a month, such as 2026-10" % key)
+            out[key] = month
+        if not out["start"]:
+            out["start"] = dt.date.today().isoformat()[:7]
+        if out["end"] and out["end"] < out["start"]:
+            raise ValueError("the end month is before the start month")
+        try:
+            out["due_days"] = max(0, min(120, int(raw.get("due_days") if raw.get("due_days") not in (None, "") else 30)))
+        except (TypeError, ValueError):
+            raise ValueError("due_days is a number of days, such as 30")
+        out["skipped"] = sorted({self._month(p) for p in (raw.get("skipped") or []) if self._month(p)})
+        return out
+
+    def terms_of(self, name: Any) -> dict:
+        """The billing terms kept on a client ({} when there are none)."""
+        org = self.store.org_get(name) or {}
+        try:
+            raw = json.loads(org.get("terms") or "{}")
+        except ValueError:
+            return {}
+        try:
+            return self._clean_terms(raw) if raw.get("kind") else {}
+        except ValueError:
+            return {}
+
+    def _client_name(self, name: Any) -> str:
+        """The client as it is written on the desk: a group's client, an account, or a company with terms."""
+        key = st.org_key(name)
+        if not key:
+            return ""
+        for group in self.store.grps():
+            if group.get("client") and st.org_key(group["client"]) == key:
+                return group["client"]
+        for group in self.groups():
+            if st.org_key(group["name"]) == key:
+                return group["name"]
+        org = self.store.org_get(name)
+        return org["name"] if org else " ".join(str(name).split())[:200]
+
+    def _suggest_hours(self, terms: dict, period: str) -> float:
+        hours = self._weekdays(period) * float(terms.get("hours_week") or 40) / 5
+        return float(round(hours))
+
+    def to_bill(self, name: Any = None) -> list:
+        """Months that have ended and are not billed yet, for every client with terms (or one): what each would come to.
+        A month already billed (a voided invoice does not count) or skipped is not asked for again; at most six back."""
+        last = (dt.date.today().replace(day=1) - dt.timedelta(days=1)).isoformat()[:7]
+        out = []
+        names = [name] if name is not None else [org["name"] for org in self.store.orgs() if (org.get("terms") or "{}") != "{}"]
+        for client in names:
+            terms = self.terms_of(client)
+            if not terms:
+                continue
+            billed = {i["period"] for i in self.store.invoices(st.client_ref(client)) if i.get("period") and i["state"] != "void"}
+            end = min(last, terms["end"]) if terms["end"] else last
+            months, cursor = [], terms["start"]
+            while cursor <= end and len(months) < 240:
+                if cursor not in billed and cursor not in terms["skipped"]:
+                    months.append(cursor)
+                year, month = int(cursor[:4]), int(cursor[5:]) + 1
+                cursor = "%d-%02d" % (year + (month > 12), month - 12 if month > 12 else month)
+            display = self._client_name(client)
+            for period in months[-6:]:
+                hours = self._suggest_hours(terms, period) if terms["kind"] == "hourly" else None
+                amount = round(hours * terms["rate"], 2) if hours is not None else terms["rate"]
+                out.append({"client": display, "period": period, "label": self._month_label(period), "kind": terms["kind"],
+                            "hours": hours, "rate": terms["rate"], "amount": amount, "bill_to": terms["bill_to"] or display})
+        return sorted(out, key=lambda row: (row["period"], row["client"].lower()))
+
+    def client_billing(self, name: Any) -> dict:
+        """What a client is billed: its terms, its invoices (newest first), the months waiting to be billed, and totals."""
+        display = self._client_name(name)
+        ref = st.client_ref(display)
+        invoices = self.store.invoices(ref) if ref else []
+        live = [i for i in invoices if i["state"] not in ("void", "draft")]
+        return {"client": display, "terms": self.terms_of(display), "to_bill": self.to_bill(display) if ref else [],
+                "invoices": [dict(self._bill(i), period=i.get("period") or "", period_label=self._month_label(i["period"]) if i.get("period") else "")
+                             for i in reversed(invoices)],
+                "billed": sum(i["amount_cents"] for i in live) / 100, "paid": sum(i["paid_cents"] for i in live) / 100,
+                "owed": sum(i["owed_cents"] for i in live) / 100, "overdue": sum(i["owed_cents"] for i in live if i["state"] == "overdue") / 100}
+
+    def client_terms(self, name: Any, terms: Any, actor: str = "") -> dict:
+        """Set (or, with an empty kind, clear) how a client is billed."""
+        display = self._client_name(name)
+        if not display:
+            return {"ok": False, "error": "say which client"}
+        if not isinstance(terms, dict) or not str(terms.get("kind") or "").strip():
+            self.store.org_put(display, terms={}, actor=actor)
+            return dict(self.client_billing(display), ok=True, note="%s has no billing terms now." % display)
+        before = self.terms_of(display)
+        merged = dict(before, **{k: v for k, v in terms.items() if v is not None})
+        try:
+            clean = self._clean_terms(merged)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc) + ". Nothing was changed."}
+        self.store.org_put(display, terms=clean, actor=actor)
+        return dict(self.client_billing(display), ok=True)
+
+    def bill_client(self, name: Any, period: Any, hours: Any = None, amount: Any = None, number: Any = "", due: Any = None,
+                    actor: str = "", draft: bool = False) -> dict:
+        """Record the invoice for one month of a client's terms: the hours given (or the month's weekdays at the terms'
+        hours a week) times the rate, or the retainer. Stoa keeps the record; it does not send the invoice."""
+        display = self._client_name(name)
+        terms = self.terms_of(display)
+        month = self._month(period)
+        if not month:
+            return {"ok": False, "error": "say which month, such as 2026-10 or October 2026"}
+        if not terms and amount in (None, ""):
+            return {"ok": False, "error": "%s has no billing terms; set them (gtm_invoice action='terms'), or give the amount" % (display or "That client")}
+        ref = st.client_ref(display)
+        if any(i.get("period") == month and i["state"] != "void" for i in self.store.invoices(ref)):
+            return {"ok": False, "error": "%s is already billed to %s. Void that invoice first if it was wrong. Nothing was changed."
+                                          % (self._month_label(month), display)}
+        bits = []                       # the month is the invoice's own period: the note says what it was for
+        if amount in (None, ""):
+            if terms["kind"] == "hourly":
+                try:
+                    used = float(hours) if hours not in (None, "") else self._suggest_hours(terms, month)
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "hours is a number, such as 160"}
+                if not 0 < used <= 400:
+                    return {"ok": False, "error": "hours for the month is between 1 and 400"}
+                amount = round(used * terms["rate"], 2)
+                bits.append("%s h at %s" % (int(used) if used == int(used) else used, cards.money(terms["rate"], self.playbook().currency) or terms["rate"]))
+            else:
+                amount = terms["rate"]
+                bits.append("retainer")
+        if terms.get("bill_to") and st.org_key(terms["bill_to"]) != st.org_key(display):
+            bits.append("to %s" % terms["bill_to"])
+        note = " · ".join(bits)
+        due_on, error = self._due_on(due if due not in (None, "") else ("net %d" % terms.get("due_days", 30) if terms else None))
+        if error:
+            return error
+        try:
+            with self.store.operation():
+                made = self.store.invoice_add(ref, amount, actor=actor or self.actor(), number=str(number or ""), due_on=due_on,
+                                              status="draft" if draft else "sent", note=note, period=month)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.announce()
+        return dict(self.client_billing(display), ok=True, invoice=self._bill(made),
+                    note="Recorded. Stoa keeps the account; send the invoice itself the way you always do.")
+
+    def skip_month(self, name: Any, period: Any, skip: bool = True) -> dict:
+        """A month not to bill (time off, a pause), or, with ``skip=False``, one to bill after all."""
+        display = self._client_name(name)
+        terms, month = self.terms_of(display), self._month(period)
+        if not terms or not month:
+            return {"ok": False, "error": "say which client with billing terms, and which month"}
+        skipped = set(terms["skipped"])
+        skipped = skipped | {month} if skip else skipped - {month}
+        self.store.org_put(display, terms=dict(terms, skipped=sorted(skipped)))
+        self.announce()
+        return dict(self.client_billing(display), ok=True)
+
+    def client_invoice(self, args: dict, actor: str = "") -> dict:
+        """gtm_invoice with ``client``: terms | add | list | pay | send | void | update | remove | undo | skip."""
+        action = str(args.get("action") or "list").lower()
+        actor = actor or self.actor()
+        display = self._client_name(args.get("client"))
+        if not display:
+            return {"ok": False, "error": "say which client (`client`: the company a search is for, or an account)"}
+        if action == "list":
+            return dict(self.client_billing(display), ok=True)
+        if action == "terms":
+            terms = args.get("terms") if isinstance(args.get("terms"), dict) else {
+                key: args.get(key) for key in ("kind", "rate", "hours_week", "bill_to", "start", "end", "due_days") if args.get(key) not in (None, "")}
+            return self.client_terms(display, terms, actor)
+        if action == "add":
+            return self.bill_client(display, args.get("period"), args.get("hours"), args.get("amount"), args.get("number") or "",
+                                    args.get("due"), actor, draft=str(args.get("status") or "").lower() == "draft")
+        if action in ("skip", "unskip"):
+            return self.skip_month(display, args.get("period"), action == "skip")
+        ref = st.client_ref(display)
+        listed, want = self.store.invoices(ref), str(args.get("invoice") or "").strip().lower().lstrip("#")
+        if action == "undo":
+            target = next((i for i in listed if want and (str(i["id"]) == want or (i["number"] or "").lower().lstrip("#") == want)), None)
+            last = self.store.invoice_last(ref, target["id"] if target else None)
+            if last is None:
+                return {"ok": False, "error": "Nothing to take back on %s's invoices." % display}
+            with self.store.operation():
+                result = self.store.undo(ref, op=last["op"], actor=actor)
+            if not result:
+                return {"ok": False, "error": "Nothing to take back on %s's invoices." % display}
+            if result["conflicts"]:
+                return {"ok": False, "error": "Not taken back, because it would overwrite a later change: %s. Nothing was changed."
+                                              % "; ".join(self._conflicts(result["conflicts"]))}
+            self.announce()
+            return dict(self.client_billing(display), ok=True, undid=result["text"])
+        period = self._month(args.get("period"))
+        found = [i for i in listed if (want and (str(i["id"]) == want or (i["number"] or "").lower().lstrip("#") == want))
+                 or (not want and period and i.get("period") == period)]
+        if not want and not period:
+            found = [i for i in listed if i["state"] in ("sent", "partial", "overdue", "draft")]
+        if len(found) != 1:
+            return {"ok": False, "error": "say which of %s's invoices (`invoice`: its number, or `period`: its month)" % display,
+                    "invoices": [self._bill(i) for i in listed]}
+        invoice = found[0]
+        try:
+            with self.store.operation():
+                if action == "pay":
+                    on = st.parse_due(args["on"]) if args.get("on") else ""
+                    self.store.invoice_pay(invoice["id"], args.get("amount"), on=on or "", actor=actor)
+                elif action == "send":
+                    self.store.invoice_update(invoice["id"], actor=actor, status="sent", issued_on=st.today(), said="%s sent" % self.store._named(invoice))
+                elif action == "void":
+                    self.store.invoice_update(invoice["id"], actor=actor, status="void", said="%s voided" % self.store._named(invoice))
+                elif action == "update":
+                    due = None
+                    if args.get("due") not in (None, ""):
+                        due, error = self._due_on(args.get("due"))
+                        if error:
+                            return error
+                    self.store.invoice_update(invoice["id"], actor=actor, amount=args.get("amount"), number=args.get("number"),
+                                              due_on=due, note=args.get("note"))
+                elif action == "remove":
+                    self.store.invoice_remove(invoice["id"], actor=actor)
+                else:
+                    return {"ok": False, "error": "unknown action '%s'" % action,
+                            "actions": ["list", "terms", "add", "skip", "unskip", "pay", "send", "void", "update", "remove", "undo"]}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.announce()
+        return dict(self.client_billing(display), ok=True, action=action)
+
+    def clients(self) -> list:
+        """Every client the desk works for: the companies its searches are for, and any company with billing terms.
+        For the page's list of clients and the agent's overview."""
+        playbook, touches = self.playbook(), self.store.touches()
+        groups = {row["key"]: row for row in self.store.grps()}
+        deals = self.store.list(status="all")
+        out: dict = {}
+        for group in groups.values():
+            if not group.get("client"):
+                continue
+            key = st.org_key(group["client"])
+            entry = out.setdefault(key, {"name": group["client"], "key": key, "groups": [], "open": 0, "open_value": 0.0, "won": 0,
+                                         "last_touch": ""})
+            entry["groups"].append({"name": group["name"], "status": group.get("status") or "open"})
+        for org in self.store.orgs():
+            if (org.get("terms") or "{}") != "{}" and st.org_key(org["name"]) not in out:
+                out[st.org_key(org["name"])] = {"name": org["name"], "key": st.org_key(org["name"]), "groups": [], "open": 0,
+                                                 "open_value": 0.0, "won": 0, "last_touch": ""}
+        by_group = {}
+        for key, entry in out.items():
+            for group in entry["groups"]:
+                by_group[st.group_key(group["name"])] = key
+        for deal in deals:
+            owner = by_group.get(st.group_key(deal["grp"]))
+            if not owner:
+                continue
+            entry = out[owner]
+            if deal["status"] == "open":
+                entry["open"] += 1
+                entry["open_value"] += deal["value"]
+            elif deal["status"] == "won":
+                entry["won"] += 1
+            entry["last_touch"] = max(entry["last_touch"], touches.get(deal["id"], ""))
+        rows = []
+        for entry in out.values():
+            billing = self.client_billing(entry["name"])
+            terms = billing["terms"]
+            rows.append(dict(entry, open_groups=len([g for g in entry["groups"] if g["status"] in ("open", "hold")]),
+                             terms=terms, owed=billing["owed"], overdue=billing["overdue"], to_bill=len(billing["to_bill"])))
+        return sorted(rows, key=lambda row: (-row["open"], row["name"].lower()))
+
+    def client_view(self, name: Any) -> dict:
+        """One client: what is known about it, the searches it has (and where each stands), the records in them, the people
+        on its side, how it is billed, and what happened lately."""
+        display = self._client_name(name)
+        key = st.org_key(display)
+        if not key:
+            return {"ok": False, "error": "say which client"}
+        playbook, touches = self.playbook(), self.store.touches()
+        mine = [row for row in self.store.grps() if row.get("client") and st.org_key(row["client"]) == key]
+        if not mine and not self.terms_of(display) and not self.store.org_get(display):
+            return {"ok": False, "error": "no client on the desk is called '%s'" % str(name)[:60],
+                    "clients": [row["name"] for row in self.clients()][:20]}
+        keys = {row["key"] for row in mine}
+        deals = [deal for deal in self.store.list(status="all") if st.group_key(deal["grp"]) in keys]
+        names = self._group_names(self.store.list(status="all"))
+        searches = []
+        for row in mine:
+            here = [deal for deal in deals if st.group_key(deal["grp"]) == row["key"]]
+            open_here = [deal for deal in here if deal["status"] == "open"]
+            searches.append({"name": names.get(row["key"], row["name"]), "status": row.get("status") or "open",
+                             "status_label": self.GROUP_LABELS.get(row.get("status") or "open", "Open"),
+                             "open": len(open_here), "open_value": st.total(open_here), "won": len([d for d in here if d["status"] == "won"]),
+                             "facts": [{"label": field["label"], "value": (row.get("fields") or {}).get(field["key"], "")}
+                                       for field in playbook.group_fields if (row.get("fields") or {}).get(field["key"])],
+                             "last_touch": max([touches.get(d["id"], "") for d in here] or [""])})
+        searches.sort(key=lambda row: (row["status"] not in ("open", "hold"), -row["open"], row["name"].lower()))
+        people, seen = [], set()
+        for row in mine:
+            for person in self.store.grp_people(row["name"]):
+                if person["id"] not in seen:
+                    seen.add(person["id"])
+                    people.append(self._side(person, on="group", group=names.get(row["key"], row["name"])))
+        for deal in deals:
+            for person in self.store.people(deal["id"]):
+                if person["id"] not in seen:
+                    seen.add(person["id"])
+                    people.append(self._side(person, on="record", record=deal["id"], record_name=deal["name"]))
+        org = self.store.org_get(display) or {}
+        ids = {deal["id"]: deal["name"] for deal in deals}
+        recent = [a for a in self.store.activities(limit=400) if a["deal_id"] in ids][:20]
+        open_deals, won = [d for d in deals if d["status"] == "open"], [d for d in deals if d["status"] == "won"]
+        return {"ok": True, "client": {"name": display, "key": key, "domain": org.get("domain") or "", "note": org.get("note") or ""},
+                "searches": searches, "open": len(open_deals), "open_value": st.total(open_deals), "won": len(won), "won_value": st.total(won),
+                "lost": len([d for d in deals if d["status"] == "lost"]),
+                "last_touch": max([touches.get(d["id"], "") for d in deals] or [""]),
+                "records": [self._brief(deal, playbook) for deal in sorted(deals, key=lambda d: (d["status"] != "open", -playbook.position(d["stage"]), d["name"].lower()))],
+                "people": people[:60], "billing": self.client_billing(display),
+                "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"], "by": a["actor"]}
+                             for a in recent]}
+
     def odds(self, playbook: Playbook, deals: list) -> dict:
         """How likely a record at each stage is to be won, as a percentage, and what that rests on:
         this desk's own history once enough records have closed, else the playbook's figures, else
@@ -1574,7 +1973,9 @@ class Desk:
         playbook, today = self.playbook(), dt.date.today()
         deals = self.store.list(status="all")
         names = {deal["id"]: deal for deal in deals}
-        invoices = [i for i in self.store.invoices() if i["deal_id"] in names]
+        clients = {st.client_ref(org["name"]): org["name"] for org in self.store.orgs()}
+        invoices = [i for i in self.store.invoices() if i["deal_id"] in names or i["deal_id"] in clients]
+        waiting = self.to_bill()
         month = today.isoformat()[:7]
         nxt = (today.replace(day=1) + dt.timedelta(days=32)).isoformat()[:7]
         local_month = lambda stamp: (st.parse_ts(stamp).astimezone().date().isoformat()[:7] if st.parse_ts(stamp) else "")      # noqa: E731
@@ -1585,7 +1986,7 @@ class Desk:
             per.setdefault(invoice["deal_id"], []).append(invoice)
         owing = [i for i in invoices if i["state"] in ("sent", "partial", "overdue")]
         late = [i for i in owing if i["state"] == "overdue"]
-        unbilled = [(d, self.money(d, per.get(d["id"], []))["uninvoiced"]) for d in won]
+        unbilled = [(d, self.money(d, per.get(d["id"], []))["uninvoiced"]) for d in won] if playbook.billing != "none" else []
         unbilled = [(d, amount) for d, amount in unbilled if amount > 0]
         strip = {
             "won_month": {"count": len(won_now), "value": st.total(won_now)},
@@ -1593,6 +1994,7 @@ class Desk:
             "collected_month": {"value": self.store.collected(month) / 100},
             "overdue": {"count": len(late), "value": sum(i["owed_cents"] for i in late) / 100},
             "uninvoiced": {"count": len(unbilled), "value": round(sum(amount for _, amount in unbilled), 2)},
+            "to_bill": {"count": len(waiting), "value": round(sum(row["amount"] for row in waiting), 2)},
         }
         odds = self.odds(playbook, deals)
         buckets = {key: {"key": key, "label": label, "count": 0, "cents": 0, "weighted": 0.0} for key, label in (
@@ -1626,7 +2028,9 @@ class Desk:
                              "value": sum(b["value"] for b in forecast), "weighted": round(sum(b["weighted"] for b in forecast), 2),
                              "odds": [{"stage": s["id"], "label": s["label"], "odds": odds["by_stage"].get(s["id"], 0)} for s in playbook.stages]},
                 "delivery": {"stages": playbook.delivery, "records": lane},
-                "invoices": [self._bill(i, names[i["deal_id"]]["name"]) for i in listed + settled]}
+                "to_bill": waiting, "billing": playbook.billing,
+                "invoices": [dict(self._bill(i, names[i["deal_id"]]["name"] if i["deal_id"] in names else clients[i["deal_id"]]),
+                                  client=clients.get(i["deal_id"], ""), period=i.get("period") or "") for i in listed + settled]}
 
     def cash_text(self) -> str:
         cash, playbook = self.cash(), self.playbook()
@@ -1639,6 +2043,11 @@ class Desk:
                   "Invoiced and owed: %s (%d)" % (money(strip["owed"]["value"]), strip["owed"]["count"]),
                   "Overdue: %s (%d)" % (money(strip["overdue"]["value"]), strip["overdue"]["count"]),
                   "%s but not invoiced: %s (%d)" % (playbook.won["label"], money(strip["uninvoiced"]["value"]), strip["uninvoiced"]["count"])]
+        if strip.get("to_bill", {}).get("count"):
+            exact = lambda value: cards.exact(value, playbook.currency)      # noqa: E731
+            lines.append("To bill (months ended): %s (%d)" % (exact(strip["to_bill"]["value"]), strip["to_bill"]["count"]))
+            lines += ["  %s, %s: %s%s" % (row["client"], row["label"], exact(row["amount"]), " for %d h" % row["hours"] if row.get("hours") else "")
+                      for row in cash["to_bill"][:8]]
         lines += ["", "Forecast (weighted by %s)" % {"history": "how often each stage has gone on to close here",
                                                      "playbook": "the playbook's odds for each stage", "even": "an even climb through the stages"}[cash["forecast"]["basis"]]]
         lines += ["  %s: %s of %s (%d)" % (b["label"], money(b["weighted"]), money(b["value"]), b["count"]) for b in cash["forecast"]["buckets"] if b["count"]]
@@ -2075,7 +2484,7 @@ class Desk:
                 "last_touch": max([touches.get(d["id"], "") for d in deals] or [""]),
                 "records": [self._brief(deal, playbook) for deal in
                             sorted(deals, key=lambda d: (d["status"] != "open", -playbook.position(d["stage"]), d["name"].lower()))],
-                "people": people[:60], "company": company,
+                "people": people[:60], "company": company, "billing": self.client_billing(name) if company is not None else None,
                 "activity": [{"deal": a["deal_id"], "name": ids[a["deal_id"]], "at": a["at"], "kind": a["kind"], "text": a["text"],
                               "by": a["actor"]} for a in recent]}
 
@@ -2381,6 +2790,44 @@ class Desk:
         return {"ok": False, "error": "no note with id %s (the file may have changed; list the inbox again)" % note_id}
 
     # -- gtm_playbook ---------------------------------------------------------------------------
+    def add_fields(self, labels: list) -> tuple:
+        """Add fields to the playbook in use (the desk's own copy of it), for columns a list brought that had no place.
+        Returns ``({label: key}, None)``, or ``(None, error)``. A label that is already a field maps to it."""
+        if self.tour():
+            return None, {"ok": False, "error": "On a tour the playbook stays as it is. Nothing was changed."}
+        playbook = self.playbook()
+        fields = [dict(field) for field in playbook.fields]
+        taken = {field["key"] for field in fields} | {"name", "company", "group", "grp", "email", "phone", "linkedin", "value", "owner",
+                                                      "stage", "source", "note", "notes", "record", "next_step", "next_due", "close_on"}
+        mapping, added = {}, []
+        for label in labels:
+            clean = " ".join(str(label or "").split())[:60]
+            if not clean:
+                continue
+            same = next((field for field in fields if field["label"].lower() == clean.lower() or field["key"] == clean.lower()), None)
+            if same:
+                mapping[label] = same["key"]
+                continue
+            key = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")[:40] or "field"
+            base, n = key, 2
+            while key in taken:
+                key, n = "%s_%d" % (base, n), n + 1
+            taken.add(key)
+            fields.append({"key": key, "label": clean})
+            added.append(clean)
+            mapping[label] = key
+        if not added:
+            return mapping, None
+        if len(fields) > 12:
+            return None, {"ok": False, "error": "A playbook holds at most 12 fields; %s has %d. Keep some of these columns in notes "
+                                                "instead. Nothing was changed." % (playbook.title, len(playbook.fields))}
+        data = dict(playbook.data, fields=fields)
+        try:
+            self.library.save(json.dumps(data, indent=1, ensure_ascii=False))
+        except PlaybookError as exc:
+            return None, {"ok": False, "error": "Could not add those fields: %s. Nothing was changed." % exc}
+        return mapping, None
+
     def playbook_tool(self, args: dict) -> dict:
         action = str(args.get("action") or "show").lower()
         library = self.library

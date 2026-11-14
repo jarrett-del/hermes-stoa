@@ -306,6 +306,7 @@ GTM_INTAKE = {
             "source": {"type": "string", "description": "propose: where the list came from, in a few words (\"leads.pdf\", \"conference badge scans\", \"activity sweep\")."},
             "kind": {"type": "string", "enum": ["list", "proposal"],
                      "description": "propose: list (rows someone sent; the default) or proposal (changes you suggest from what you found)."},
+            "columns": {"type": "object", "description": "apply: what to do with each column that has no place on the desk, by its name: notes (kept in each new record's notes, the default), field (added to the playbook as a field), or skip (left out). Ask the person first."},
             "rows": {
                 "description": "propose: the records, at most 500. apply: the row numbers to apply (default: every new and changed row).",
                 "type": "array",
@@ -446,13 +447,28 @@ GTM_INVOICE = {
         "mistake, a void, an edit), 'list' shows a record's invoices, or with no deal every open invoice and the "
         "cash totals. An invoice's number is enough to find it: `deal` may be left out when `invoice` is given. "
         "Use it when the person says they billed someone or were paid. For the whole picture and the "
-        "forecast, gtm_pipeline(view='cash')."
+        "forecast, gtm_pipeline(view='cash'). "
+        "Work billed to a client rather than on a record (contract hours, a retainer) takes `client` instead of `deal`: "
+        "action='terms' sets how the client is billed (kind hourly with rate and hours_week, or retainer with rate as "
+        "the monthly amount; bill_to when the invoice goes to someone else, such as a fund; start, the first month), "
+        "'add' records one month's invoice (period, and hours when they differ from the usual), 'skip' leaves a month "
+        "unbilled (time off), and the rest work as for a record. Months that have ended and are not billed are listed "
+        "on Today; record one only when the person says to."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "add", "send", "pay", "void", "update", "remove", "undo"]},
+            "action": {"type": "string", "enum": ["list", "add", "send", "pay", "void", "update", "remove", "undo", "terms", "skip", "unskip"]},
             "deal": _DEAL_REF,
+            "client": {"type": "string", "description": "Instead of deal: the client billed directly (the company a search is for, or an account)."},
+            "period": {"type": "string", "description": "client add/skip/unskip, or which invoice: the month, as 2026-10 or 'October 2026'."},
+            "hours": {"type": "number", "description": "client add, hourly terms: the hours billed for the month (left out: the month's weekdays at the usual hours a week)."},
+            "kind": {"type": "string", "enum": ["hourly", "retainer"], "description": "terms: billed by the hour, or a fixed amount each month."},
+            "rate": {"type": "number", "description": "terms: the hourly rate, or the monthly retainer."},
+            "hours_week": {"type": "number", "description": "terms, hourly: the usual hours a week (default 40)."},
+            "bill_to": {"type": "string", "description": "terms: who the invoice goes to, when not the client itself (a fund, a parent company)."},
+            "start": {"type": "string", "description": "terms: the first month billed, as 2026-10."},
+            "end": {"type": "string", "description": "terms: the last month billed, when the contract ends."},
             "invoice": {"type": "string", "description": "send/pay/void/update/remove/undo: which invoice, by its number or id. May be left out when the record has only one open. With a number, `deal` may be left out."},
             "amount": {"type": "number", "description": "add/update: the invoice amount. pay: how much came in (left out: all that is owed)."},
             "number": {"type": "string", "description": "add/update: the invoice number as the person writes it (\"1042\")."},

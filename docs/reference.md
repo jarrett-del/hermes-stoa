@@ -96,6 +96,10 @@ punctuation. A column the desk has no place for (a phone number, a website) is n
 new record keeps it in its notes, in the list's words. If no column reads as a name at all, the
 page hands the file to Hermes to read, and Hermes asks you if it cannot tell either.
 
+When a list has columns with no place on the desk, the review lists them with a choice for each:
+**Keep in notes** (each new record's notes, the default), **Add as a field** (the playbook gains
+it, so every record has it from then on), or **Leave out**. In a chat, Hermes asks.
+
 A person is matched by email first, then LinkedIn, then name and company. The same person in a
 different account or search is a new record, not an update. Nothing is written until you press
 **Apply** in the app or in Slack, or say "apply all but 3". Two people pressing Apply write the
@@ -179,6 +183,17 @@ In a chat you are there, so Hermes does what you ask. The rest is for when you a
   unless you have set autonomy to *Run it*.
 
 `/gtm cash` (or `gtm_pipeline(view="cash")`) gives the same picture in any chat.
+
+**Billing a client by the month.** Work that is billed to a client rather than on a record
+(contract hours, a retainer) is set up on the client: **Billing → Set terms** on its page, or
+*"I bill Fernway 95 an hour, 40 hours a week, monthly, to Halyard Ventures"*. The terms are hourly (a rate,
+the usual hours a week) or a retainer (an amount a month), who the invoice goes to when that is
+someone else (a fund, a parent company), and the first month. Each month that has ended and is
+not billed waits on **Today** and in **Cash** under *To bill*, at the month's weekdays times the
+usual hours: change the hours if the month was short, then **Record invoice**, or **Skip** it.
+Those invoices count in Cash with the rest (owed, overdue, collected) and are taken back the same
+way. A playbook with `billing: none` (lead searches done for clients) bills no record, but its
+clients can still be billed this way, and then it has a Cash tab.
 
 ### People and companies
 
