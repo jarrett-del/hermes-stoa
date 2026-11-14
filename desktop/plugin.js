@@ -501,24 +501,22 @@ const CSS = `
 .stoa-hint:disabled { opacity: .5; cursor: default; }
 .stoa-dropnote { position: sticky; top: 0; z-index: 7; width: fit-content; margin: 0 auto 12px; padding: 8px 18px; border: 1px dashed var(--stoa-accent-line); border-radius: var(--stoa-r); background: var(--stoa-accent-soft); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 13px; }
 .stoa-page[data-drop="1"] { box-shadow: inset 0 0 0 2px var(--stoa-accent-line); }
-/* The head of the page: the figure and its counts on the left, the stoa itself drawn in dots on the right. */
-.stoa-head { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px; min-height: 124px; }
+/* The head of the page is two columns. The figure and its counts take the room they need; the picture (the stoa,
+   or your name in its place) has what is left, so it is cropped or made smaller and never runs under the figures.
+   Where too little is left, the picture goes: a name then sits above the figures instead. */
+.stoa-head { position: relative; display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 14px 44px; align-items: end; min-height: 124px; }
 .stoa-head > * { position: relative; }
-.stoa-headart { position: absolute; top: 0; right: 0; bottom: 0; width: min(66%, 860px); pointer-events: none; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24%); mask-image: linear-gradient(90deg, transparent, #000 24%); }
+.stoa-headmain { grid-column: 1; grid-row: 1; min-width: 0; }
+.stoa-headstats { grid-column: 1; grid-row: 2; }
+.stoa-headart { grid-column: 2; grid-row: 1 / span 2; align-self: stretch; min-width: 0; pointer-events: none; -webkit-mask-image: linear-gradient(90deg, transparent, #000 90px); mask-image: linear-gradient(90deg, transparent, #000 90px); }
+.stoa-headart > canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
 .stoa-art { display: block; width: 100%; height: 100%; }
 .stoa-nameart { font-family: var(--stoa-mono); }
 .stoa-headname { height: 56px; width: min(100%, 700px); margin: 0 0 12px -3px; }
-/* A name in place of the stoa: the head becomes two columns. The figures take the room they need and the name
-   has what is left, so it can shrink but never runs into them. Where too little is left (a narrow window, the
-   side panel open) the name sits above the figures instead. */
-.stoa-head[data-sign="art"] { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 14px 44px; align-items: end; }
-.stoa-head[data-sign="art"] > .stoa-headart { position: relative; grid-column: 2; grid-row: 1 / span 2; align-self: stretch; top: auto; right: auto; bottom: auto; width: auto; -webkit-mask-image: none; mask-image: none; }
-.stoa-head[data-sign="art"] > .stoa-headart > canvas { position: absolute; top: 4px; left: 0; width: 100%; height: calc(100% - 8px); }
-.stoa-head[data-sign="art"] > .stoa-headart + div { grid-column: 1; grid-row: 1; }
-.stoa-head[data-sign="art"] > .stoa-headstats { grid-column: 1; grid-row: 2; }
 .stoa-headname[data-narrow="1"] { display: none; }
+.stoa-head[data-sign="art"] > .stoa-headart { -webkit-mask-image: none; mask-image: none; }
+.stoa-head[data-sign="art"] > .stoa-headart > canvas { top: 4px; height: calc(100% - 8px); }
 @container (max-width: 980px) {
-  .stoa-head[data-sign="art"] { display: flex; align-items: stretch; }
   .stoa-head[data-sign="art"] > .stoa-headart { display: none; }
   .stoa-headname[data-narrow="1"] { display: block; }
 }
@@ -3611,7 +3609,7 @@ function Page() {
     h('div', { className: 'stoa-head', 'data-sign': welcome || !signed ? '' : sign.place === 'beside' ? 'beside' : 'art' },
       welcome ? null : h('div', { className: 'stoa-headart' },
         signed && sign.place !== 'beside' ? h(NameArt, { text: signed, side: 'right' }) : h(Art, { name: 'band' })),
-      h('div', null,
+      h('div', { className: 'stoa-headmain' },
         // Beside the stoa the name is always here. In place of the stoa it is here only when the page is too narrow for it there.
         signed && !welcome ? h('div', { className: 'stoa-headname', 'data-narrow': sign.place === 'beside' ? '0' : '1' }, h(NameArt, { text: signed, side: 'left' })) : null,
         h('div', { className: 'stoa-eyebrow' }, welcome ? 'Stoa' : 'Stoa · ' + pb.title),
