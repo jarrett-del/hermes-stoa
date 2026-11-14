@@ -3173,6 +3173,27 @@ class DashboardApiTests(unittest.TestCase):
         shown = self.api.deal(dana["id"])
         self.assertEqual((shown["phone"], shown["fields"]["location"], shown["source"]), ("+1 415 555 0142", "Austin, TX", "Referral"))
 
+    def test_the_page_is_handed_the_artwork_as_grids_of_dots(self):
+        import base64
+        art = self.api.art()
+        self.assertEqual(sorted(art), ["band", "hero"])
+        for piece in art.values():
+            packed = base64.b64decode(piece["cells"])
+            self.assertEqual(len(packed), (piece["w"] * piece["h"] + 1) // 2)       # four bits a cell, two cells to a byte
+            self.assertTrue(any(packed))
+
+    def test_the_desk_carries_its_own_name_for_the_head_of_the_page(self):
+        self.assertEqual(self.api.state()["sign"], {"text": "", "place": "art"})
+        saved = self.api.sign({"text": "  Fernway   Search ", "place": "beside"})
+        self.assertEqual((saved["text"], saved["place"]), ("Fernway Search", "beside"))
+        self.assertEqual(self.api.sign({"place": "art"})["text"], "Fernway Search")           # one can be set without the other
+        self.assertEqual(self.api.state()["sign"], {"text": "Fernway Search", "place": "art"})
+        for wrong in ({"text": "x" * 41}, {"place": "sideways"}):
+            with self.assertRaises(self.api.HTTPException):
+                self.api.sign(wrong)
+        self.assertEqual(self.api.state()["sign"]["text"], "Fernway Search")                  # a refusal changes nothing
+        self.assertEqual(self.api.sign({"text": ""})["text"], "")                              # no name: the stoa is drawn again
+
     def test_the_page_can_add_edit_move_and_log_without_a_model(self):
         added = self.api.add_deal({"name": "Nadia Rahim", "company": "Larkspur", "group": "Staff Backend · Northwind", "value": 41000,
                                    "next_step": "Intro call", "next_due": "2030-01-07"})

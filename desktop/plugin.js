@@ -41,6 +41,8 @@ const refresh = () => queryClient.invalidateQueries({ queryKey: ['stoa'] })
 const $tab = atom('today') // the page's tab: today | pipeline | cash | market | activity | setup
 const $draft = atom('') // words put in the dock for the person to finish and send
 let onPage = false // the Stoa page is what is on screen: a click that calls for writing goes to its dock
+const $onPage = atom(false) // the same, for the pane to watch: beside the open desk it shows other things
+const $want = atom('') // a record picked in the pane while the desk is open: the page opens it
 const $view = atom('board') // the pipeline tab: board | companies | groups
 const $pipe = atom('') // which pipeline the page is showing ('' = the first): an id from state.pipelines
 const $last = atom(null) // what was just done, while it can be taken back: { deal, name, text, op }
@@ -300,123 +302,162 @@ async function takeFile(file) {
   }
 }
 
-// -- look: the app's own variables only, so every theme carries it -------------------------------
+// -- look ------------------------------------------------------------------------------------------
 const CSS = `
-/* Colour: all of it comes from the app's theme. One accent, the app's own (--ui-accent), used the way the
-   app uses it: filled for the main action, tinted with a hairline for "you are here". */
+/* The look. Surfaces, words and lines are the app's theme (--ui-*), so every theme carries it.
+   Labels, figures and anything you press are set in the app's mono face; sentences stay in its text face.
+   Corners are square and lines are hairlines. A quantity is drawn as dots, never as a smooth bar.
+   Heat (--stoa-h1 to h7) is the one set of colours Stoa brings: the ramp its artwork is drawn in, cold to hot. */
 .stoa { font-size: 13px; line-height: 1.45; color: var(--ui-text-primary);
+  --stoa-mono: var(--font-mono, "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace);
   --stoa-accent: var(--ui-accent);
   --stoa-on-accent: var(--dt-midground-foreground, #fff);
   --stoa-accent-text: color-mix(in oklab, var(--ui-accent) 58%, var(--ui-text-primary));
   --stoa-accent-soft: color-mix(in srgb, var(--ui-accent) 16%, transparent);
-  --stoa-accent-line: color-mix(in srgb, var(--ui-accent) 58%, transparent); }
-.stoa *, .stoa *::before { box-sizing: border-box; }
+  --stoa-accent-line: color-mix(in srgb, var(--ui-accent) 58%, transparent);
+  --stoa-h1: #2150cc; --stoa-h2: #2c86d9; --stoa-h3: #30b4c4; --stoa-h4: #48c78c; --stoa-h5: #f2b24c; --stoa-h6: #f4967e; --stoa-h7: #f3a9c0;
+  --stoa-heat: linear-gradient(90deg, var(--stoa-h1), var(--stoa-h2), var(--stoa-h3), var(--stoa-h4), var(--stoa-h5), var(--stoa-h6), var(--stoa-h7));
+  --stoa-bar: linear-gradient(90deg, var(--stoa-h1), var(--stoa-h2) 46%, var(--ui-text-primary));      /* the quiet one: blue to the colour of the words */
+  --stoa-r: 2px;
+  --stoa-page: var(--background, #0d1015);
+  /* Two sets of stripes that cross: what is left is a grid of 2px dots, 4px apart. Used as a mask. */
+  --stoa-grid: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px), repeating-linear-gradient(0deg, #000 0 2px, transparent 2px 4px); }
+.stoa *, .stoa *::before, .stoa *::after { box-sizing: border-box; }
 .stoa-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .stoa-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px 18px; }
-.stoa-page { height: 100%; overflow: auto; padding: 28px 34px 0; }
-.stoa-wrap { max-width: 1320px; margin: 0 auto; }
-.stoa-eyebrow { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ui-text-tertiary); }
-.stoa-figure { font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; margin-top: 4px; }
-.stoa-figure small { font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--ui-text-tertiary); margin-left: 7px; }
-.stoa-page .stoa-figure { font-size: 46px; }
-.stoa-rule { height: 2px; border-radius: 2px; margin: 12px 0 4px; background: linear-gradient(90deg, var(--ui-text-primary), var(--ui-text-tertiary) 46%, var(--stoa-accent)); }
+.stoa-page { height: 100%; overflow: auto; padding: 24px 34px 0; }
+.stoa-wrap { max-width: 1320px; margin: 0 auto; container-type: inline-size; }
+.stoa-eyebrow { font-family: var(--stoa-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ui-text-tertiary); }
+.stoa-figure { display: flex; align-items: flex-end; gap: 10px; margin-top: 6px; font-family: var(--stoa-mono); font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stoa-figure small { font-size: 11.5px; font-weight: 400; letter-spacing: .02em; color: var(--ui-text-tertiary); padding-bottom: 3px; }
+.stoa-page .stoa-figure { font-size: 44px; }
+.stoa-page .stoa-figure small { padding-bottom: 1px; }
+/* The figure that matters, set in dots. */
+.stoa-dotfig { display: block; height: 28px; width: auto; overflow: visible; }
+.stoa-page .stoa-dotfig { height: 42px; }
+.stoa-dotfig rect { fill: var(--ui-text-primary); }
+/* The line under the header: one row of dots, blue running to white. */
+.stoa-rule { height: 2px; margin: 14px 0 4px; background: var(--stoa-bar); -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px); mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px); }
 .stoa-sub { color: var(--ui-text-tertiary); font-size: 12px; }
 .stoa-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stoa-sec { margin-top: 16px; }
 .stoa-sechead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 8px 4px; }
-.stoa-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+/* A section opens with three shades of block, light to dark: the same dots, at the size of a letter. */
+.stoa-sechead > .stoa-eyebrow:first-child::before, .stoa-rpsechead h3::before { content: "░▒▓"; margin-right: 8px; letter-spacing: 0; font-family: var(--stoa-mono); font-weight: 400;
+  background: var(--stoa-bar); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.stoa-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--stoa-r); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .stoa-row:hover { background: var(--ui-row-hover-background); }
-.stoa-row[data-open="1"] { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); }
-.stoa-dot { flex: none; width: 6px; height: 6px; margin-top: 6px; border-radius: 50%; background: var(--ui-text-quaternary); }
+.stoa-row[data-open="1"] { background: var(--stoa-accent-soft); box-shadow: inset 2px 0 0 var(--stoa-accent); }
+.stoa-dot { flex: none; width: 6px; height: 6px; margin-top: 6px; background: var(--ui-text-quaternary); }
 .stoa-dot[data-tone="bad"] { background: var(--ui-red); }
 .stoa-dot[data-tone="warn"] { background: var(--ui-orange); }
 .stoa-dot[data-tone="good"] { background: var(--stoa-accent); }
 .stoa-grow { flex: 1; min-width: 0; }
 .stoa-name { font-weight: 550; }
-.stoa-num { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ui-text-secondary); white-space: nowrap; }
+.stoa-num { flex: none; font-family: var(--stoa-mono); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--ui-text-secondary); white-space: nowrap; }
 .stoa-num[data-tone="bad"] { color: var(--ui-red); }
 .stoa-num[data-tone="warn"] { color: var(--ui-orange); }
-.stoa-box { padding: 12px 14px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
+.stoa-box { padding: 12px 14px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: var(--ui-bg-card); }
 .stoa-detail { margin: 2px 0 10px; }
 .stoa-inchat { max-width: 460px; margin: 6px 0; }
-.stoa-meter { display: flex; gap: 3px; margin: 8px 0 4px; }
-.stoa-meter i { flex: 1; height: 3px; border-radius: 2px; background: var(--ui-stroke-secondary); }
-.stoa-meter i[data-on="1"] { background: var(--stoa-accent); }
-.stoa-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 14px 0 2px; padding-top: 12px; border-top: 1px solid var(--ui-stroke-tertiary); }
+/* Every bar is a row or two of dots: lit as far as it is filled. */
+.stoa-meter, .stoa-weight, .stoa-rate u, .stoa-fc u, .stoa-billbar, .stoa-path > *::after { -webkit-mask-image: var(--stoa-grid); mask-image: var(--stoa-grid); -webkit-mask-composite: source-in; mask-composite: intersect; }
+.stoa-meter { display: flex; margin: 8px 0 4px; }
+.stoa-meter i { flex: 1; height: 4px; background: var(--ui-stroke-primary); }
+/* Lit dots take their colour from the heat ramp: --pos is where along it this piece sits, --size how many pieces share it. */
+.stoa-meter i[data-on="1"], .stoa-weight i, .stoa-path > [data-state="done"]::after, .stoa-path > [data-state="now"]::after, .stoa-path > [data-state="won"]::after { background: var(--stoa-heat); background-size: var(--size, 100%) 100%; background-position: var(--pos, 0) 0; }
+.stoa-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 14px 0 2px; padding-top: 12px; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-facts span { display: block; overflow-wrap: anywhere; }
 .stoa-next { margin-top: 10px; }
-.stoa-log { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-log { margin-top: 10px; padding-top: 8px; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-log p { margin: 0 0 5px; font-size: 12px; color: var(--ui-text-secondary); }
 .stoa-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.stoa-btn, .stoa-select { height: 28px; padding: 0 10px; border: 1px solid var(--ui-stroke-primary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; cursor: pointer; }
+.stoa-btn, .stoa-select { height: 28px; padding: 0 11px; border: 1px solid var(--ui-stroke-primary); border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-primary); font-family: var(--stoa-mono); font-size: 11.5px; cursor: pointer; }
 .stoa-btn, .stoa-select { transition: background .15s ease, opacity .15s ease; }
 .stoa-btn:hover, .stoa-select:hover { background: var(--ui-control-hover-background); }
 .stoa-btn[data-kind="primary"]:hover { background: var(--stoa-accent); opacity: .88; }
-.stoa-btn[data-kind="primary"] { border-color: var(--stoa-accent); background: var(--stoa-accent); color: var(--stoa-on-accent); font-weight: 550; }
+.stoa-btn[data-kind="primary"] { border-color: var(--stoa-accent); background: var(--stoa-accent); color: var(--stoa-on-accent); font-weight: 600; }
 .stoa-btn[data-kind="quiet"] { border-color: transparent; color: var(--ui-text-secondary); }
 .stoa-btn:disabled, .stoa-select:disabled { opacity: .5; cursor: default; }
-.stoa-chip { display: inline-block; padding: 1px 6px; border: 1px solid var(--ui-stroke-secondary); border-radius: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ui-text-tertiary); white-space: nowrap; }
-.stoa-chip[data-tone="bad"] { color: var(--ui-red); border-color: var(--ui-red); }
-.stoa-chip[data-tone="warn"] { color: var(--ui-orange); border-color: var(--ui-orange); }
-.stoa-chip[data-tone="good"] { color: var(--stoa-accent-text); border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
-.stoa-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
-.stoa-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--ui-stroke-tertiary); }
-.stoa-tabs { display: inline-flex; gap: 2px; margin: 22px 0 18px; padding: 3px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
-.stoa-tab { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 15px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 13px; cursor: pointer; outline: none; transition: background .15s ease, color .15s ease; }
+/* A tag is a word in square brackets, with no box round it. */
+.stoa-chip { display: inline-block; font-family: var(--stoa-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ui-text-tertiary); white-space: nowrap; }
+.stoa-chip::before { content: "["; margin-right: 2px; opacity: .55; }
+.stoa-chip::after { content: "]"; margin-left: 1px; opacity: .55; }
+.stoa-chip[data-tone="bad"] { color: var(--ui-red); }
+.stoa-chip[data-tone="warn"] { color: var(--ui-orange); }
+.stoa-chip[data-tone="good"] { color: var(--stoa-accent-text); }
+.stoa-chips { display: flex; flex-wrap: wrap; gap: 5px 9px; margin-top: 7px; }
+.stoa-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-top: 1px dotted var(--ui-stroke-primary); }
+/* Tabs: a strip of cells. Where you are is shown the way a terminal shows it, light on dark turned round. */
+.stoa-tabs { display: inline-flex; margin: 18px 0 18px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); }
+.stoa-tab { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px; border: 0; border-radius: 0; background: transparent; color: var(--ui-text-secondary); font-family: var(--stoa-mono); font-size: 12px; cursor: pointer; outline: none; transition: background .15s ease, color .15s ease; }
+.stoa-tab + .stoa-tab { border-left: 1px solid var(--ui-stroke-tertiary); }
 .stoa-tab:hover { color: var(--ui-text-primary); background: var(--ui-control-hover-background); }
-.stoa-tab[data-on="1"], .stoa-tab[data-on="1"]:hover { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); color: var(--ui-text-primary); font-weight: 600; }
-.stoa-tab small { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; opacity: .6; }
+.stoa-tab[data-on="1"], .stoa-tab[data-on="1"]:hover { background: var(--ui-text-primary); color: var(--stoa-page); font-weight: 600; }
+.stoa-tab small { font-size: 10px; opacity: .6; }
+.stoa-tab[data-on="1"] small { opacity: .75; }
 .stoa button:focus-visible, .stoa select:focus-visible, .stoa input:focus-visible { outline: 2px solid var(--stoa-accent-line); outline-offset: 2px; }
-.stoa-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
-.stoa-split[data-side="1"] { grid-template-columns: minmax(0, 1fr) 360px; }
+.stoa-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px 36px; align-items: start; }
+.stoa-split[data-side="1"] { grid-template-columns: minmax(0, 1fr) 340px; }
 .stoa-split > .stoa-box { position: sticky; top: 0; max-height: calc(100vh - 235px); overflow-y: auto; }   /* it ends above the dock */
 .stoa-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(176px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
 .stoa-colhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 2px 8px; }
-.stoa-card { display: block; width: 100%; margin-bottom: 8px; padding: 10px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.stoa-card { display: block; width: 100%; margin-bottom: 8px; padding: 10px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .stoa-card { transition: border-color .15s ease, transform .15s ease; }
 .stoa-card:hover, .stoa-card[data-open="1"] { border-color: var(--ui-stroke-primary); }
 .stoa-card:hover { transform: translateY(-1px); }
 .stoa-card[data-open="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
 .stoa-cardfoot { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-top: 6px; font-size: 12px; }
-.stoa-cardfoot em { flex: none; font-style: normal; font-size: 11px; color: var(--ui-text-tertiary); }
+.stoa-cardfoot em { flex: none; font-style: normal; font-family: var(--stoa-mono); font-size: 10.5px; color: var(--ui-text-tertiary); }
 .stoa-card h5 { display: flex; justify-content: space-between; gap: 8px; margin: 0; font-size: 13px; font-weight: 550; }
 .stoa-empty { padding: 10px 2px; color: var(--ui-text-quaternary); }
 .stoa-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
-.stoa-company { padding: 10px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-company { padding: 10px 0; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-company:first-of-type { border-top: 0; }
-.stoa-fit { letter-spacing: 1px; color: var(--ui-text-primary); white-space: nowrap; }
-.stoa-fit s { text-decoration: none; color: var(--ui-text-quaternary); }
-.stoa-rate { display: grid; grid-template-columns: minmax(0, 1fr) 90px 44px; gap: 10px; align-items: center; padding: 4px 0; }
-.stoa-rate u { display: block; height: 4px; border-radius: 2px; background: var(--ui-stroke-secondary); overflow: hidden; }
+/* Fit is heat: a better fit is a hotter mark. */
+.stoa-fit { font-family: var(--stoa-mono); font-size: 9px; letter-spacing: 2px; color: var(--stoa-h4); white-space: nowrap; }
+.stoa-fit[data-fit="1"] { color: var(--stoa-h2); } .stoa-fit[data-fit="2"] { color: var(--stoa-h3); } .stoa-fit[data-fit="4"] { color: var(--stoa-h5); } .stoa-fit[data-fit="5"] { color: var(--stoa-h6); }
+.stoa-fit s { text-decoration: none; color: var(--ui-text-quaternary); opacity: .6; }
+.stoa-rate { display: grid; grid-template-columns: minmax(0, 1fr) 92px 44px; gap: 10px; align-items: center; padding: 4px 0; }
+.stoa-rate u { display: block; height: 4px; background: var(--ui-stroke-primary); overflow: hidden; }
 .stoa-rate u i { display: block; height: 100%; background: var(--ui-text-primary); }
 .stoa-reading { max-width: 70ch; margin: 8px 0 0; color: var(--ui-text-secondary); white-space: pre-line; }
 .stoa-h2 { margin: 26px 0 8px; font-size: 15px; font-weight: 600; }
 .stoa-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.stoa-filters .stoa-input { flex: 1 1 120px; min-width: 0; height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }\n.stoa-filters .stoa-input:focus { border-color: var(--ui-stroke-primary); }\n.stoa-filters .stoa-input::placeholder { color: var(--ui-text-quaternary); }
+.stoa-filters .stoa-input { flex: 1 1 120px; min-width: 0; height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }
+.stoa-filters .stoa-input:focus { border-color: var(--ui-stroke-primary); }
+.stoa-filters .stoa-input::placeholder { color: var(--ui-text-quaternary); }
 .stoa-filters .stoa-select { max-width: 150px; }
-.stoa-toggle { height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.stoa-toggle { height: 28px; padding: 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-secondary); font-family: var(--stoa-mono); font-size: 11.5px; cursor: pointer; }
 .stoa-toggle[data-on="1"] { border-color: var(--stoa-accent-line); color: var(--ui-text-primary); background: var(--stoa-accent-soft); }
-.stoa-funnel { margin: 0 0 20px; padding: 16px 18px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
+/* The funnel: each stage a block of dots, cold where records come in and hot where they are won. */
+.stoa-funnel { margin: 0 0 20px; padding: 16px 18px 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: var(--ui-bg-card); }
 .stoa-funnel svg { display: block; width: 100%; height: auto; overflow: visible; }
-.stoa-funnel text { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.stoa-fn-block { fill: url(#stoa-fn-fill); }
-.stoa-fn-won { fill: var(--stoa-accent); filter: drop-shadow(0 0 7px color-mix(in srgb, var(--stoa-accent) 55%, transparent)); }
+.stoa-funnel text { font-family: var(--stoa-mono); }
+.stoa-fn-block { fill: var(--stoa-h3); }
+.stoa-fn-step[data-heat="1"] .stoa-fn-block { fill: var(--stoa-h1); } .stoa-fn-step[data-heat="2"] .stoa-fn-block { fill: var(--stoa-h2); }
+.stoa-fn-step[data-heat="4"] .stoa-fn-block { fill: var(--stoa-h4); } .stoa-fn-step[data-heat="5"] .stoa-fn-block { fill: var(--stoa-h5); }
+.stoa-fn-step[data-heat="6"] .stoa-fn-block { fill: var(--stoa-h6); }
+/* Where a record is won is not one more colour on the ramp: it is white, and it glows. */
+.stoa-fn-won { fill: var(--ui-text-primary); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--ui-text-primary) 70%, transparent)) drop-shadow(0 0 16px color-mix(in srgb, var(--stoa-h7) 60%, transparent)); }
 .stoa-fn-block, .stoa-fn-won { transform-box: fill-box; transform-origin: center; animation: stoa-rise .7s cubic-bezier(.2, .7, .2, 1) both; transition: filter .15s ease; }
-.stoa-fn-link { fill: url(#stoa-fn-flow); }
-.stoa-fn-pill { fill: var(--ui-bg-card); stroke: var(--ui-stroke-secondary); }
+.stoa-fn-won { animation: stoa-rise .7s cubic-bezier(.2, .7, .2, 1) both, stoa-glow 3.6s ease-in-out 1s infinite; }
+.stoa-fn-step:last-child .stoa-fn-label, .stoa-fn-step:last-child .stoa-fn-num { fill: var(--ui-text-primary); }
+.stoa-fn-link { fill: var(--ui-text-primary); opacity: .17; }
+.stoa-fn-pill { fill: var(--stoa-page); stroke: var(--ui-stroke-secondary); }
 .stoa-fn-hit { fill: transparent; }
 .stoa-fn-step[data-press="1"] { cursor: pointer; }
-.stoa-fn-step[data-press="1"]:hover .stoa-fn-block { filter: brightness(1.3); }
-.stoa-fn-step[data-on="1"] .stoa-fn-block { fill: var(--stoa-accent); opacity: .85; }
-.stoa-fn-step[data-on="1"] .stoa-fn-label { fill: var(--stoa-accent-text); }
+.stoa-fn-step[data-press="1"]:hover .stoa-fn-block { filter: brightness(1.25); }
+.stoa-fn-step[data-on="1"] .stoa-fn-label { fill: var(--ui-text-primary); font-weight: 700; }
+.stoa-fn-step[data-dim="1"] .stoa-fn-block { opacity: .35; }
 .stoa-fn-label { font-size: 9.5px; letter-spacing: .12em; fill: var(--ui-text-tertiary); }
-.stoa-fn-num { font-size: 15px; font-weight: 600; fill: var(--ui-text-primary); font-family: inherit !important; }
-.stoa-fn-pct { font-size: 11px; fill: var(--ui-text-primary); }
+.stoa-fn-num { font-size: 15px; font-weight: 600; fill: var(--ui-text-primary); }
+.stoa-fn-pct { font-size: 10.5px; fill: var(--ui-text-primary); }
 .stoa-fn-sub { font-size: 9px; letter-spacing: .06em; fill: var(--ui-text-tertiary); }
 .stoa-funnel-foot { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; font-size: 12px; color: var(--ui-text-tertiary); }
-.stoa-funnel-foot b { color: var(--ui-text-primary); font-weight: 600; }
+.stoa-funnel-foot b { font-family: var(--stoa-mono); color: var(--ui-text-primary); font-weight: 600; }
 .stoa-list { max-height: 340px; overflow-y: auto; margin-top: 10px; }
-.stoa-pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--ui-stroke-tertiary); cursor: pointer; }
+.stoa-pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px dotted var(--ui-stroke-primary); cursor: pointer; }
 .stoa-pick:first-child { border-top: 0; }
 .stoa-pick input { flex: none; margin-top: 3px; accent-color: var(--stoa-accent); }
 .stoa-pick[data-off="1"] .stoa-grow { opacity: .5; }
@@ -427,79 +468,123 @@ const CSS = `
 .stoa-reply p { margin: 0 0 8px; }
 .stoa-reply p:last-child { margin-bottom: 0; }
 /* The dock floats at the foot of the page; the board fades out beneath it instead of running into it. */
-.stoa-dockzone { position: sticky; bottom: 0; z-index: 6; margin: 26px -34px 0; padding: 54px 34px 16px; background: linear-gradient(to top, var(--background, #0d1015) 46%, transparent); pointer-events: none; }
+.stoa-dockzone { position: sticky; bottom: 0; z-index: 6; margin: 26px -34px 0; padding: 54px 34px 16px; background: linear-gradient(to top, var(--stoa-page) 46%, transparent); pointer-events: none; }
 .stoa-dock { width: min(780px, 100%); margin: 0 auto; pointer-events: auto; }
-.stoa-glass { border: 1px solid var(--ui-stroke-primary); border-radius: 16px; background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 84%, transparent); -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2); box-shadow: 0 18px 50px -14px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .22); }
+.stoa-glass { border: 1px solid var(--ui-stroke-primary); border-radius: var(--stoa-r); background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 88%, transparent); -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2); box-shadow: 0 18px 50px -14px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .22); }
 .stoa-sheet { margin-bottom: 8px; padding: 10px 14px 14px; max-height: min(46vh, 430px); overflow-y: auto; animation: stoa-lift .2s ease both; }
 .stoa-sheethead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
-.stoa-turn + .stoa-turn { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-turn + .stoa-turn { margin-top: 14px; padding-top: 14px; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-youline { display: flex; justify-content: flex-end; }
-.stoa-you { max-width: 86%; padding: 6px 12px; border-radius: 13px 13px 4px 13px; background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stoa-accent) 24%, transparent); overflow-wrap: anywhere; white-space: pre-wrap; }
+.stoa-you { max-width: 86%; padding: 6px 12px; border-radius: var(--stoa-r); background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stoa-accent) 24%, transparent); overflow-wrap: anywhere; white-space: pre-wrap; }
 .stoa-you small { display: block; margin-top: 2px; font-size: 11px; color: var(--ui-text-tertiary); }
 .stoa-working { display: inline-flex; align-items: center; gap: 8px; }
-.stoa-working::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--stoa-accent); animation: stoa-blink 1s ease-in-out infinite; }
+.stoa-working::before { content: ""; width: 7px; height: 13px; background: var(--stoa-accent); animation: stoa-blink 1s steps(1) infinite; }
 .stoa-composer { padding: 7px; transition: border-color .15s ease, box-shadow .15s ease; }
 .stoa-composer:focus-within { border-color: var(--stoa-accent-line); box-shadow: 0 18px 50px -14px rgba(0, 0, 0, .6), 0 0 0 1px var(--stoa-accent-line); }
 .stoa-composerrow { display: flex; align-items: flex-end; gap: 3px; }
-.stoa-composer textarea { flex: 1; min-width: 0; min-height: 34px; max-height: 132px; padding: 7px 6px; border: 0; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 14px; line-height: 1.45; resize: none; }
+/* The talk box is a prompt: a mark, then what you type, in the mono face. */
+.stoa-prompt { flex: none; align-self: flex-start; padding: 6px 0 0 5px; font-family: var(--stoa-mono); font-size: 15px; font-weight: 700; line-height: 22px; color: var(--stoa-accent-text); user-select: none; }
+.stoa-composer textarea { flex: 1; min-width: 0; min-height: 34px; max-height: 132px; padding: 8px 6px 6px; border: 0; background: transparent; color: var(--ui-text-primary); font-family: var(--stoa-mono); font-size: 13px; line-height: 1.5; resize: none; }
 .stoa .stoa-composer textarea, .stoa .stoa-composer textarea:focus-visible { outline: none; }
 .stoa-composer textarea::placeholder { color: var(--ui-text-quaternary); }
-.stoa-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--ui-text-secondary); cursor: pointer; transition: background .15s ease, color .15s ease, opacity .15s ease; }
+.stoa-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-secondary); cursor: pointer; transition: background .15s ease, color .15s ease, opacity .15s ease; }
 .stoa-icon:hover { background: var(--ui-control-hover-background); color: var(--ui-text-primary); }
 .stoa-icon:disabled { opacity: .4; cursor: default; }
-.stoa-icon[data-kind="send"] { margin-left: 3px; border-radius: 50%; background: var(--stoa-accent); color: var(--stoa-on-accent); }
+.stoa-icon[data-kind="send"] { margin-left: 3px; background: var(--stoa-accent); color: var(--stoa-on-accent); }
 .stoa-icon[data-kind="send"]:hover { background: var(--stoa-accent); opacity: .88; }
 .stoa-icon[data-kind="send"]:disabled { opacity: .32; }
 .stoa-icon[data-on="1"] { color: var(--ui-red); background: color-mix(in srgb, var(--ui-red) 14%, transparent); animation: stoa-pulse 1.4s ease-in-out infinite; }
-.stoa-filechip { display: inline-flex; align-items: center; gap: 6px; margin: 1px 0 6px 4px; padding: 2px 3px 2px 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; font-size: 12px; color: var(--ui-text-secondary); }
+.stoa-filechip { display: inline-flex; align-items: center; gap: 6px; margin: 1px 0 6px 4px; padding: 2px 3px 2px 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); font-family: var(--stoa-mono); font-size: 11.5px; color: var(--ui-text-secondary); }
 .stoa-hints { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 8px; }
-.stoa-hint { height: 28px; padding: 0 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 999px; background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: var(--ui-text-secondary); font: inherit; font-size: 12px; cursor: pointer; transition: color .15s ease, border-color .15s ease; }
+.stoa-hint { height: 28px; padding: 0 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 86%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: var(--ui-text-secondary); font-family: var(--stoa-mono); font-size: 11.5px; cursor: pointer; transition: color .15s ease, border-color .15s ease; }
 .stoa-hint:hover { color: var(--ui-text-primary); border-color: var(--ui-stroke-primary); }
 .stoa-hint:disabled { opacity: .5; cursor: default; }
-.stoa-dropnote { position: sticky; top: 0; z-index: 7; width: fit-content; margin: 0 auto 12px; padding: 8px 18px; border: 1px solid var(--stoa-accent-line); border-radius: 999px; background: var(--stoa-accent-soft); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 13px; }
+.stoa-dropnote { position: sticky; top: 0; z-index: 7; width: fit-content; margin: 0 auto 12px; padding: 8px 18px; border: 1px dashed var(--stoa-accent-line); border-radius: var(--stoa-r); background: var(--stoa-accent-soft); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 13px; }
 .stoa-page[data-drop="1"] { box-shadow: inset 0 0 0 2px var(--stoa-accent-line); }
-.stoa-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 14px 44px; }
-.stoa-headstats { display: flex; flex-wrap: wrap; gap: 10px 36px; padding-bottom: 5px; }
-.stoa-headstats b { display: block; margin-top: 3px; font-size: 20px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+/* The head of the page: the figure and its counts on the left, the stoa itself drawn in dots on the right. */
+.stoa-head { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px; min-height: 124px; }
+.stoa-head > * { position: relative; }
+.stoa-headart { position: absolute; top: 0; right: 0; bottom: 0; width: min(66%, 860px); pointer-events: none; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24%); mask-image: linear-gradient(90deg, transparent, #000 24%); }
+.stoa-art { display: block; width: 100%; height: 100%; }
+.stoa-nameart { font-family: var(--stoa-mono); }
+.stoa-headname { height: 56px; width: min(100%, 700px); margin: 0 0 12px -3px; }
+/* A name in place of the stoa: the head becomes two columns. The figures take the room they need and the name
+   has what is left, so it can shrink but never runs into them. Where too little is left (a narrow window, the
+   side panel open) the name sits above the figures instead. */
+.stoa-head[data-sign="art"] { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 14px 44px; align-items: end; }
+.stoa-head[data-sign="art"] > .stoa-headart { position: relative; grid-column: 2; grid-row: 1 / span 2; align-self: stretch; top: auto; right: auto; bottom: auto; width: auto; -webkit-mask-image: none; mask-image: none; }
+.stoa-head[data-sign="art"] > .stoa-headart > canvas { position: absolute; top: 4px; left: 0; width: 100%; height: calc(100% - 8px); }
+.stoa-head[data-sign="art"] > .stoa-headart + div { grid-column: 1; grid-row: 1; }
+.stoa-head[data-sign="art"] > .stoa-headstats { grid-column: 1; grid-row: 2; }
+.stoa-headname[data-narrow="1"] { display: none; }
+@container (max-width: 980px) {
+  .stoa-head[data-sign="art"] { display: flex; align-items: stretch; }
+  .stoa-head[data-sign="art"] > .stoa-headart { display: none; }
+  .stoa-headname[data-narrow="1"] { display: block; }
+}
+@container (max-width: 860px) { .stoa-headart { display: none; } .stoa-head { min-height: 0; } }
+.stoa-headstats { display: flex; flex-wrap: wrap; gap: 10px 32px; }
+.stoa-headstats b { display: block; margin-top: 3px; font-family: var(--stoa-mono); font-size: 18px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stoa-tabsrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
-.stoa-col { min-width: 0; border-radius: 10px; transition: opacity .2s ease, background .15s ease; }
+.stoa-col { min-width: 0; border-radius: var(--stoa-r); transition: opacity .2s ease, background .15s ease; }
 .stoa-col[data-dim="1"] { opacity: .45; }
 .stoa-col[data-dim="1"]:hover { opacity: .8; }
-.stoa-col[data-spot="1"] .stoa-colhead .stoa-eyebrow { color: var(--stoa-accent-text); }
-.stoa-col[data-spot="1"] .stoa-weight i { background: var(--stoa-accent); }
+.stoa-col[data-spot="1"] .stoa-colhead .stoa-eyebrow { color: var(--ui-text-primary); }
 .stoa-col[data-over="1"] { background: var(--stoa-accent-soft); box-shadow: inset 0 0 0 1px var(--stoa-accent-line); }   /* inset: the board clips anything drawn outside a column */
-.stoa-weight { height: 2px; margin: 0 2px 9px; border-radius: 2px; background: var(--ui-stroke-tertiary); }
-.stoa-weight i { display: block; height: 100%; border-radius: 2px; background: var(--ui-text-tertiary); transition: width .4s ease; }
-.stoa-weight[data-won="1"] i { background: var(--stoa-accent); }
+.stoa-weight { height: 4px; margin: 0 2px 9px; background: var(--ui-stroke-primary); }
+.stoa-weight i { display: block; height: 100%; transition: width .4s ease; }
+.stoa-weight[data-won="1"] i { background: var(--ui-text-primary); }
+.stoa-col:has(.stoa-weight[data-won="1"]) .stoa-colhead .stoa-eyebrow { color: var(--ui-text-primary); }
 .stoa-card[draggable="true"] { cursor: grab; }
 .stoa-card[draggable="true"]:active { cursor: grabbing; }
 .stoa-split > .stoa-box { animation: stoa-slide .22s ease both; }
 @keyframes stoa-rise { from { transform: scaleY(.12); opacity: 0; } }
 @keyframes stoa-lift { from { transform: translateY(8px); opacity: 0; } }
 @keyframes stoa-slide { from { transform: translateX(10px); opacity: 0; } }
-@keyframes stoa-blink { 50% { opacity: .25; } }
+@keyframes stoa-blink { 50% { opacity: 0; } }
+@keyframes stoa-glow { 50% { filter: drop-shadow(0 0 9px color-mix(in srgb, var(--ui-text-primary) 92%, transparent)) drop-shadow(0 0 28px color-mix(in srgb, var(--stoa-h7) 80%, transparent)); } }
 @keyframes stoa-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ui-red) 16%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .stoa *, .stoa *::before { animation: none !important; transition: none !important; } }
 .stoa-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-top: 12px; }
 .stoa-form label { display: block; min-width: 0; }
 .stoa-form label[data-wide="1"] { grid-column: 1 / -1; }
-.stoa-field { display: block; width: 100%; height: 28px; margin-top: 3px; padding: 0 8px; border: 1px solid var(--ui-stroke-secondary); border-radius: 6px; background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }
+.stoa-field { display: block; width: 100%; height: 28px; margin-top: 3px; padding: 0 8px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-primary); font: inherit; font-size: 12px; outline: none; }
 .stoa-field:focus { border-color: var(--ui-stroke-primary); }
 .stoa-field::placeholder { color: var(--ui-text-quaternary); }
-.stoa-edit { margin-top: 12px; padding-top: 2px; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-edit { margin-top: 12px; padding-top: 2px; border-top: 1px dotted var(--ui-stroke-primary); }
 /* Sample data on show: said plainly, on every surface, with the way back beside it. */
-.stoa-tour { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; margin: -10px 0 20px; padding: 8px 10px 8px 14px; border: 1px dashed var(--stoa-accent-line); border-radius: 10px; background: var(--stoa-accent-soft); }
-.stoa-tourline { margin-bottom: 10px; padding: 4px 8px; border: 1px dashed var(--stoa-accent-line); border-radius: 6px; background: var(--stoa-accent-soft); font-size: 11px; }
+.stoa-tour { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; margin: -6px 0 18px; padding: 8px 10px 8px 14px; border: 1px dashed var(--stoa-accent-line); border-radius: var(--stoa-r); background: var(--stoa-accent-soft); }
+.stoa-tourline { margin-bottom: 10px; padding: 4px 8px; border: 1px dashed var(--stoa-accent-line); border-radius: var(--stoa-r); background: var(--stoa-accent-soft); font-size: 11px; }
 .stoa-stat { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: default; }
 .stoa-stat[data-press="1"] { cursor: pointer; }
 .stoa-stat[data-press="1"]:hover b { color: var(--stoa-accent-text); }
-/* Today */
+/* Today: a greeting, then each kind of thing that wants you as a group that opens. Closed, a group is one calm line. */
 .stoa-today { min-width: 0; }
-.stoa-todayhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-.stoa-tsec { margin-top: 20px; }
-.stoa-trow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 12px; align-items: center; padding: 2px 6px 2px 0; border-top: 1px solid var(--ui-stroke-tertiary); border-radius: 0; transition: background .15s ease; }
+.stoa-todayhead { margin: 6px 0 20px; }
+.stoa-hello { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -.015em; line-height: 1.2; }
+.stoa-todayhead .stoa-sub { margin: 6px 0 0; font-size: 13px; }
+.stoa-folds { border-bottom: 1px dotted var(--ui-stroke-primary); }
+.stoa-folds:empty { display: none; }
+.stoa-fold { border-top: 1px dotted var(--ui-stroke-primary); }
+.stoa-foldhead { display: flex; align-items: center; gap: 10px; }
+.stoa-foldmain { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 28px 196px minmax(0, 1fr); gap: 0 12px; align-items: baseline; padding: 16px 8px 15px; border: 0; border-radius: var(--stoa-r); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background .15s ease; }
+.stoa-foldmain:hover { background: var(--ui-row-hover-background); }
+.stoa-foldmark { font-family: var(--stoa-mono); font-size: 11px; color: var(--ui-text-tertiary); }
+.stoa-foldmain:hover .stoa-foldmark, .stoa-fold[data-open="1"] .stoa-foldmark { color: var(--ui-text-primary); }
+.stoa-foldcount { font-family: var(--stoa-mono); font-size: 15px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--ui-text-secondary); }
+.stoa-foldcount[data-tone="bad"] { color: var(--ui-red); }
+.stoa-foldcount[data-tone="warn"] { color: var(--ui-orange); }
+.stoa-foldcount[data-tone="good"] { color: var(--stoa-accent-text); }
+.stoa-foldtitle { font-size: 14px; font-weight: 600; white-space: nowrap; }
+.stoa-foldsum { padding-left: 6px; font-size: 12.5px; color: var(--ui-text-tertiary); }
+.stoa-foldaside { flex: none; padding-right: 6px; }
+.stoa-foldbody { padding: 0 0 18px 44px; animation: stoa-lift .16s ease both; }
+.stoa-foldbody > .stoa-trow:first-child, .stoa-foldbody > .stoa-irow:first-child { border-top: 0; }
+.stoa-foldbody > .stoa-proposal:last-child { margin-bottom: 0; }
+@container (max-width: 760px) { .stoa-foldmain { grid-template-columns: auto 28px minmax(0, 1fr); } .stoa-foldsum { display: none; } .stoa-foldbody { padding-left: 8px; } }
+.stoa-trow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px 12px; align-items: center; padding: 2px 6px 2px 0; border-top: 1px dotted var(--ui-stroke-primary); border-radius: 0; transition: background .15s ease; }
 .stoa-trow[data-open="1"] { background: var(--stoa-accent-soft); box-shadow: inset 2px 0 0 var(--stoa-accent); }
-.stoa-tmain { display: flex; gap: 9px; align-items: flex-start; min-width: 0; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.stoa-tmain { display: flex; gap: 9px; align-items: flex-start; min-width: 0; padding: 7px 8px; border: 0; border-radius: var(--stoa-r); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .stoa-tmain:hover { background: var(--ui-row-hover-background); }
 .stoa-tacts { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .stoa-tacts:empty { display: none; }
@@ -509,64 +594,63 @@ const CSS = `
 .stoa-box .stoa-nextform .stoa-btn { justify-self: start; }
 .stoa-pickdate { display: inline-flex; gap: 4px; align-items: center; }
 .stoa-pickdate .stoa-field { width: 138px; }
-.stoa-pace { margin: -4px 2px 9px; font-size: 10.5px; color: var(--ui-text-quaternary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stoa-pace { margin: -4px 2px 9px; font-family: var(--stoa-mono); font-size: 10px; color: var(--ui-text-quaternary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Cash: the strip, the forecast, what has been billed, and invoices */
 .stoa-cash { min-width: 0; }
 .stoa-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
-.stoa-tile { padding: 12px 14px 11px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
-.stoa-tile b { display: block; margin: 5px 0 1px; font-size: 23px; font-weight: 600; letter-spacing: -.015em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stoa-tile { padding: 12px 14px 11px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: var(--ui-bg-card); }
+.stoa-tile b { display: block; margin: 5px 0 1px; font-family: var(--stoa-mono); font-size: 22px; font-weight: 600; letter-spacing: -.015em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stoa-tile[data-tone="bad"] b { color: var(--ui-red); }
 .stoa-tile[data-tone="warn"] b { color: var(--ui-orange); }
 .stoa-tile[data-tone="good"] b { color: var(--stoa-accent-text); }
 .stoa-fc { display: grid; grid-template-columns: 120px minmax(0, 1fr) 200px; gap: 12px; align-items: center; padding: 5px 0; }
-.stoa-fc u { position: relative; display: block; height: 10px; border-radius: 3px; background: var(--ui-stroke-tertiary); text-decoration: none; overflow: hidden; }
-.stoa-fc u i, .stoa-fc u b { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 3px; transition: width .4s ease; }
-.stoa-fc u i { background: color-mix(in srgb, var(--ui-text-primary) 24%, transparent); }
+.stoa-fc u { position: relative; display: block; height: 8px; background: var(--ui-stroke-primary); text-decoration: none; overflow: hidden; }
+.stoa-fc u i, .stoa-fc u b { position: absolute; top: 0; bottom: 0; left: 0; transition: width .4s ease; }
+.stoa-fc u i { background: color-mix(in srgb, var(--ui-text-primary) 46%, transparent); }
 .stoa-fc u b { background: var(--stoa-accent); }
 .stoa-fc[data-key="past"] > span:first-child { color: var(--ui-orange); }
 .stoa-fc[data-key="none"] u b { background: color-mix(in srgb, var(--stoa-accent) 55%, transparent); }
 .stoa-fc .stoa-num { text-align: right; }
-.stoa-billbar { position: relative; height: 4px; margin: 8px 0 2px; border-radius: 2px; background: var(--ui-stroke-secondary); overflow: hidden; }
-.stoa-billbar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; transition: width .4s ease; }
-.stoa-billbar i[data-kind="invoiced"] { background: color-mix(in srgb, var(--ui-text-primary) 42%, transparent); }
+.stoa-billbar { position: relative; height: 4px; margin: 8px 0 2px; background: var(--ui-stroke-primary); overflow: hidden; }
+.stoa-billbar i { position: absolute; top: 0; bottom: 0; left: 0; transition: width .4s ease; }
+.stoa-billbar i[data-kind="invoiced"] { background: color-mix(in srgb, var(--ui-text-primary) 46%, transparent); }
 .stoa-billbar i[data-kind="paid"] { background: var(--stoa-accent); }
-.stoa-irow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-irow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-irow > .stoa-grow { flex: 1 1 200px; }      /* in a narrow panel the moves drop to a second line; the words are never squeezed */
 .stoa-irow > .stoa-tacts { margin-left: auto; }
 .stoa-irow[data-state="void"] { opacity: .5; }
 .stoa-log > .stoa-irow:first-of-type { border-top: 0; }
 /* Approvals, undo, people and companies */
-.stoa-approvals { margin-top: 14px; }
-.stoa-proposal { margin-bottom: 10px; padding: 11px 14px 12px; border: 1px solid var(--ui-stroke-secondary); border-left: 2px solid var(--stoa-accent); border-radius: 4px 10px 10px 4px; background: var(--ui-bg-card); animation: stoa-lift .2s ease both; }
+.stoa-proposal { margin-bottom: 10px; padding: 11px 14px 12px; border: 1px solid var(--ui-stroke-secondary); border-left: 2px solid var(--stoa-accent); border-radius: var(--stoa-r); background: var(--ui-bg-card); animation: stoa-lift .2s ease both; }
 .stoa-prophead { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .stoa-proplink { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .stoa-proplink.stoa-sub { color: var(--ui-text-tertiary); font-size: 12px; }
 .stoa-proplink.stoa-name { font-weight: 600; }
 .stoa-proplink:hover { color: var(--stoa-accent-text); }
 .stoa-propchange { margin-top: 5px; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
-.stoa-evidence { margin: 9px 0 0; padding: 2px 0 2px 11px; border-left: 2px solid var(--ui-stroke-primary); color: var(--ui-text-secondary); }
+.stoa-evidence { margin: 9px 0 0; padding: 2px 0 2px 11px; border-left: 2px dotted var(--ui-text-tertiary); color: var(--ui-text-secondary); }
 .stoa-evidence small { display: block; margin-bottom: 2px; }
 .stoa-evidence span { display: block; overflow-wrap: anywhere; }
-.stoa-undobar { display: flex; align-items: center; gap: 10px; width: fit-content; max-width: 100%; margin: 0 auto 8px; padding: 4px 5px 4px 15px; border: 1px solid var(--ui-stroke-primary); border-radius: 999px; background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 92%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 12px 34px -14px rgba(0, 0, 0, .65); font-size: 12.5px; animation: stoa-lift .2s ease both; }
+.stoa-undobar { display: flex; align-items: center; gap: 10px; width: fit-content; max-width: 100%; margin: 0 auto 8px; padding: 4px 5px 4px 13px; border: 1px solid var(--ui-stroke-primary); border-radius: var(--stoa-r); background: color-mix(in srgb, var(--ui-bg-elevated, var(--background, #14161b)) 92%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 12px 34px -14px rgba(0, 0, 0, .65); font-size: 12.5px; animation: stoa-lift .2s ease both; }
 .stoa-undobar b { font-weight: 600; }
-.stoa-undobar .stoa-btn { height: 25px; border-radius: 999px; border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); font-weight: 550; }
+.stoa-undobar .stoa-btn { height: 25px; border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); font-weight: 600; }
 .stoa-person { display: flex; gap: 6px; align-items: center; padding: 5px 0; }
 .stoa-notes { height: auto; min-height: 62px; margin-top: 5px; padding: 7px 8px; line-height: 1.45; resize: vertical; }
-.stoa-waiting { display: block; width: fit-content; margin: -6px 0 16px; padding: 6px 13px; border: 1px solid var(--stoa-accent-line); border-radius: 999px; background: var(--stoa-accent-soft); color: var(--ui-text-primary); font: inherit; font-size: 12.5px; cursor: pointer; }
-.stoa-waiting b { font-weight: 600; }
+.stoa-waiting { display: block; width: fit-content; margin: -6px 0 16px; padding: 6px 13px; border: 1px solid var(--stoa-accent-line); border-radius: var(--stoa-r); background: var(--stoa-accent-soft); color: var(--ui-text-primary); font: inherit; font-size: 12.5px; cursor: pointer; }
+.stoa-waiting b { font-family: var(--stoa-mono); font-weight: 600; }
 .stoa-viewrow { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin: 0 0 14px; }
 .stoa-companies { min-width: 0; }
-.stoa-crow { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.1fr) minmax(0, 1.1fr) 64px 84px; gap: 12px; align-items: center; width: 100%; padding: 9px 10px; border: 0; border-top: 1px solid var(--ui-stroke-tertiary); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.stoa-crow { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.1fr) minmax(0, 1.1fr) 64px 84px; gap: 12px; align-items: center; width: 100%; padding: 9px 10px; border: 0; border-top: 1px dotted var(--ui-stroke-primary); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .stoa-crow[data-cols="7"] { grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) 76px minmax(0, 1fr) minmax(0, 1fr) 52px 80px; }
 .stoa-crow:hover { background: var(--ui-row-hover-background); }
 .stoa-crow[data-dim="1"] > * { opacity: .55; }
 .stoa-newgroup { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 0 0 12px; max-width: 760px; }
 .stoa-pipes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
-.stoa-pipe { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: 15px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; }
+.stoa-pipe { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-secondary); font-family: var(--stoa-mono); font-size: 11.5px; cursor: pointer; }
 .stoa-pipe:hover { border-color: var(--ui-stroke-primary); color: var(--ui-text-primary); }
-.stoa-pipe[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); color: var(--ui-text-primary); font-weight: 550; }
-.stoa-pipe small { font-size: 11px; opacity: .7; font-variant-numeric: tabular-nums; }
-.stoa-piperow { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-pipe[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); color: var(--ui-text-primary); font-weight: 600; }
+.stoa-pipe small { font-size: 10.5px; opacity: .7; font-variant-numeric: tabular-nums; }
+.stoa-piperow { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-sechead + .stoa-piperow { border-top: 0; padding-top: 0; }
 .stoa-newgroup > label { flex: 1 1 200px; }
 .stoa-kinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
@@ -574,10 +658,10 @@ const CSS = `
 .stoa-crow[data-open="1"] { background: var(--stoa-accent-soft); box-shadow: inset 2px 0 0 var(--stoa-accent); }
 .stoa-crow .stoa-num { text-align: left; }
 .stoa-chead, .stoa-chead:hover { border-top: 0; background: transparent; cursor: default; padding-bottom: 6px; }
-.stoa-level { display: flex; gap: 10px; align-items: flex-start; width: 100%; margin-bottom: 6px; padding: 9px 11px; border: 1px solid var(--ui-stroke-secondary); border-radius: 8px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.stoa-level { display: flex; gap: 10px; align-items: flex-start; width: 100%; margin-bottom: 6px; padding: 9px 11px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
 .stoa-level:hover { border-color: var(--ui-stroke-primary); }
 .stoa-level[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); cursor: default; }
-.stoa-btn[data-kind="go"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); font-weight: 550; }
+.stoa-btn[data-kind="go"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); font-weight: 600; }
 .stoa-btn[data-kind="go"]:hover { background: color-mix(in srgb, var(--ui-accent) 30%, transparent); }
 .stoa-tacts .stoa-btn:not([data-kind="go"]), .stoa-tacts .stoa-select { border-color: var(--ui-stroke-secondary); color: var(--ui-text-secondary); }
 .stoa-tacts .stoa-btn:not([data-kind="go"]):hover, .stoa-tacts .stoa-select:hover { color: var(--ui-text-primary); }
@@ -586,58 +670,67 @@ const CSS = `
 .stoa-aheadrow { display: flex; align-items: center; gap: 2px; margin: 0 -6px; }
 .stoa-aheadrow .stoa-row { flex: 1; min-width: 0; }
 .stoa-weekline { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 5px; color: var(--ui-text-secondary); }
-.stoa-weekline b { font-size: 15px; font-weight: 600; color: var(--ui-text-primary); font-variant-numeric: tabular-nums; }
+.stoa-weekline b { font-family: var(--stoa-mono); font-size: 15px; font-weight: 600; color: var(--ui-text-primary); font-variant-numeric: tabular-nums; }
 /* The way in, and Setup */
 .stoa-welcome { max-width: 1040px; }
+.stoa-hero { position: relative; display: flex; flex-direction: column; justify-content: flex-end; min-height: 300px; margin: 2px 0 18px; padding: 0 0 6px; }
+.stoa-hero > * { position: relative; }
+.stoa-heroart { position: absolute; inset: 0; pointer-events: none; -webkit-mask-image: linear-gradient(90deg, transparent 34%, #000 58%); mask-image: linear-gradient(90deg, transparent 34%, #000 58%); }
+@container (max-width: 760px) { .stoa-heroart { display: none; } .stoa-hero { min-height: 0; } }
+.stoa-herotitle { max-width: 15ch; margin: 8px 0 8px; font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1.08; }
+.stoa-hero .stoa-reading { max-width: 40ch; }
 .stoa-modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 28px 20px; background: color-mix(in srgb, var(--background, #0d1015) 62%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: stoa-lift .16s ease both; }
-.stoa-modalpanel { width: min(980px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; padding: 20px 22px 0; border: 1px solid var(--ui-stroke-primary); border-radius: 14px; background: var(--ui-bg-elevated, var(--background, #14161b)); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .55); }
+.stoa-modalpanel { width: min(980px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; padding: 20px 22px 0; border: 1px solid var(--ui-stroke-primary); border-radius: var(--stoa-r); background: var(--ui-bg-elevated, var(--background, #14161b)); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .55); }
 .stoa-modalhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .stoa-modaltitle { margin-top: 4px; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
 .stoa-modalsec { margin-top: 18px; }
-.stoa-modalfoot { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center; margin: 18px -22px 0; padding: 12px 22px; border-top: 1px solid var(--ui-stroke-tertiary); background: var(--ui-bg-elevated, var(--background, #14161b)); }
+.stoa-modalfoot { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center; margin: 18px -22px 0; padding: 12px 22px; border-top: 1px dotted var(--ui-stroke-primary); background: var(--ui-bg-elevated, var(--background, #14161b)); }
 .stoa-describe summary { cursor: pointer; color: var(--ui-text-secondary); }
 .stoa-describe[open] summary { margin-bottom: 8px; }
-.stoa-warn { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--ui-orange); border-radius: 8px; color: var(--ui-text-primary); font-size: 12.5px; }
+.stoa-warn { margin: 8px 0; padding: 8px 10px; border: 1px dashed var(--ui-orange); border-radius: var(--stoa-r); color: var(--ui-text-primary); font-size: 12.5px; }
 .stoa-shapes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.stoa-shape { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--ui-stroke-secondary); border-radius: 12px; background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, transform .15s ease, background .15s ease; }
+.stoa-shape { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: var(--ui-bg-card); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: border-color .15s ease, transform .15s ease, background .15s ease; }
 .stoa-shape:hover { border-color: var(--stoa-accent-line); transform: translateY(-1px); }
 .stoa-shape[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
 .stoa-shapehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .stoa-shapetitle { font-size: 16px; font-weight: 600; letter-spacing: -.005em; }
-.stoa-uses { margin: 8px 0 6px; padding-left: 17px; color: var(--ui-text-secondary); font-size: 12.5px; line-height: 1.6; }
+.stoa-uses { margin: 8px 0 6px; padding-left: 0; list-style: none; color: var(--ui-text-secondary); font-size: 12.5px; line-height: 1.6; }
+.stoa-uses li::before { content: "·"; display: inline-block; width: 14px; font-family: var(--stoa-mono); font-weight: 700; color: var(--ui-text-tertiary); }
 .stoa-stagelist { list-style: none; margin: 0; padding: 0; max-width: 560px; }
 .stoa-stagelist li { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
 .stoa-stagelist .stoa-field { margin-top: 0; height: 32px; font-size: 13px; }
 .stoa-stagelist .stoa-icon { width: 30px; height: 30px; }
-.stoa-stagenum { flex: none; width: 22px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--ui-text-tertiary); text-align: right; margin-right: 4px; }
+.stoa-stagenum { flex: none; width: 22px; font-family: var(--stoa-mono); font-size: 11px; color: var(--ui-text-tertiary); text-align: right; margin-right: 4px; }
 .stoa-doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 14px; }
 .stoa-door { display: flex; flex-direction: column; gap: 3px; transition: border-color .15s ease, transform .15s ease; }
 .stoa-door:hover { border-color: var(--ui-stroke-primary); transform: translateY(-1px); }
 .stoa-door[data-on="1"] { border-color: var(--stoa-accent-line); background: var(--stoa-accent-soft); }
 .stoa-door .stoa-btns { margin-top: auto; padding-top: 10px; }
-.stoa-chain { margin: 8px 0 6px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; letter-spacing: .04em; line-height: 1.7; color: var(--ui-text-secondary); }
+.stoa-chain { margin: 8px 0 6px; font-family: var(--stoa-mono); font-size: 10.5px; letter-spacing: .02em; line-height: 1.7; color: var(--ui-text-secondary); }
 .stoa-setup { columns: 2 380px; column-gap: 14px; max-width: 1120px; }
 .stoa-setbox { break-inside: avoid; padding-bottom: 14px; }      /* padding, not a margin: a margin at the foot of a column is dropped, and boxes touched */
 .stoa-setbox[data-wide="1"] { column-span: all; }
-.stoa-check, .stoa-setrow { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-check, .stoa-setrow { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-sechead + .stoa-check, .stoa-sechead + .stoa-setrow { border-top: 0; padding-top: 0; }
 .stoa-check:last-child, .stoa-setrow:last-child { padding-bottom: 0; }
-.stoa-tick { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-top: 1px; border: 1.5px solid var(--ui-stroke-primary); border-radius: 50%; font-style: normal; font-size: 11px; line-height: 1; }
+/* A step done or not: a box with a mark in it, the way a checklist is typed. */
+.stoa-tick { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-top: 2px; border: 1px solid var(--ui-stroke-primary); font-family: var(--stoa-mono); font-style: normal; font-size: 11px; font-weight: 700; line-height: 1; }
 .stoa-check[data-done="1"] .stoa-tick { border-color: var(--stoa-accent); background: var(--stoa-accent); color: var(--stoa-on-accent); }
 .stoa-check[data-done="1"] .stoa-name { font-weight: 400; color: var(--ui-text-secondary); }
-.stoa-lamp { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; border: 1.5px solid var(--ui-text-quaternary); }
+.stoa-lamp { flex: none; width: 8px; height: 8px; margin-top: 5px; border: 1px solid var(--ui-text-quaternary); }
 .stoa-lamp[data-on="1"] { border-color: var(--stoa-accent); background: var(--stoa-accent); box-shadow: 0 0 0 3px var(--stoa-accent-soft); }
-.stoa-sayline { display: block; width: 100%; margin: 0 0 3px; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ui-text-secondary); font: inherit; text-align: left; cursor: pointer; }
+.stoa-sayline { display: block; width: 100%; margin: 0 0 3px; padding: 5px 8px; border: 0; border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-secondary); font: inherit; text-align: left; cursor: pointer; }
+.stoa-sayline::before { content: "›"; margin-right: 8px; font-family: var(--stoa-mono); font-weight: 700; color: var(--stoa-accent-text); }
 .stoa-sayline:hover { background: var(--ui-row-hover-background); color: var(--ui-text-primary); }
 .stoa-tip { margin: 0 0 7px; color: var(--ui-text-secondary); }
-.stoa-tip code { padding: 1px 5px; border: 1px solid var(--ui-stroke-secondary); border-radius: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--ui-text-primary); white-space: nowrap; }
+.stoa-tip code { padding: 1px 5px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); font-family: var(--stoa-mono); font-size: 11px; color: var(--ui-text-primary); white-space: nowrap; }
 .stoa-tip b { font-weight: 550; color: var(--ui-text-primary); }
 /* A record, a group or a company on a page of its own: a header, the stages, the next step, then details | activity | related */
 .stoa-rp { container-type: inline-size; padding-bottom: 8px; animation: stoa-lift .18s ease both; }
 .stoa-backrow { margin: -4px 0 12px; }
-.stoa-back { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--ui-text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; }
+.stoa-back { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px 0 6px; border: 0; border-radius: var(--stoa-r); background: transparent; color: var(--ui-text-secondary); font-family: var(--stoa-mono); font-size: 11.5px; cursor: pointer; }
 .stoa-back:hover { background: var(--ui-control-hover-background); color: var(--ui-text-primary); }
-.stoa-back span { font-size: 16px; line-height: 1; }
+.stoa-back span { font-size: 15px; line-height: 1; }
 .stoa-rphead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 12px 32px; }
 .stoa-rptitle { margin: 3px 0 0; font-size: 26px; font-weight: 600; letter-spacing: -.015em; line-height: 1.15; overflow-wrap: anywhere; }
 .stoa-rpwhere { margin-top: 5px; font-size: 13px; color: var(--ui-text-secondary); }
@@ -645,24 +738,25 @@ const CSS = `
 .stoa-rpsep { margin: 0 8px; color: var(--ui-text-quaternary); }
 .stoa-rpwhere .stoa-proplink:hover { color: var(--stoa-accent-text); }
 .stoa-rpfig { text-align: right; }
-.stoa-rpfig b { display: block; font-size: 26px; font-weight: 600; letter-spacing: -.015em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stoa-rpfig b { display: block; font-family: var(--stoa-mono); font-size: 24px; font-weight: 600; letter-spacing: -.015em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stoa-rpstats { display: flex; flex-wrap: wrap; gap: 10px 30px; padding-bottom: 3px; }
-.stoa-rpstats b { display: block; margin-top: 3px; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.stoa-path { display: flex; gap: 3px; margin-top: 16px; }
-.stoa-path > * { flex: 1 1 0; min-width: 0; height: 30px; padding: 0 10px 0 16px; border: 0; background: var(--ui-stroke-tertiary); color: var(--ui-text-tertiary); font: inherit; font-size: 11.5px; display: flex; align-items: center; justify-content: center;
-  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%); }
-.stoa-path > *:first-child { clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%); border-radius: 6px 0 0 6px; padding-left: 10px; }
-.stoa-path > *:last-child { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 9px 50%); border-radius: 0 6px 6px 0; }
+.stoa-rpstats b { display: block; margin-top: 3px; font-family: var(--stoa-mono); font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* The stages: a strip of cells like the tabs, with a line of dots beneath that heats up as the record moves along. */
+.stoa-path { display: flex; margin: 16px 0 9px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); }
+.stoa-path > * { position: relative; flex: 1 1 0; min-width: 0; height: 30px; padding: 0 10px; border: 0; background: transparent; color: var(--ui-text-tertiary); font-family: var(--stoa-mono); font-size: 11px; display: flex; align-items: center; justify-content: center; }
+.stoa-path > * + * { border-left: 1px solid var(--ui-stroke-tertiary); }
 .stoa-path > * > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stoa-path button { cursor: pointer; transition: background .15s ease, color .15s ease; }
 .stoa-path button:not(:disabled):hover { background: var(--ui-control-hover-background); color: var(--ui-text-primary); }
 .stoa-path button:disabled { cursor: default; }
-.stoa-path [data-state="done"] { background: var(--stoa-accent-soft); color: var(--stoa-accent-text); }
-.stoa-path [data-state="now"] { background: var(--stoa-accent); color: var(--stoa-on-accent); font-weight: 600; }
-.stoa-path [data-state="won"] { background: var(--stoa-accent); color: var(--stoa-on-accent); font-weight: 600; }
+.stoa-path [data-state="done"] { color: var(--ui-text-secondary); }
+.stoa-path > *::after { content: ""; position: absolute; left: 0; right: 0; bottom: -7px; height: 4px; background: var(--ui-stroke-primary); }
+.stoa-path [data-state="now"] { background: var(--ui-text-primary); color: var(--stoa-page); font-weight: 600; }
+.stoa-path [data-state="won"] { background: var(--ui-text-primary); color: var(--stoa-page); font-weight: 600; box-shadow: 0 0 14px color-mix(in srgb, var(--ui-text-primary) 50%, transparent), 0 0 30px color-mix(in srgb, var(--stoa-h7) 40%, transparent); }
+.stoa-path > .stoa-pathend[data-state="won"]::after { background: var(--ui-text-primary); }
 .stoa-path [data-state="lost"] { background: color-mix(in srgb, var(--ui-red) 22%, transparent); color: var(--ui-text-primary); font-weight: 550; }
 .stoa-pathend { flex: 0 1 auto !important; min-width: 84px !important; }
-.stoa-rpbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 20px; margin-top: 12px; padding: 12px 14px; border: 1px solid var(--ui-stroke-secondary); border-radius: 10px; background: var(--ui-bg-card); }
+.stoa-rpbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 20px; margin-top: 12px; padding: 12px 14px; border: 1px solid var(--ui-stroke-secondary); border-radius: var(--stoa-r); background: var(--ui-bg-card); }
 .stoa-rpbar[data-plain="1"] { margin-top: 14px; padding: 0; border: 0; background: transparent; }
 .stoa-rpnext { min-width: 0; flex: 1 1 260px; }
 .stoa-rpnextline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-top: 3px; font-size: 14px; }
@@ -673,42 +767,41 @@ const CSS = `
 .stoa-rpsec { min-width: 0; }
 .stoa-rpsec > .stoa-log:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .stoa-rpsec > .stoa-log:first-child > .stoa-sechead { margin: -2px 0 10px; padding: 0; }
-.stoa-rpsec > .stoa-log:first-child > .stoa-sechead .stoa-eyebrow { font-family: inherit; font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ui-text-primary); }
 .stoa-rpsechead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: -2px 0 10px; }
-.stoa-rpsechead h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.stoa-rpsechead h3 { margin: 0; font-family: var(--stoa-mono); font-size: 10px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase; color: var(--ui-text-tertiary); }
 .stoa-rpsechead .stoa-btn { height: 24px; }
 .stoa-dl { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; }
-.stoa-dl dt { margin-top: 9px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ui-text-tertiary); }
+.stoa-dl dt { margin-top: 9px; font-family: var(--stoa-mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ui-text-tertiary); }
 .stoa-dl dt:first-child { margin-top: 0; }
 .stoa-dl dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .stoa-dl dd[data-empty="1"] { color: var(--ui-text-quaternary); }
-.stoa-alink { color: var(--ui-text-primary); text-decoration: none; border-bottom: 1px solid var(--ui-stroke-secondary); }
+.stoa-alink { color: var(--ui-text-primary); text-decoration: none; border-bottom: 1px dotted var(--ui-text-tertiary); }
 .stoa-alink:hover { color: var(--stoa-accent-text); border-bottom-color: var(--stoa-accent-line); }
 .stoa-form[data-one="1"] { grid-template-columns: minmax(0, 1fr); }
 .stoa-logbox { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; }
 .stoa-logbox .stoa-field { margin-top: 0; }
 .stoa-timeline { list-style: none; margin: 0; padding: 0; }
-.stoa-tlday { margin: 14px 0 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ui-text-tertiary); }
-.stoa-tl { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-tlday { margin: 14px 0 4px; font-family: var(--stoa-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ui-text-tertiary); }
+.stoa-tl { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-tlday + .stoa-tl { border-top: 0; }
-.stoa-tlkind { flex: none; width: 66px; padding: 1px 0; font-size: 11px; font-weight: 550; color: var(--ui-text-secondary); }
+.stoa-tlkind { flex: none; width: 66px; padding: 2px 0; font-family: var(--stoa-mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ui-text-secondary); }
 .stoa-tl[data-kind="stage"] .stoa-tlkind, .stoa-tl[data-kind="created"] .stoa-tlkind { color: var(--stoa-accent-text); }
-.stoa-tl[data-kind="updated"] .stoa-tlkind { color: var(--ui-text-tertiary); font-weight: 400; }
+.stoa-tl[data-kind="updated"] .stoa-tlkind { color: var(--ui-text-tertiary); }
 .stoa-tl[data-undone="1"] .stoa-tltext { text-decoration: line-through; opacity: .55; }
 .stoa-tltext { overflow-wrap: anywhere; white-space: pre-line; }
 .stoa-rlist { display: flex; flex-direction: column; margin: 4px -8px 0; }
-.stoa-rrow { display: flex; gap: 8px; align-items: center; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.stoa-rrow { display: flex; gap: 8px; align-items: center; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--stoa-r); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .stoa-rrow:hover { background: var(--ui-row-hover-background); }
 .stoa-rrow[data-closed="1"] { opacity: .6; }
 .stoa-stagegroup + .stoa-stagegroup { margin-top: 12px; }
 .stoa-billform { flex-basis: 100%; display: grid; grid-template-columns: minmax(110px, 150px) minmax(110px, 150px) auto auto; gap: 8px 12px; align-items: end; padding: 6px 0 4px; animation: stoa-lift .18s ease both; }
 .stoa-billform label .stoa-field { margin-top: 3px; }
-.stoa-placed { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ui-stroke-tertiary); }
+.stoa-placed { margin-top: 10px; padding-top: 8px; border-top: 1px dotted var(--ui-stroke-primary); }
 .stoa-placerow { display: flex; gap: 10px; align-items: center; padding: 4px 0; }
 .stoa-placerow .stoa-select { flex: none; width: 140px; }
-.stoa-billtotal b { display: block; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stoa-billtotal b { display: block; font-family: var(--stoa-mono); font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stoa-crow[data-cols="6"] { grid-template-columns: minmax(0, 1.6fr) 84px minmax(0, 1fr) 70px minmax(0, 1.3fr) 96px; }
-.stoa-stagehead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 2px; border-bottom: 1px solid var(--ui-stroke-tertiary); }
+.stoa-stagehead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 2px; border-bottom: 1px dotted var(--ui-stroke-primary); }
 `
 
 const Style = () => h('style', null, CSS)
@@ -717,7 +810,245 @@ const Btn = ({ kind, children, ...props }) => h('button', { type: 'button', clas
 
 function Fit({ value }) {
   const n = Math.max(0, Math.min(5, Number(value) || 0))
-  return h('span', { className: 'stoa-fit', title: 'Fit ' + n + ' of 5' }, '●'.repeat(n), h('s', null, '●'.repeat(5 - n)))
+  return h('span', { className: 'stoa-fit', 'data-fit': n, title: 'Fit ' + n + ' of 5' }, '■'.repeat(n), h('s', null, '■'.repeat(5 - n)))
+}
+
+// -- drawn in dots ---------------------------------------------------------------------------------
+/** Where a piece sits on the heat ramp: place `index` of `count`, cold first. Read by the style block as --pos and --size. */
+const heatAt = (index, count) => ({ '--size': Math.max(1, count) * 100 + '%', '--pos': (count > 1 ? (100 * index) / (count - 1) : 0) + '%' })
+
+// The figure at the head of the desk is set in dots, five across and seven down, the way a sign board spells it.
+// Each row is the five dots read as a number (16 is the left-hand dot); a narrow mark has two dots a row.
+const DOTS = {
+  0: [14, 17, 19, 21, 25, 17, 14], 1: [4, 12, 4, 4, 4, 4, 14], 2: [14, 17, 1, 2, 4, 8, 31], 3: [31, 2, 4, 2, 1, 17, 14], 4: [2, 6, 10, 18, 31, 2, 2],
+  5: [31, 16, 30, 1, 1, 17, 14], 6: [6, 8, 16, 30, 17, 17, 14], 7: [31, 1, 2, 4, 8, 8, 8], 8: [14, 17, 17, 14, 17, 17, 14], 9: [14, 17, 17, 15, 1, 2, 12],
+  $: [4, 15, 20, 14, 5, 30, 4], '€': [6, 9, 28, 8, 28, 9, 6], '£': [6, 9, 8, 28, 8, 8, 31], k: [16, 16, 18, 20, 24, 20, 18], M: [17, 27, 21, 21, 17, 17, 17],
+  '.': [0, 0, 0, 0, 0, 3, 3], ',': [0, 0, 0, 0, 3, 1, 2], ' ': null
+}
+
+function DotFigure({ text }) {
+  const chars = [...String(text)]
+  if (!chars.length || chars.some(ch => !(ch in DOTS))) return String(text)      // what it cannot spell is set in type
+  const marks = []
+  let x = 0
+  chars.forEach((ch, at) => {
+    const wide = DOTS[ch] && DOTS[ch].every(row => row < 4) ? 2 : 5
+    ;(DOTS[ch] || []).forEach((row, y) => {
+      for (let col = 0; col < wide; col++) {
+        if ((row >> (wide - 1 - col)) & 1) marks.push(h('rect', { key: at + ':' + y + ':' + col, x: x + col + 0.1, y: y + 0.1, width: 0.8, height: 0.8 }))
+      }
+    })
+    x += (DOTS[ch] ? wide : 2) + 1
+  })
+  return h('svg', { className: 'stoa-dotfig', viewBox: '0 0 ' + (x - 1) + ' 7', style: { aspectRatio: (x - 1) + ' / 7' }, role: 'img', 'aria-label': String(text) }, marks)
+}
+
+// The stoa itself. The plugin carries it as a grid of cells, each empty or a brightness from 1 to 15, and it is
+// drawn here dot by dot on the screen's own pixels: sharp at any size, in the heat colours as the theme has
+// them. On a light theme the brightest dots turn to ink, so the outlines read as a drawing on paper.
+const HEAT_AT = [0.33, 0.47, 0.59, 0.675, 0.78, 0.85, 0.925]      // the brightness at which each heat colour sits
+
+function unpack(piece) {
+  const raw = atob(piece.cells), cells = new Uint8Array(piece.w * piece.h)
+  for (let i = 0; i < cells.length; i++) { const byte = raw.charCodeAt(i >> 1); cells[i] = i & 1 ? byte & 15 : byte >> 4 }
+  return cells
+}
+
+/** The fifteen brightnesses as colours, from the theme's heat ramp. `inks[0]` is unused: 0 is no dot. */
+function inksOf(el) {
+  const style = getComputedStyle(el)
+  // Any colour the theme can name, as red, green and blue: painted on one pixel and read back.
+  const probe = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+  probe.canvas.width = probe.canvas.height = 1
+  const see = colour => { probe.clearRect(0, 0, 1, 1); probe.fillStyle = colour; probe.fillRect(0, 0, 1, 1); return probe.getImageData(0, 0, 1, 1).data }
+  const mix = (from, to, k) => [0, 1, 2].map(i => from[i] + (to[i] - from[i]) * k)
+  const stops = [1, 2, 3, 4, 5, 6, 7].map(n => see(style.getPropertyValue('--stoa-h' + n).trim()))
+  const words = see(style.color)
+  const paper = words[0] + words[1] + words[2] < 384        // dark words mean a light theme
+  const inks = ['']
+  for (let level = 1; level <= 15; level++) {
+    const t = level / 15
+    let at = 0
+    while (at < 5 && t >= HEAT_AT[at + 1]) at++
+    let colour = t <= HEAT_AT[0] ? mix([0, 0, 0], stops[0], 0.62 + (0.38 * t) / HEAT_AT[0])
+      : t >= HEAT_AT[6] ? mix(stops[6], words, (0.7 * (t - HEAT_AT[6])) / (1 - HEAT_AT[6]))
+        : mix(stops[at], stops[at + 1], (t - HEAT_AT[at]) / (HEAT_AT[at + 1] - HEAT_AT[at]))
+    if (paper) colour = mix(colour, words, t >= HEAT_AT[5] ? 0.62 : 0.3)
+    inks.push('rgb(' + colour.map(Math.round).join(',') + ')')
+  }
+  return inks
+}
+
+/** Fit a canvas to its box on the screen's own pixels, cleared. Returns its size, or null while it has none. */
+function fitted(el) {
+  const ratio = window.devicePixelRatio || 1, box = el.getBoundingClientRect()
+  const W = Math.round(box.width * ratio), H = Math.round(box.height * ratio)
+  if (!W || !H) return null
+  if (el.width !== W || el.height !== H) { el.width = W; el.height = H }
+  const g = el.getContext('2d')
+  g.clearRect(0, 0, W, H)
+  return { g, W, H, ratio }
+}
+
+function paint(el, piece, cells) {
+  const fit = fitted(el)
+  if (!fit) return
+  const { g, W, H, ratio } = fit
+  const inks = inksOf(el)
+  const pitch = Math.max(2, Math.round(2 * ratio)), gap = Math.max(1, Math.round(pitch / 4))
+  const left = W - piece.w * pitch, top = H - piece.h * pitch       // it sits in the right-hand foot of its box
+  for (let level = 1; level <= 15; level++) {
+    g.fillStyle = inks[level]
+    const side = level > 12 ? pitch : pitch - gap
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] !== level) continue
+      const x = left + (i % piece.w) * pitch, y = top + Math.floor(i / piece.w) * pitch
+      if (x > -pitch && y > -pitch) g.fillRect(x, y, side, side)
+    }
+  }
+}
+
+/** Keep a canvas drawn: when it first shows, when its box changes size, when the fonts arrive, and when the theme
+    changes. A theme change is seen from the canvas itself (the colour of its own text is looked at once a second),
+    so nothing outside the plugin's own markup is watched. */
+function useDrawn(canvas, draw, deps) {
+  useEffect(() => {
+    const el = canvas.current
+    if (!el) return undefined
+    let frame = 0
+    const again = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => draw(el)) }
+    again()
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(again)
+    const size = new ResizeObserver(again)
+    size.observe(el)
+    let words = getComputedStyle(el).color
+    const watch = setInterval(() => {
+      if (document.hidden) return
+      const now = getComputedStyle(el).color
+      if (now !== words) { words = now; again() }
+    }, 1000)
+    return () => { cancelAnimationFrame(frame); size.disconnect(); clearInterval(watch) }
+  }, deps)
+}
+
+function Art({ name }) {
+  const query = useQuery({ queryKey: ['stoa', 'art'], queryFn: () => rest('/art'), staleTime: Infinity, retry: false })
+  const canvas = useRef(null)
+  const piece = query.data && query.data[name]
+  const cells = useRef(null)
+  useDrawn(canvas, el => {
+    if (!piece || !piece.cells) return
+    if (!cells.current || cells.current.of !== piece) cells.current = { of: piece, grid: unpack(piece) }
+    paint(el, piece, cells.current.grid)
+  }, [piece])
+  return h('canvas', { ref: canvas, className: 'stoa-art', 'aria-hidden': true })
+}
+
+// -- your own name, drawn the way the colonnade is ---------------------------------------------------
+// Any name is set in the app's mono capitals off screen, read back as a grid of dots, and lit like the building:
+// the light comes from the upper left, so each stroke is shaded as a column is, bright where an edge catches the
+// light, sparse and blue in shadow, with one warm patch part-way along. The name stays whole: only the stoa
+// itself comes apart at its far end.
+// The name and where it sits are kept with the desk (POST /sign), so everyone who opens it sees the same thing.
+const $typing = atom(null) // a name being typed on Setup, shown at the head of the page before it is saved
+
+function paintName(el, text, side) {
+  const fit = fitted(el)
+  if (!fit) return
+  const { g, W, H, ratio } = fit
+  const inks = inksOf(el)
+  const pitch = Math.max(2, Math.round(1.5 * ratio))
+  const cols = Math.floor(W / pitch), rows = Math.floor(H / pitch)
+  if (cols < 24 || rows < 10) return
+  // 1. The name as a shape: three samples a dot each way.
+  const S = 3, mw = cols * S, mh = rows * S
+  const off = document.createElement('canvas')
+  off.width = mw
+  off.height = mh
+  const o = off.getContext('2d', { willReadFrequently: true })
+  const label = [...text.toUpperCase()], family = getComputedStyle(el).fontFamily
+  const face = px => '700 ' + px + 'px ' + family
+  o.font = face(100)
+  const step = (o.measureText('M').width / 100) * 0.94    // a letter's width in ems: the mono face, set a little tight
+  const room = mw - 4 * S
+  let size = mh * 1.02                                    // capitals about three quarters of the box high
+  // A long name is narrowed a little before it is made smaller.
+  const squeeze = Math.min(1, Math.max(0.8, room / (label.length * step * size)))
+  if (label.length * step * size * squeeze > room) size = room / (label.length * step * squeeze)
+  const wide = label.length * step * size * squeeze, cap = size * 0.73
+  const start = side === 'right' ? mw - wide - 2 * S : 2 * S          // against the right of its box, or the left
+  o.font = face(size)
+  o.textAlign = 'center'
+  o.lineJoin = 'round'
+  o.lineWidth = size * 0.05                               // a little weight added, so a stroke has room for its shading
+  label.forEach((letter, index) => {
+    o.setTransform(squeeze, 0, 0, 1, start + (index + 0.5) * step * size * squeeze, 0)
+    o.fillText(letter, 0, (mh + cap) / 2)
+    o.strokeText(letter, 0, (mh + cap) / 2)
+  })
+  o.setTransform(1, 0, 0, 1, 0, 0)
+  const alpha = o.getImageData(0, 0, mw, mh).data
+  const cover = new Float32Array(cols * rows)
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      let sum = 0
+      for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) sum += alpha[((y * S + j) * mw + x * S + i) * 4 + 3]
+      cover[y * cols + x] = sum / (255 * S * S)
+    }
+  }
+  // 2. A soft copy of the shape: its slope at any dot says which way the nearest edge faces.
+  const reach = Math.max(2, Math.round((size * 0.09) / S))
+  const blur = (from, across) => {
+    const to = new Float32Array(from.length), n = across ? cols : rows, m = across ? rows : cols
+    for (let line = 0; line < m; line++) {
+      for (let k = 0; k < n; k++) {
+        let sum = 0
+        for (let d = -reach; d <= reach; d++) {
+          const q = Math.min(n - 1, Math.max(0, k + d))
+          sum += from[across ? line * cols + q : q * cols + line]
+        }
+        to[across ? line * cols + k : k * cols + line] = sum / (2 * reach + 1)
+      }
+    }
+    return to
+  }
+  const soft = blur(blur(cover, true), false)
+  const at = (field, x, y) => field[Math.min(rows - 1, Math.max(0, y)) * cols + Math.min(cols - 1, Math.max(0, x))]
+  const inside = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows && cover[y * cols + x] >= 0.5
+  const dither = (x, y) => { const v = 52.9829189 * ((0.06711056 * x + 0.00583715 * y) % 1); return v - Math.floor(v) }
+  const chance = (x, y, salt) => { const v = Math.sin(x * 12.9898 + y * 78.233 + salt * 37.719) * 43758.5453; return v - Math.floor(v) }
+  const x0 = Math.floor(start / S), x1 = Math.ceil((start + wide) / S)        // where the name starts and ends, in dots
+  const along = x => (x - x0) / Math.max(1, x1 - x0)
+  const dots = Array.from({ length: 16 }, () => [])
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (!inside(x, y)) continue
+      const gx = at(soft, x + 1, y) - at(soft, x - 1, y), gy = at(soft, x, y + 1) - at(soft, x, y - 1)
+      const steep = Math.hypot(gx, gy)
+      const lit = steep > 1e-4 ? ((0.8 * gx + 0.6 * gy) / steep) * Math.min(1, steep * reach * 1.7) : 0
+      const warm = Math.exp(-((along(x) - 0.26) ** 2) / 0.022)
+      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1)
+      let t = 0.5 + 0.27 * lit + 0.24 * warm + 0.06 * (chance(x, y, 1) - 0.5)
+      let odds = Math.min(1, Math.max(0, (t - 0.02) / 0.58)) ** 1.15
+      if (edge) {
+        t = lit > 0.1 ? 0.9 + 0.1 * warm : 0.36
+        odds = lit > 0.1 ? 1 : 0.74
+      }
+      if (dither(x, y) < odds) dots[Math.min(15, Math.max(1, Math.round(t * 15)))].push(x, y)
+    }
+  }
+  for (let level = 1; level <= 15; level++) {
+    g.fillStyle = inks[level]
+    const dot = level > 12 && pitch > 2 ? pitch : pitch - 1
+    const list = dots[level]
+    for (let i = 0; i < list.length; i += 2) g.fillRect(list[i] * pitch, list[i + 1] * pitch, dot, dot)
+  }
+}
+
+function NameArt({ text, side }) {
+  const canvas = useRef(null)
+  useDrawn(canvas, el => paintName(el, text, side), [text, side])
+  return h('canvas', { ref: canvas, className: 'stoa-art stoa-nameart', role: 'img', 'aria-label': text })
 }
 
 // (Setup and Welcome say why with `why(error)`.)
@@ -859,7 +1190,7 @@ function Record({ id, state: shown, sessionId, close, onCompany, onGroup }) {
           onClick: () => onGroup(deal.group) }, deal.group + (deal.client ? ' · for ' + deal.client : '') + (deal.group_status ? ' · ' + deal.group_status.toLowerCase() : '') + '  ›')) : null),
       close ? h(Btn, { kind: 'quiet', onClick: close, 'aria-label': 'Close' }, '×') : null),
     h('div', { className: 'stoa-meter' }, pb.stages.map((stage, index) =>
-      h('i', { key: stage.id, 'data-on': deal.status === 'won' || (open && index <= deal.position) ? '1' : '0' }))),
+      h('i', { key: stage.id, style: heatAt(index, pb.stages.length), 'data-on': deal.status === 'won' || (open && index <= deal.position) ? '1' : '0' }))),
     h('div', { className: 'stoa-sub', style: { display: 'flex', justifyContent: 'space-between' } },
       h('span', null, deal.stage_label + (deal.lost_reason ? ' · ' + deal.lost_reason : '')),
       h('span', null, open && deal.position >= 0 ? deal.position + 1 + ' of ' + pb.stages.length : ago(deal.stage_at))),
@@ -1059,18 +1390,19 @@ function Funnel({ state }) {
     const x = index * col, tallness = height(step), next = steps[index + 1]
     if (next) {
       const after = height(next), right = (index + 1) * col, centre = x + block + (col - block) / 2
-      links.push(h('polygon', { key: 'l' + index, className: 'stoa-fn-link',
+      links.push(h('polygon', { key: 'l' + index, className: 'stoa-fn-link', mask: 'url(#stoa-fn-mask)',
         points: [x + block, mid - tallness / 2, right, mid - after / 2, right, mid + after / 2, x + block, mid + tallness / 2].join(' ') }))
-      links.push(h('rect', { key: 'q' + index, className: 'stoa-fn-pill', x: centre - 19, y: mid - 10, width: 38, height: 20, rx: 10 }))
+      links.push(h('rect', { key: 'q' + index, className: 'stoa-fn-pill', x: centre - 19, y: mid - 10, width: 38, height: 20, rx: 2 }))
       links.push(h('text', { key: 'p' + index, className: 'stoa-fn-pct', x: centre, y: mid + 4, textAnchor: 'middle' },
         step.reached ? Math.round((100 * next.reached) / step.reached) + '%' : '–'))
     }
     const on = Boolean(step.id) && filter.stage === step.id
     groups.push(h('g', { key: 'g' + index, className: 'stoa-fn-step', 'data-on': on ? '1' : '0', 'data-press': step.id ? '1' : '0',
+      'data-heat': Math.min(6, 1 + Math.round((5 * index) / Math.max(1, steps.length - 2))),
       onClick: step.id ? () => setFilter({ stage: on ? '' : step.id }) : undefined },
       h('title', null, step.id ? (on ? 'Let go of ' + step.label : 'Pick out ' + step.label + ' on the board') : step.label),
       h('rect', { className: 'stoa-fn-hit', x: x - 4, y: 0, width: col - 2, height: H }),
-      h('rect', { className: step.won ? 'stoa-fn-won' : 'stoa-fn-block', x, y: mid - tallness / 2, width: block, height: tallness, rx: 3,
+      h('rect', { className: step.won ? 'stoa-fn-won' : 'stoa-fn-block', mask: step.won ? undefined : 'url(#stoa-fn-mask)', x, y: mid - tallness / 2, width: block, height: tallness,
         style: { animationDelay: index * 55 + 'ms' } }),
       h('text', { className: 'stoa-fn-label', x, y: 11 }, step.label.toUpperCase().slice(0, Math.max(6, Math.floor(col / 7.6)))),
       h('text', { className: 'stoa-fn-num', x, y: 31 }, String(step.reached)),
@@ -1080,13 +1412,9 @@ function Funnel({ state }) {
   })
   return h('div', { className: 'stoa-funnel' },
     h('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'How many records reach each stage, and what share moves on' },
-      h('defs', null,
-        h('linearGradient', { id: 'stoa-fn-fill', x1: 0, y1: 0, x2: 0, y2: 1 },
-          h('stop', { offset: '0%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.62 } }),
-          h('stop', { offset: '100%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.36 } })),
-        h('linearGradient', { id: 'stoa-fn-flow', x1: 0, y1: 0, x2: 1, y2: 0 },
-          h('stop', { offset: '0%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.2 } }),
-          h('stop', { offset: '100%', style: { stopColor: 'var(--ui-text-primary)', stopOpacity: 0.08 } }))),
+      h('defs', null,       // a mask of dots: whatever is drawn through it comes out stippled
+        h('pattern', { id: 'stoa-fn-dots', width: 4, height: 4, patternUnits: 'userSpaceOnUse' }, h('rect', { width: 2.4, height: 2.4, fill: '#fff' })),
+        h('mask', { id: 'stoa-fn-mask', maskUnits: 'userSpaceOnUse', x: 0, y: 0, width: W, height: H }, h('rect', { width: W, height: H, fill: 'url(#stoa-fn-dots)' }))),
       links, groups),
     h('div', { className: 'stoa-funnel-foot' },
       h('span', null, h('b', null, closed ? Math.round((100 * flow.won) / closed) + '%' : '–'), ' win rate' + (closed ? ' (' + flow.won + ' of ' + closed + ' closed)' : '')),
@@ -1104,11 +1432,43 @@ function Row({ deal, sub, right, tone, open, onClick }) {
     right ? h('span', { className: 'stoa-num', 'data-tone': tone || '' }, right) : null)
 }
 
+/** The pane while the desk page is open beside it: not the same lists twice, but what the page is not showing. */
+function Beside({ state }) {
+  const tab = useValue($tab)
+  const day = state.today || {}
+  const byId = new Map(state.deals.map(deal => [deal.id, deal]))
+  const coming = tab === 'today' ? [] : (day.coming || []).filter(row => byId.has(row.id))
+  const lately = tab === 'activity' ? [] : (state.activity || []).slice(0, 30)
+  return h('div', { className: 'stoa stoa-pane' }, h(Style),
+    h('div', { className: 'stoa-scroll' },
+      h('div', { style: { padding: '0 8px' } },
+        state.tour ? h('div', { className: 'stoa-tourline' }, 'Sample data · nothing here is real') : null,
+        h('div', { className: 'stoa-eyebrow' }, 'Stoa · beside the desk'),
+        h('p', { className: 'stoa-sub', style: { margin: '6px 0 0' } }, 'The desk is open, so this shows what the page is not showing. Press a name to open it there.'),
+        h('div', { className: 'stoa-rule' })),
+      coming.length ? h('div', { className: 'stoa-sec' },
+        h('div', { className: 'stoa-sechead' }, h('span', { className: 'stoa-eyebrow' }, 'Coming up this week'), h('span', { className: 'stoa-num' }, String(coming.length))),
+        coming.slice(0, 7).map(row => h(Row, { key: row.id, deal: byId.get(row.id), sub: byId.get(row.id).next_step || byId.get(row.id).stage_label,
+          right: shortDate(row.due), onClick: () => $want.set(row.id) }))) : null,
+      lately.length ? h('div', { className: 'stoa-sec' },
+        h('div', { className: 'stoa-sechead' }, h('span', { className: 'stoa-eyebrow' }, 'Lately on the desk')),
+        lately.map(entry => h('div', { key: entry.id, className: 'stoa-row', style: { cursor: 'default' } },
+          h('i', { className: 'stoa-dot', 'data-tone': entry.kind === 'stage' && !entry.undone ? 'good' : '' }),
+          h('span', { className: 'stoa-grow', style: entry.undone ? { opacity: 0.55 } : undefined },
+            byId.has(entry.deal) ? h('button', { type: 'button', className: 'stoa-proplink stoa-name', title: 'Open the record on the desk', onClick: () => $want.set(entry.deal) }, entry.name)
+              : h('span', { className: 'stoa-name' }, entry.name),
+            h('span', { style: { display: 'block', overflowWrap: 'anywhere', textDecoration: entry.undone ? 'line-through' : undefined } }, entry.text),
+            h('span', { className: 'stoa-sub', style: { display: 'block' } }, ago(entry.at) + ' · ' + (entry.undone ? 'taken back' : entry.kind) + (entry.by ? ' · ' + entry.by : '')))))) : null,
+      !coming.length && !lately.length ? h('p', { className: 'stoa-sub', style: { padding: 8 } }, 'Nothing has happened on the desk yet.') : null))
+}
+
 function Pane() {
   const query = useDesk()
   const filter = useValue($filter)
+  const beside = useValue($onPage)
   const [openId, setOpenId] = useState('')
   if (!query.data) return h(Unavailable, { error: query.error, loading: query.isLoading })
+  if (beside) return h(Beside, { state: query.data })
   const state = query.data, pb = state.playbook, totals = state.totals
   const everyone = state.deals.filter(deal => deal.status === 'open')
   const open = everyone.filter(deal => matches(deal, filter))
@@ -1124,7 +1484,7 @@ function Pane() {
       h('div', { style: { padding: '0 8px' } },
         state.tour ? h('div', { className: 'stoa-tourline' }, 'Sample data · nothing here is real') : null,
         h('div', { className: 'stoa-eyebrow' }, 'Stoa · ' + pb.title),
-        h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open')),
+        h('div', { className: 'stoa-figure' }, h(DotFigure, { text: money(totals.open_value, pb.currency) || String(totals.open) }), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open')),
         h('div', { className: 'stoa-sub' }, [plural(totals.open, 'open', 'open'), totals.due ? totals.due + ' due' : '', totals.stale ? totals.stale + ' quiet' : '']
           .filter(Boolean).join(' · ')),
         h('div', { className: 'stoa-rule' }),
@@ -1271,6 +1631,7 @@ function Dock({ state }) {
           onClick: () => picker.current && picker.current.click() }, h(Icon, { name: 'clip' })),
         h('input', { ref: picker, type: 'file', hidden: true, accept: '.csv,.tsv,.txt,.md,.json,.vcf,text/*',
           onChange: event => { takeFile(event.target.files[0]); event.target.value = '' } }),
+        h('span', { className: 'stoa-prompt', 'aria-hidden': true }, '›'),
         h('textarea', { ref: area, rows: 1, value: text, disabled: talk.busy, 'aria-label': 'Talk to the desk',
           placeholder: listening ? 'Listening…' : 'Tell Stoa what happened, ask it anything, or drop a list on the page…',
           onChange: event => setText(event.target.value),
@@ -1341,6 +1702,34 @@ function draftFor(deal, quiet) {
   return Promise.resolve(null)
 }
 
+// Each kind of thing that wants you is a group that opens. Closed, it is one line: how many, what, and who.
+const $folds = atom({}) // which groups on Today are open, kept between visits: { overdue: true, … }
+function setFold(id, open) {
+  const next = { ...$folds.get(), [id]: open }
+  $folds.set(next)
+  if (storage) storage.set('folds', next)
+}
+
+/** The first few names and how many more: enough to know a group without opening it. */
+function names(list, limit = 3) {
+  const all = [...new Set(list.filter(Boolean))]
+  if (all.length > limit) return all.slice(0, limit).join(', ') + ' and ' + (all.length - limit) + ' more'
+  return all.length > 1 ? all.slice(0, -1).join(', ') + ' and ' + all[all.length - 1] : all.join('')
+}
+
+function Fold({ id, count, tone, title, help, summary, aside, children }) {
+  const open = Boolean(useValue($folds)[id])
+  return h('section', { className: 'stoa-fold', 'data-open': open ? '1' : '0' },
+    h('div', { className: 'stoa-foldhead' },
+      h('button', { type: 'button', className: 'stoa-foldmain', 'aria-expanded': open, title: help, onClick: () => setFold(id, !open) },
+        h('span', { className: 'stoa-foldmark', 'aria-hidden': true }, open ? '[−]' : '[+]'),
+        h('b', { className: 'stoa-foldcount', 'data-tone': tone || '' }, String(count)),
+        h('span', { className: 'stoa-foldtitle' }, title),
+        h('span', { className: 'stoa-foldsum stoa-clip' }, open ? '' : summary)),
+      open && aside ? h('span', { className: 'stoa-foldaside' }, aside) : null),
+    open ? h('div', { className: 'stoa-foldbody' }, children) : null)
+}
+
 const TODAY_LISTS = [
   { key: 'overdue', title: 'Overdue', tone: 'bad', help: 'The next step had a date, and the date has passed.' },
   { key: 'due_today', title: 'Due today', tone: 'warn', help: 'The next step is dated today.' },
@@ -1401,35 +1790,39 @@ function Today({ state, openId, setOpenId, openClient }) {
       open ? h(NextStep, { deal, mode: form.mode, close: () => setForm(null) }) : null)
   })
   const counts = day.counts
-  const tally = [[counts.overdue, 'overdue', 'bad'], [counts.due_today, 'due today', 'warn'], [counts.approvals, 'to approve', 'good'],
-    [counts.invoices_overdue, counts.invoices_overdue === 1 ? 'invoice overdue' : 'invoices overdue', 'bad'], [counts.to_invoice, 'to invoice', 'warn'],
-    [counts.to_bill, counts.to_bill === 1 ? 'month to bill' : 'months to bill', 'warn'], [counts.client_overdue, 'client ' + (counts.client_overdue === 1 ? 'invoice' : 'invoices') + ' late', 'bad'],
-    [counts.drafts, counts.drafts === 1 ? 'draft waiting' : 'drafts waiting', 'good'], [counts.quiet, 'gone quiet', ''], [counts.new, 'new', '']].filter(item => item[0])
+  // What a closed group says about itself: who is in it, and the one figure that matters most.
+  const brief = key => {
+    const list = day[key] || []
+    const most = Math.max(0, ...list.map(row => row.days || 0))
+    const sum = field => exact(list.reduce((total, row) => total + (row[field] || 0), 0), pb.currency)
+    const tail = key === 'overdue' && most ? 'oldest ' + most + 'd' : key === 'quiet' && most ? 'longest ' + most + 'd'
+      : key === 'invoices_overdue' ? sum('owed') + ' owed' : key === 'to_invoice' ? sum('amount') : ''
+    return [names(list.map(row => (byId.get(row.id) || {}).name)), tail].filter(Boolean).join(' · ')
+  }
+  const hour = new Date().getHours()
+  const hello = hour >= 5 && hour < 12 ? 'Good morning' : hour >= 12 && hour < 18 ? 'Good afternoon' : 'Good evening'
   return h('div', { className: 'stoa-today' },
     h('div', { className: 'stoa-todayhead' },
-      h('div', { className: 'stoa-name', style: { fontSize: 16 } }, day.needs ? plural(day.needs, 'thing needs you', 'things need you') : 'Nothing needs you today'),
-      tally.length ? h('div', { className: 'stoa-chips', style: { marginTop: 0 } }, tally.map(item => h(Chip, { key: item[1], tone: item[2] }, item[0] + ' ' + item[1])))
-        : h('span', { className: 'stoa-sub' }, counts.coming ? 'What is coming up is on the right.' : state.deals.length ? 'No next step is due and nobody has gone quiet.' : '')),
-    h(Approvals, { state, setOpenId }),
-    (day.to_bill || []).length ? h('div', { className: 'stoa-tsec' },
-      h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
-        h('span', { className: 'stoa-eyebrow', title: 'Months that have ended for clients billed by the month, not billed yet' }, 'To bill'),
-        h('span', { className: 'stoa-num' }, String(day.to_bill.length))),
+      h('h2', { className: 'stoa-hello' }, hello + '. ' + (day.needs ? plural(day.needs, 'thing needs you', 'things need you') : 'Nothing needs you today') + '.'),
+      h('p', { className: 'stoa-sub' }, day.needs ? 'Most pressing first. Open a group to see what is in it and deal with it.'
+        : counts.coming ? 'What is coming up is on the right.' : state.deals.length ? 'No next step is due and nobody has gone quiet.' : '')),
+    h('div', { className: 'stoa-folds' },
+      h(Approvals, { state, setOpenId }),
+      (day.to_bill || []).length ? h(Fold, { id: 'to_bill', count: day.to_bill.length, tone: 'warn', title: 'To bill',
+        help: 'Months that have ended for clients billed by the month, not billed yet', summary: names(day.to_bill.map(row => row.client)) },
       day.to_bill.map(row => h(BillMonth, { key: row.client + row.period, row, pb, showClient: true, openClient }))) : null,
-    (day.client_overdue || []).length ? h('div', { className: 'stoa-tsec' },
-      h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
-        h('span', { className: 'stoa-eyebrow' }, 'Client invoices overdue'), h('span', { className: 'stoa-num' }, String(day.client_overdue.length))),
+      (day.client_overdue || []).length ? h(Fold, { id: 'client_overdue', count: day.client_overdue.length, tone: 'bad', title: 'Client invoices overdue',
+        help: 'Sent to a client, not paid in full, and past the due date.',
+        summary: [names(day.client_overdue.map(row => row.client)), exact(day.client_overdue.reduce((total, row) => total + (row.owed || 0), 0), pb.currency) + ' owed'].join(' · ') },
       day.client_overdue.map(row => h('div', { key: row.invoice, className: 'stoa-irow' },
         h('span', { className: 'stoa-grow' },
           h('button', { type: 'button', className: 'stoa-proplink stoa-name', onClick: () => openClient(row.client) }, row.client),
           h('span', { className: 'stoa-sub', style: { display: 'block' } }, [row.period ? monthLabel(row.period) : '', row.number ? '#' + row.number : '', exact(row.owed, pb.currency) + ' owed'].filter(Boolean).join(' · '))),
         h('span', { className: 'stoa-num', 'data-tone': 'bad' }, row.days + 'd late'),
         h('span', { className: 'stoa-tacts' }, h(Btn, { kind: 'go', onClick: () => billClient(row.client, { verb: 'pay', invoice: String(row.invoice) }) }, 'Paid'))))) : null,
-    TODAY_LISTS.map(list => (day[list.key] || []).length ? h('div', { key: list.key, className: 'stoa-tsec' },
-      h('div', { className: 'stoa-sechead', style: { padding: '0 0 4px' } },
-        h('span', { className: 'stoa-eyebrow', title: list.help }, list.key === 'to_invoice' ? pb.won.label + ', not invoiced' : list.title),
-        h('span', { className: 'stoa-num' }, String(counts[list.key]))),
-      rows(list.key, list.tone)) : null))
+      TODAY_LISTS.map(list => (day[list.key] || []).length ? h(Fold, { key: list.key, id: list.key, count: counts[list.key], tone: list.tone,
+        title: list.key === 'to_invoice' ? pb.won.label + ', not invoiced' : list.title, help: list.help, summary: brief(list.key) },
+      rows(list.key, list.tone)) : null)))
 }
 
 /** Beside Today while no record is open: what is coming, how the week is going, and what is put aside. */
@@ -1626,10 +2019,12 @@ function Welcome({ skip }) {
   const data = query.data, setup = setupQuery.data
   if (!data) return h('p', { className: 'stoa-sub' }, query.error ? 'The desk is not answering yet (' + why(query.error) + '). Reload in a moment.' : 'Opening the desk…')
   return h('div', { className: 'stoa-welcome' },
-    h('div', { className: 'stoa-eyebrow' }, 'Welcome to Stoa'),
-    h('div', { className: 'stoa-name', style: { fontSize: 22, margin: '6px 0 4px', letterSpacing: '-.01em' } }, 'The CRM Hermes runs for you.'),
-    h('p', { className: 'stoa-reading', style: { marginTop: 0 } },
-      'You say what happened, in your own words. Hermes keeps the pipeline, logs your email and calls, drafts the follow-ups, and asks before anything changes. First: what kind of work is your pipeline for?'),
+    h('div', { className: 'stoa-hero' },
+      h('div', { className: 'stoa-heroart' }, h(Art, { name: 'hero' })),
+      h('div', { className: 'stoa-eyebrow' }, 'Welcome to Stoa'),
+      h('div', { className: 'stoa-herotitle' }, 'The CRM Hermes runs for you.'),
+      h('p', { className: 'stoa-reading', style: { marginTop: 0 } },
+        'You say what happened, in your own words. Hermes keeps the pipeline, logs your email and calls, drafts the follow-ups, and asks before anything changes. First: what kind of work is your pipeline for?')),
     h('div', { className: 'stoa-shapes', style: { marginTop: 14 } }, data.shapes.map(item => h(ShapeCard, { key: item.id, shape: item,
       onPick: chosen => $setupFlow.set({ mode: 'first', step: 'stages', shape: chosen.id }) }))),
     h('div', { className: 'stoa-sub', style: { marginTop: 10 } }, 'Two kinds of work? Set up one now; add the other as a second pipeline under Setup.'),
@@ -1720,6 +2115,29 @@ function Pipelines({ state, setup }) {
     pipes.length < 6 ? h('div', { className: 'stoa-btns', style: { marginTop: 10 } }, h(Btn, { onClick: () => $setupFlow.set({ mode: 'add', step: 'shape' }) }, '+  Pipeline')) : null))
 }
 
+/** The desk's own name: typed here, drawn at the head of the page as it is typed, and saved a moment after. */
+function NameBox({ state }) {
+  const sign = state.sign || { text: '', place: 'art' }
+  const [text, setText] = useState(sign.text || '')
+  const save = body => rest('/sign', { method: 'POST', body }).then(refresh).catch(error => host.notifyError(error, 'Stoa could not save the name'))
+  useEffect(() => {
+    if (text.trim() === (sign.text || '')) { $typing.set(null); return undefined }
+    $typing.set(text)
+    const timer = setTimeout(() => save({ text }), 700)
+    return () => clearTimeout(timer)
+  }, [text, sign.text])
+  useEffect(() => () => $typing.set(null), [])
+  return h('div', null,
+    h('p', { className: 'stoa-sub', style: { margin: '0 0 10px' } }, 'Type your business name and it is drawn in dots at the head of the page, lit the way the stoa is. Leave it empty and the stoa stays. Everyone who opens this desk sees it.'),
+    h('div', { className: 'stoa-newgroup', style: { margin: 0, maxWidth: 'none', alignItems: 'flex-end' } },
+      h('label', null, h('span', { className: 'stoa-eyebrow' }, 'Name'),
+        h('input', { className: 'stoa-field', maxLength: 26, value: text, placeholder: 'Your business name', onChange: event => setText(event.target.value) })),
+      h('div', { className: 'stoa-tabs', style: { margin: 0 }, role: 'group', 'aria-label': 'Where the name sits' },
+        [['art', 'In place of the stoa'], ['beside', 'Beside the stoa']].map(item => h('button', { type: 'button', key: item[0], className: 'stoa-tab', style: { height: 28 },
+          'data-on': (sign.place === 'beside' ? 'beside' : 'art') === item[0] ? '1' : '0', 'aria-pressed': (sign.place === 'beside' ? 'beside' : 'art') === item[0],
+          onClick: () => save({ place: item[0] }) }, item[1])))))
+}
+
 function Setup({ state, go }) {
   const query = useQuery({ queryKey: ['stoa', 'setup'], queryFn: () => rest('/setup'), staleTime: 3000, refetchInterval: 15000 })
   const [busy, setBusy] = useState(false)
@@ -1751,6 +2169,7 @@ function Setup({ state, go }) {
     (setup.problems || []).length ? h('div', { className: 'stoa-setbox', 'data-wide': '1' }, h('div', { className: 'stoa-box', style: { borderColor: 'var(--ui-orange)' } },
       h('div', { className: 'stoa-name' }, 'Some of this could not be read'),
       setup.problems.map((line, index) => h('p', { key: index, className: 'stoa-sub', style: { margin: '4px 0 0', overflowWrap: 'anywhere' } }, line)))) : null,
+    box('Your name on the desk', '', h(NameBox, { state }), true),
     box('Get started', left ? left + ' left' : 'all done', setup.checklist.map(item => h('div', { key: item.id, className: 'stoa-check', 'data-done': item.done ? '1' : '0' },
       h('i', { className: 'stoa-tick', 'aria-hidden': true }, item.done ? '✓' : ''),
       h('span', { className: 'stoa-grow' }, h('span', { className: 'stoa-name', style: { display: 'block' } }, item.title), h('span', { className: 'stoa-sub' }, item.detail)),
@@ -1885,12 +2304,10 @@ function Approvals({ state, setOpenId }) {
     setBusy('')
   }
   const kinds = KINDS.map(kind => ({ id: kind[0], one: kind[1], several: kind[2], items: proposals.filter(item => kindOf(item) === kind[0]) })).filter(kind => kind.items.length > 1)
-  return h('div', { className: 'stoa-tsec stoa-approvals' },
-    h('div', { className: 'stoa-sechead', style: { padding: '0 0 6px', alignItems: 'center' } },
-      h('span', { className: 'stoa-eyebrow', title: 'Changes Hermes suggests and lists you were sent. Nothing is written until you approve it.' }, 'Waiting for your approval'),
-      h('span', { style: { display: 'flex', gap: 10, alignItems: 'center' } },
-        proposals.length > 1 ? h(Btn, { kind: 'quiet', disabled: Boolean(busy), onClick: () => many(proposals, 'all') }, 'Approve all ' + proposals.length) : null,
-        h('span', { className: 'stoa-num' }, String(items.length)))),
+  return h(Fold, { id: 'approvals', count: items.length, tone: 'good', title: 'Waiting for your approval',
+    help: 'Changes Hermes suggests and lists you were sent. Nothing is written until you approve it.',
+    summary: names(sorted.map(item => (item.list ? 'a list you were sent' : item.name))),
+    aside: proposals.length > 1 ? h(Btn, { disabled: Boolean(busy), onClick: () => many(proposals, 'all') }, 'Approve all ' + proposals.length) : null },
     kinds.length && kinds[0].items.length < proposals.length ? h('div', { className: 'stoa-kinds' }, kinds.map(kind =>
       h(Btn, { key: kind.id, disabled: Boolean(busy), title: 'Approve every waiting ' + kind.one + ' at once. Each can still be taken back by itself.',
         onClick: () => many(kind.items, kind.id) }, 'Approve ' + kind.items.length + ' ' + kind.several))) : null,
@@ -2318,10 +2735,10 @@ function Path({ deal, pb, busy, run }) {
   return h('div', { className: 'stoa-path', role: 'list', 'aria-label': 'Stages' },
     pb.stages.map((stage, index) => {
       const at = deal.status === 'won' || (open && index < deal.position) ? 'done' : open && index === deal.position ? 'now' : 'todo'
-      return h('button', { type: 'button', key: stage.id, role: 'listitem', 'data-state': at, disabled: busy || !open || at === 'now',
+      return h('button', { type: 'button', key: stage.id, role: 'listitem', 'data-state': at, disabled: busy || !open || at === 'now', style: heatAt(index, pb.stages.length + 1),
         title: open && at !== 'now' ? 'Move to ' + stage.label : stage.label, onClick: () => run({ verb: 'move', stage: stage.id }) }, h('span', null, stage.label))
     }),
-    h('span', { className: 'stoa-pathend', role: 'listitem', 'data-state': end[0] }, h('span', null, end[1])))
+    h('span', { className: 'stoa-pathend', role: 'listitem', 'data-state': end[0], style: heatAt(pb.stages.length, pb.stages.length + 1) }, h('span', null, end[1])))
 }
 
 /** Every fact on a record, in one form: the playbook's own fields included. */
@@ -3001,7 +3418,7 @@ function Board({ state, openId, setOpenId }) {
     if (deal && deal.stage !== target) act(id, { verb: 'move', stage: target })
   }
   const picked = filter.stage && known.has(filter.stage) ? filter.stage : ''       // a stage from another playbook picks out nothing
-  return h('div', { className: 'stoa-board', ref: board }, columns.map(column =>
+  return h('div', { className: 'stoa-board', ref: board }, columns.map((column, place) =>
     h('div', { key: column.id, className: 'stoa-col', 'data-over': over === column.id ? '1' : '0', 'data-dim': picked && column.id !== picked ? '1' : '0',
       'data-spot': picked && column.id === picked ? '1' : '0',
       onDragOver: event => { if (dragging(event) && !column.other) { event.preventDefault(); if (over !== column.id) setOver(column.id) } },
@@ -3009,7 +3426,7 @@ function Board({ state, openId, setOpenId }) {
       onDrop: event => drop(event, column) },
       h('div', { className: 'stoa-colhead' }, h('span', { className: 'stoa-eyebrow stoa-clip' }, column.label),
         h('span', { className: 'stoa-num' }, column.here.length + (column.value ? ' · ' + money(column.value, pb.currency) : ''))),
-      h('div', { className: 'stoa-weight', 'data-won': column.won ? '1' : '0' }, h('i', { style: { width: (column.won ? 100 : Math.round((100 * column.value) / most)) + '%' } })),
+      h('div', { className: 'stoa-weight', 'data-won': column.won ? '1' : '0' }, h('i', { style: { width: (column.won ? 100 : Math.round((100 * column.value) / most)) + '%', ...heatAt(place, columns.length) } })),
       column.won || column.other ? null : h(Pace, { column }),
       column.here.length ? column.here.map(deal => h('button', { type: 'button', key: deal.id, className: 'stoa-card', 'data-open': openId === deal.id ? '1' : '0',
         draggable: !column.won, title: column.won ? undefined : 'Drag to another column to move it',
@@ -3089,8 +3506,18 @@ function Page() {
   const [dropping, setDropping] = useState(false)
   const [welcomed, setWelcomed] = useState(() => Boolean(storage && storage.get('welcomed', false)))
   const split = useRef(null)
+  const typing = useValue($typing)
   // While the page is on screen, a click that calls for writing goes to its own dock.
-  useEffect(() => { onPage = true; return () => { onPage = false; $last.set(null) } }, [])
+  useEffect(() => { onPage = true; $onPage.set(true); return () => { onPage = false; $onPage.set(false); $last.set(null) } }, [])
+  // A record picked in the pane beside the desk opens here, on a tab that has room for it.
+  const want = useValue($want)
+  useEffect(() => {
+    if (!want) return
+    if (!['today', 'pipeline', 'cash', 'activity'].includes($tab.get())) $tab.set('pipeline')
+    setAdding(false)
+    setStack(now => (now.length && now[now.length - 1].kind === 'record' && now[now.length - 1].id === want ? now : now.concat([{ kind: 'record', id: want }]).slice(-12)))
+    $want.set('')
+  }, [want])
   const top = stack.length ? stack[stack.length - 1] : null
   // A record, a group or a company opens at the top of the page.
   useEffect(() => {
@@ -3115,6 +3542,7 @@ function Page() {
   useEffect(() => { if (tab === 'cash' && query.data && !cashShown) $tab.set('today') }, [tab, cashShown, Boolean(query.data)])
   if (!query.data) return h('div', { className: 'stoa stoa-page' }, h(Unavailable, { error: query.error, loading: query.isLoading }))
   const state = query.data, pb = state.playbook, totals = state.totals
+  const sign = state.sign || { text: '', place: 'art' }, signed = String(typing ?? sign.text ?? '').trim()
   const day = state.today || { counts: {}, needs: 0 }
   const market = state.markets.find(item => item.id === marketId) || state.markets[0]
   const setTab = name => { $tab.set(name); setStack([]); setAdding(false) }
@@ -3180,10 +3608,14 @@ function Page() {
     pipes.length > 1 ? h('div', { className: 'stoa-pipes', role: 'tablist', 'aria-label': 'Pipelines' }, pipes.map(item =>
       h('button', { type: 'button', key: item.id, role: 'tab', 'aria-selected': item.id === state.pipeline, className: 'stoa-pipe', 'data-on': item.id === state.pipeline ? '1' : '0',
         title: item.title + ': its own ' + 'records and its own playbook', onClick: () => showPipe(item.id) }, item.name, h('small', null, String(item.open))))) : null,
-    h('div', { className: 'stoa-head' },
+    h('div', { className: 'stoa-head', 'data-sign': welcome || !signed ? '' : sign.place === 'beside' ? 'beside' : 'art' },
+      welcome ? null : h('div', { className: 'stoa-headart' },
+        signed && sign.place !== 'beside' ? h(NameArt, { text: signed, side: 'right' }) : h(Art, { name: 'band' })),
       h('div', null,
+        // Beside the stoa the name is always here. In place of the stoa it is here only when the page is too narrow for it there.
+        signed && !welcome ? h('div', { className: 'stoa-headname', 'data-narrow': sign.place === 'beside' ? '0' : '1' }, h(NameArt, { text: signed, side: 'left' })) : null,
         h('div', { className: 'stoa-eyebrow' }, welcome ? 'Stoa' : 'Stoa · ' + pb.title),
-        h('div', { className: 'stoa-figure' }, money(totals.open_value, pb.currency) || String(totals.open), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open'))),
+        h('div', { className: 'stoa-figure' }, h(DotFigure, { text: money(totals.open_value, pb.currency) || String(totals.open) }), h('small', null, totals.open_value ? 'in play' : pb.terms.deals + ' open'))),
       h('div', { className: 'stoa-headstats' }, stats.map(item => h('button', { type: 'button', key: item[0], className: 'stoa-stat', title: item[2], 'data-press': item[3] ? '1' : '0',
         onClick: item[3] ? () => setTab(item[3]) : undefined }, h('span', { className: 'stoa-eyebrow' }, item[0]), h('b', null, String(item[1])))))),
     h('div', { className: 'stoa-rule' }),
@@ -3275,6 +3707,7 @@ export default {
       const pipe = $pipe.get()
       return ctx.rest(pipe && pipe !== 'main' ? path + (path.includes('?') ? '&' : '?') + 'pipeline=' + encodeURIComponent(pipe) : path, options)
     }
+    try { $folds.set({ ...(storage.get('folds', {}) || {}) }) } catch { /* no storage: every group starts closed */ }
     const kept = ctx.storage.get('filter', {}) || {}      // an older version kept every filter, a picked-out stage included: take only these two
     $filter.set({ ...NO_FILTER, owner: typeof kept.owner === 'string' ? kept.owner : '', group: typeof kept.group === 'string' ? kept.group : '' })
     // While the app is open the desk knows it can draw cards and maps in the conversation here.

@@ -3,7 +3,7 @@
 Standard library only. The desk logic has no Hermes imports, so the tests run anywhere:
 
 ```
-python3 -m unittest discover -s tests     # 261 tests, no network
+python3 -m unittest discover -s tests     # 263 tests, no network
 hermes plugins validate . --install-deps
 hermes plugins doctor . --ci
 ```
@@ -22,3 +22,4 @@ hermes plugins doctor . --ci
 | `sources.py` | People Data Labs, Exa and meeting-note sources |
 | `dashboard/` | The web tab: `plugin_api.py` (routes, shared with the app half), `dist/index.js` and `dist/style.css` (hand-written, no build step) |
 | `desktop/plugin.js` | The Desktop app and Webapp half: the pane, the page, and the card and map drawn in a conversation |
+| `desktop/art.json` | The stoa in the page header and on the welcome screen, as grids of dots (four bits a cell). `plugin_api.py` hands it to the page at `/art`, and the page draws it on a canvas in the theme's colours |

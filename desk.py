@@ -37,6 +37,10 @@ TOUR_MARKER = "tour.json"       # in the data folder while sample data is on sho
 TOUR_FILE = re.compile(r"^tour-[0-9a-f]{8}\.db$")
 # What a scheduled job may change by itself. Nobody is watching a job, so the desk decides this, not
 # the prompt: anything a level does not allow is held as a proposal for a person to approve.
+# The desk's own name at the head of the page: in place of the stoa, or beside it with the stoa kept.
+SIGN_PLACES = ("art", "beside")
+SIGN_MOST = 40
+
 AUTONOMY = {
     "ask": {"label": "Ask me first", "allows": ("log",),
             "summary": "A scheduled job may log what it finds. Every other change waits for your approval."},
@@ -1016,6 +1020,28 @@ class Desk:
             return {"ok": False, "error": "autonomy is one of: %s" % ", ".join(AUTONOMY)}
         self.own_store.meta_set("autonomy", level)
         return {"ok": True, "autonomy": level, "label": AUTONOMY[level]["label"], "summary": AUTONOMY[level]["summary"]}
+
+    def sign(self) -> dict:
+        """The desk's own name, drawn in dots at the head of the page, and where it sits there. No name: the stoa is drawn."""
+        kept = self.own_store.meta_prefix("sign:")          # both keys in one read: this is on every /state
+        place = kept.get("place", SIGN_PLACES[0])
+        return {"text": kept.get("text", ""), "place": place if place in SIGN_PLACES else SIGN_PLACES[0]}
+
+    def set_sign(self, text: Any = None, place: Any = None) -> dict:
+        """Set by a person on the Setup tab and kept with the desk, so everyone who opens it sees the same name."""
+        if text is not None:
+            text = " ".join(str(text).split())
+            if len(text) > SIGN_MOST:
+                return {"ok": False, "error": "a name is at most %d characters" % SIGN_MOST}
+        if place is not None:
+            place = str(place).strip().lower()
+            if place not in SIGN_PLACES:
+                return {"ok": False, "error": "the name sits in one of: %s" % ", ".join(SIGN_PLACES)}
+        if text is not None:
+            self.own_store.meta_set("sign:text", text)
+        if place is not None:
+            self.own_store.meta_set("sign:place", place)
+        return dict(self.sign(), ok=True)
 
     def guard(self, tool: str, args: dict, session: Optional[dict]) -> Optional[dict]:
         """The answer to give a scheduled job in place of running a tool, or ``None`` to run it.

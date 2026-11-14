@@ -225,6 +225,7 @@ def state() -> dict:
         "tour": {"example": tour["example"], "title": _mod("demo").EXAMPLES[tour["example"]]["title"]} if tour else None,
         "fresh": not tour and not deals and here["first"] and d.setting("playbook", None) is None,
         "today": d.today(full=False),
+        "sign": d.sign(),       # the desk's own name for the head of the page, and where it sits
         "playbook": _playbook(playbook),
         # the pipelines on the desk (one, unless more were opened) and which of them this is
         "pipelines": pipes, "pipeline": here["id"],
@@ -495,6 +496,18 @@ def autonomy(body: dict = Body(...)) -> dict:
     return result
 
 
+@router.post("/sign")
+def sign(body: dict = Body(...)) -> dict:
+    """The desk's own name for the head of the page (drawn there in dots), and where it sits. Set here by a person."""
+    d = desk()
+    body = body or {}
+    result = d.set_sign(body.get("text"), body.get("place"))
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error") or "that name cannot be used")
+    d.announce()
+    return result
+
+
 @router.post("/declined/forget")
 def forget_declined() -> dict:
     """Forget what was declined, so those proposals may be made again."""
@@ -533,6 +546,23 @@ def act(deal_id: str, body: dict = Body(...)) -> dict:
         d.announce()
         return {"ok": True, "last": _last(d, deal_id)}
     raise HTTPException(400, "unknown action")
+
+
+_ART: Optional[dict] = None
+
+
+@router.get("/art")
+def art() -> dict:
+    """The artwork the page draws, as grids of dots: ``{name: {w, h, cells}}``, four bits a cell (0 is no dot,
+    1 to 15 a brightness), packed two to a byte and sent as base64. It ships with the plugin and is read once."""
+    global _ART
+    if _ART is None:
+        import json
+        try:
+            _ART = json.loads((PLUGIN_DIR / "desktop" / "art.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _ART = {}
+    return _ART
 
 
 @router.get("/setup")

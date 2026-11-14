@@ -1,4 +1,4 @@
-![Stoa. Where the day's business gets done.](docs/banner.jpg)
+![Stoa. The CRM for Hermes.](docs/banner.png)
 
 # Stoa
 
@@ -23,6 +23,8 @@ keeps the pipeline. Stoa is that, in one plugin:
   or no with the evidence beside it, a no is remembered, and any change can be taken back.
 - **Then Hermes does the writing.** The same click hands the follow-up (the outreach note, the
   proposal email, the decline) to the agent, in the card's thread.
+- **Make it yours.** Type your business name under Setup and it is drawn in dots at the head of
+  the desk, lit the way the stoa is.
 - **Three shapes, your stages.** A pipeline is for closing deals, filling roles or generating
   leads; you set its stages in your own words (up to seven), on the page or by telling Hermes.
   Underneath, a playbook names the stages, the button labels and what gets drafted at each step,
@@ -43,7 +45,7 @@ Then, in any Hermes chat: *"Map the market for us"*, *"What's on my plate?"*, or
 In Slack the command is `!gtm` (Slack keeps the slash for its own commands), and
 `!gtm Dana Whitfield` or `!gtm map` posts the card or the map itself, buttons included.
 
-![Today: what is waiting for your approval, then what is due, with one move for each](docs/desktop-today.jpg)
+![Today: everything that needs you, in groups that open, most pressing first](docs/desktop-today.jpg)
 
 ![The pipeline board, here for the recruiting example](docs/desktop-pipeline.jpg)
 
@@ -110,7 +112,9 @@ What the plugin does that you would want to know before installing it:
   which pipeline the page is showing; both can be read in that conversation), and the page listens
   to the gateway's events for that conversation alone to show you the reply. A file is read only
   when you pick it or drop it on the page: a CSV's text goes to the plugin's backend to be held as a
-  review, and a small text file goes to the agent with your message. It does not touch the app's
+  review, and a small text file goes to the agent with your message. The picture at the head of the page is drawn in the browser from a grid of
+  dots that ships with the plugin (`desktop/art.json`), and a name you type under Setup is kept in the
+  plugin's own database and drawn the same way; neither is sent anywhere. It does not touch the app's
   DOM or other plugins' storage, and it checks in with the backend every 30 seconds while open so
   the agent knows a card can be drawn in the conversation.
 - **Web dashboard.** The tab's backend adds routes under `/api/plugins/stoa/`, behind the

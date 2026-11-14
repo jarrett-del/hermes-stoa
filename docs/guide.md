@@ -60,6 +60,8 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 - **A pane beside the chat.** What needs you today, every stage, the first calls from your map.
   Tell Hermes *"I spoke to Marcus, follow up Thursday"* and the pane redraws as the agent saves it.
   Narrow it by owner, by search or account, to what is due or what has gone quiet, or by any text.
+  While the Stoa page is open the pane does not repeat it: it shows what is coming up this week and
+  what has just changed on the desk, and a name pressed there opens on the page.
 - **A click saves, then Hermes writes.** Press **Draft follow-up** or the stage button on a
   record. The change is saved at once, one line goes into the open chat as if you had typed it,
   and the draft comes back in the conversation.
@@ -68,15 +70,20 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
 - **A page of its own.** **Stoa** in the sidebar opens on **Today**, then the funnel with its
   conversion rates and the pipeline board with the same filters, the market map with its reading,
   the activity log, and **Setup**.
+- **Your name on it.** Under **Setup**, type your business name and it is drawn in dots at the head of
+  the page, lit the way the stoa is: in place of the stoa, or beside it with the stoa kept. It is saved
+  with the desk, so everyone who opens it sees the same name. Leave it empty and the stoa stays.
 - **Today.** What needs you, most pressing first: what is waiting for your approval, next steps
-  overdue and due today, records gone quiet, and new ones with nothing planned. Each row has one move.
+  overdue and due today, records gone quiet, and new ones with nothing planned. Each kind is a group
+  that opens. Closed, it is one line that says how many and who; open, each row has one move, and
+  the page remembers which groups you left open.
   **Done** logs the step and asks what comes next, **Draft it** has Hermes write what the step
   needs, **Snooze** puts it aside for a few days or until a date you pick, and until then it is on
   no list. What is coming up this week sits beside it.
 
-![Today: what is waiting for your approval, then what is due, with one move for each](desktop-today.jpg)
+![Today: everything that needs you, in groups that open, most pressing first](desktop-today.jpg)
 
-- **Approvals.** Whatever Hermes suggests on its own sits at the top of Today, one card each:
+- **Approvals.** Whatever Hermes suggests on its own is the first group on Today, one card each:
   what would change, why, and what it rests on (the email, the call, in their words). **Approve**
   writes it; **Decline** leaves the desk as it is, and the same suggestion is not made again. A
   list you were sent is reviewed there too, as a whole.
