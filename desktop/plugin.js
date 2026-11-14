@@ -174,6 +174,35 @@ async function track(target, sessionId) {
   }
 }
 
+// -- a command typed on the page ----------------------------------------------------------------------
+// A line that starts with "/" is a Hermes command (/blueprint, /gtm today). The app's own chat box runs those. The
+// desk's talk box cannot: it hands every line to the agent as words, where "/blueprint" means nothing. So a command
+// is taken to a new chat, typed there and left for the person to send.
+const isCommand = line => /^\/[a-z][\w:-]*(\s|$)/i.test(String(line || '').trim())      // "/gtm today" is one; "/Users/me/list.csv" is a path
+
+async function typeInChat(line) {
+  const composer = host.composer
+  const pause = ms => new Promise(done => setTimeout(done, ms))
+  try {
+    if (composer && typeof composer.setDraft === 'function' && typeof host.newChat === 'function') {
+      host.newChat()
+      for (let tries = 0; tries < 24; tries++) {
+        await pause(125)
+        if (await composer.setDraft('new', line)) {
+          if (typeof composer.focus === 'function') composer.focus('new')
+          host.notify({ kind: 'info', message: 'Commands run in a chat, so here is one with ' + line + ' typed. Press Enter to run it.' })
+          return true
+        }
+      }
+    }
+  } catch { /* an app without these: say how instead */ }
+  let copied = false
+  try { await navigator.clipboard.writeText(line); copied = true } catch { /* no clipboard here */ }
+  host.notify({ kind: 'info', message: copied ? 'Copied ' + line + '. Commands run in a chat: open a new one and paste it there.'
+    : 'Commands run in a chat: open a new one and type ' + line + ' there.' })
+  return false
+}
+
 // -- talking to the desk from its own page -------------------------------------------------------
 // The page has no conversation beside it, so it keeps one of its own: an ordinary session named
 // "Stoa desk", made and resumed through the gateway the way the app makes any session, and listed
@@ -1600,6 +1629,12 @@ function Dock({ state }) {
   const hush = () => { try { if (ear.current) ear.current.stop() } catch { /* already stopped */ } }
   const send = line => {
     const words = typeof line === 'string' ? line : text
+    if (isCommand(words) && !file) {          // a command is for a chat, not for the agent (see typeInChat)
+      hush()
+      setText('')
+      typeInChat(words.trim())
+      return
+    }
     if ((!words.trim() && !file) || talk.busy) return
     hush()
     say(words, file)
@@ -2185,7 +2220,7 @@ function Setup({ state, go }) {
     if (item.done) return null
     if (item.id === 'playbook') return setup.tour ? null : h(Btn, { onClick: () => $setupFlow.set({ mode: state.fresh ? 'first' : 'edit', step: 'shape' }) }, 'Set it up')
     if (item.id === 'records') return setup.tour ? null : h(Btn, { onClick: () => go('add') }, '+  New ' + state.playbook.terms.deal)
-    if (item.id === 'sweep') return h(Btn, { onClick: () => $draft.set('/blueprint') }, 'Put /blueprint in the box')
+    if (item.id === 'sweep') return h(Btn, { onClick: () => typeInChat('/blueprint stoa:activity-sweep') }, 'Open a chat to switch it on')
     return null
   }
   const exportAll = () => wait(rest('/export').then(file => { download(file.filename, file.csv, 'text/csv'); host.notify({ kind: 'success', message: plural(file.rows, 'record', 'records') + ' exported.' }) })
@@ -2241,13 +2276,15 @@ function Setup({ state, go }) {
         data.samples && !setup.tour ? h('div', { style: { marginTop: 10 } },
           h('div', { className: 'stoa-sub' }, plural(data.samples, 'sample record is', 'sample records are') + ' mixed into your own desk (an earlier version of Stoa put them there).'),
           h('div', { className: 'stoa-btns', style: { marginTop: 6 } }, h(Btn, { disabled: busy, onClick: () => wait(tour('tidy')) }, 'Remove them from my desk'))) : null)]),
-    box('Automations', 'type /blueprint in a chat to switch one on', setup.automations.map(item => h('div', { key: item.name, className: 'stoa-setrow', style: { display: 'block' } },
-      h('span', { className: 'stoa-name', style: { display: 'block' } }, item.title), h('span', { className: 'stoa-sub' }, item.description)))),
+    box('Automations', 'each is switched on from a chat, with /blueprint', setup.automations.map(item => h('div', { key: item.name, className: 'stoa-setrow' },
+      h('div', { style: { flex: 1, minWidth: 0 } }, h('span', { className: 'stoa-name', style: { display: 'block' } }, item.title), h('span', { className: 'stoa-sub' }, item.description)),
+      h(Btn, { kind: 'quiet', title: 'Opens a chat with /blueprint stoa:' + item.name + ' typed. Nothing is switched on until you run it there.',
+        onClick: () => typeInChat('/blueprint stoa:' + item.name) }, 'Switch on…')))),
     box('How to work the desk', '', h('div', { className: 'stoa-cols', style: { gap: 22 } },
       h('div', null, h('div', { className: 'stoa-name' }, 'Say it'), h('div', { className: 'stoa-sub', style: { marginBottom: 6 } }, 'Press one to put it in the box below.'),
         SAY.map(line => h('button', { type: 'button', key: line, className: 'stoa-sayline', onClick: () => $draft.set(line.replace(/ \(then.*\)$/, '')) }, '“' + line + '”'))),
       h('div', null, h('div', { className: 'stoa-name', style: { marginBottom: 6 } }, 'Or do it by hand'), BY_HAND.map(line => h('p', { key: line, className: 'stoa-tip' }, line))),
-      h('div', null, h('div', { className: 'stoa-name', style: { marginBottom: 6 } }, 'Or type it'),
+      h('div', null, h('div', { className: 'stoa-name' }, 'Or type it'), h('div', { className: 'stoa-sub', style: { marginBottom: 6 } }, 'In a chat. Typed in the box below, a command opens one.'),
         TYPED.map(pair => h('p', { key: pair[0], className: 'stoa-tip' }, h('code', null, pair[0]), '  ' + pair[1])))), true),
     box('What the desk always does, and what your playbook decides', '', h('div', { className: 'stoa-cols', style: { gap: 22 } },
       h('div', null, h('div', { className: 'stoa-name', style: { marginBottom: 6 } }, 'Always, whatever you sell'), ALWAYS.map(line => h('p', { key: line, className: 'stoa-tip' }, line))),

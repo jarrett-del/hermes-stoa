@@ -146,6 +146,9 @@ In the Hermes Desktop app and the Webapp, Stoa sits beside the conversation.
   conversation opens above the dock and the board redraws behind it. The page keeps its own
   conversation for this, called **Stoa desk**, listed in the sidebar like any other, one click
   away when you want the full chat.
+  The dock takes sentences, not commands: a line that starts with `/` (such as `/blueprint` or
+  `/gtm today`) is run by the app's own chat box, so the page opens a new chat with it typed
+  and leaves it for you to send.
 - **Say it or hand it over.** The microphone dictates into the dock where the browser has speech
   recognition. Drop a CSV anywhere on the page, or attach one, and the desk reads it itself and
   shows the review, with no model in between, whatever the headers are called. If it cannot tell

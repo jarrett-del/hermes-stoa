@@ -87,6 +87,19 @@ change the desk. Two things follow:
   what is waiting on it." means someone pressed a button in the pane or on a card. Call
   `gtm_deal(action="get")` for that record; the `pending_task` it returns is the writing to do.
 
+## Automations and `/blueprint`
+
+`/blueprint` is Hermes's own command for switching on a scheduled job from a ready-made
+template. It is not a Stoa tool and it has nothing to do with the playbook: a playbook is how a
+pipeline works (stages, fields, drafts); a blueprint is a job that runs on a schedule. Stoa adds
+seven to Hermes's list: `stoa:morning-brief`, `stoa:notes-sweep`, `stoa:activity-sweep`,
+`stoa:market-watch`, `stoa:sheet-mirror`, `stoa:sheet-pull` and `stoa:friday-review`.
+
+You cannot run a command yourself. When someone asks you to switch one on, or a message is only
+`/blueprint`, tell them to type `/blueprint stoa:<name>` in an ordinary chat (in Slack, the
+command as Hermes offers it there) and name the one that fits what they asked for. Do not answer
+with the playbook, and do not set up a scheduled job by other means in its place unless they ask.
+
 ## When a button was clicked
 
 A message that starts with `[Stoa desk]` means someone used a button on a card. The stage change

@@ -4103,5 +4103,31 @@ class SlackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("card", result)
 
 
+class CommandTests(unittest.TestCase):
+    """/blueprint is Hermes's own command. The page's talk box cannot run it, and the agent cannot either."""
+
+    def setUp(self):
+        self.page = (ROOT / "desktop" / "plugin.js").read_text()
+        self.skill = (ROOT / "skills" / "desk" / "SKILL.md").read_text()
+
+    def test_the_page_never_puts_a_command_in_its_own_talk_box(self):
+        # the talk box hands every line to the agent as words, so a command put there is a dead end
+        self.assertNotIn("$draft.set('/", self.page)
+        self.assertIn("typeInChat('/blueprint stoa:' + item.name)", self.page)
+
+    def test_the_talk_box_takes_a_command_to_a_chat_instead_of_sending_it(self):
+        send = self.page[self.page.index("const send = line => {"):]
+        send = send[:send.index("say(words, file)")]
+        self.assertIn("isCommand(words)", send)
+        self.assertIn("typeInChat(words.trim())", send)
+
+    def test_the_skill_names_every_automation_as_hermes_lists_it(self):
+        from stoa.blueprints import BLUEPRINTS
+        self.assertEqual(len(BLUEPRINTS), 7)
+        for blueprint in BLUEPRINTS:
+            self.assertIn("`stoa:%s`" % blueprint["name"], self.skill)
+        self.assertIn("nothing to do with the playbook", self.skill)
+
+
 if __name__ == "__main__":
     unittest.main()
