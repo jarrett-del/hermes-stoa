@@ -2084,6 +2084,7 @@ class ApprovalTests(unittest.TestCase):
                          ("Hermes, on a schedule", "Submitted", "She said yes.", "Yes please."))
         for tool, args in (("gtm_intake", {"action": "apply"}), ("gtm_intake", {"action": "discard"}), ("gtm_export", {"action": "import", "path": "x.csv"}),
                            ("gtm_market", {"action": "track", "target": "x"}), ("gtm_playbook", {"action": "use", "name": "agency"}),
+                           ("gtm_playbook", {"action": "stages", "stages": ["Found", "Called"]}),
                            ("gtm_deal", {"action": "snooze", "deal": self.dana}), ("gtm_deal", {"action": "undo", "deal": self.dana}),
                            ("gtm_contact", {"action": "remove", "deal": self.dana, "person": "x"})):
             self.assertEqual(self.desk.guard(tool, args, job)["ok"], False, (tool, args))

@@ -1088,7 +1088,7 @@ class Desk:
         if tool == "gtm_market" and action == "track" and "add" not in allows:
             return {"ok": False, "error": "A scheduled job cannot put a company in the pipeline by itself. Add it to the map and "
                                           "say which ones you would call first; the person adds them with one press."}
-        if tool == "gtm_playbook" and action in ("save", "use"):
+        if tool == "gtm_playbook" and action in ("save", "use", "stages"):      # what the pipeline is, and its stages: the person's
             return refused
         return None
 
